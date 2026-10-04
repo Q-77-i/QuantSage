@@ -1,0 +1,40 @@
+# 密钥与本地配置（绝不入库）
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# 私有文档（可读，不提交）
+docs/private/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# 数据与运行产物（本地下载的行情/语料，量大不入库）
+data/
+logs/
+*.log
+tmp/
+
+# IDE
+.idea/
+*.swp
