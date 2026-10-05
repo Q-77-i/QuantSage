@@ -16,7 +16,7 @@ QuantSage/
 │   │   ├── main.py                 # FastAPI 入口与路由挂载
 │   │   ├── api/                    # chat.py / backtest.py / market.py
 │   │   ├── agent/                  # graph.py / tools.py / prompts.py
-│   │   ├── backtest/               # engine.py / portfolio.py / broker.py / costs.py / metrics.py / strategies/
+│   │   ├── backtest/               # types.py / events.py / engine.py / portfolio.py / broker.py / costs.py / metrics.py / strategies/
 │   │   ├── data/                   # duckdb_client.py / xiaoshi.py（CLI 与 MCP 封装）
 │   │   └── core/                   # config.py / llm.py / langfuse.py
 │   ├── scripts/                    # download_bars.py / download_events.py
@@ -57,7 +57,8 @@ QuantSage/
 ## 4. T4 最小回测引擎
 
 - 事件循环：按 bar 时间排序驱动；信号在 bar 收盘生成，成交在下一 bar 开盘（防日内前视）
-- 撮合：市价单。成本模型：佣金双边万 2.5 + 印花税卖出 0.05% + 滑点（bps，可开关）
+- 撮合：市价单。成本模型：佣金双边万 2.5（单笔最低 5 元）+ 印花税卖出 0.05% + 滑点（bps）；买入按 100 股整手向下取整。费用与滑点各为独立开关，便于分别验证影响
+- PIT 与行情的关系：**PIT 闸门只作用于事件语料**；`bars.available_at` 是整表下载快照而非逐 bar 可得时间，对 bars 做逐 bar 设卡会把历史全滤空，故日线 OHLC 按「当日收盘已知」处理
 - 策略接口：
 
 ```python
@@ -68,7 +69,7 @@ class Strategy(Protocol):
 
 - 内置策略 ×2：
   - `ma_cross` 双均线：MA5/MA20 金叉全仓买入、死叉全仓卖出
-  - `event_driven` 事件驱动：利多事件（`direction_norm` + `factor_scores.score` 阈值）触发买入，持有 N 天卖出。信号过滤两种模式——PIT 模式按 `available_at <= 当日` 过滤，非 PIT 模式按 `event_time` 过滤（模拟穿越未来）
+  - `event_driven` 事件驱动：利多事件（`direction_norm == 'bullish'` 且 `factor_scores.score >= 50`）触发买入，持有 5 个交易日卖出。信号过滤两种模式——**收盘时刻级**口径：PIT 模式按 `available_at <= 当日 15:00（Asia/Shanghai）` 过滤，非 PIT 模式按 `event_time <= 当日 15:00` 过滤（模拟穿越未来）；两者唯一差别是拿哪个时间戳设卡
 
 **验收**：两策略均可跑通；手续费/滑点开关对结果有可见影响；PIT 与非 PIT 结果存在差异。
 
@@ -131,3 +132,4 @@ class Strategy(Protocol):
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
 | 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
 | 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |
+| 2026-10-05 | v0.4 | T4 落地澄清：PIT 口径定为**收盘时刻级**（当天 15:00）；`backtest/` 增设 `types.py`（`BarContext` 独立成层避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列，护城河一眼可见）；撮合加 A 股实盘规则（100 股整手 + 佣金最低 5 元），费用与滑点拆成两个独立开关；`event_driven` 默认 `score >= 50`、持有 5 日；明确 **PIT 只作用于事件语料**，bars 不做逐 bar 设卡（`available_at` 为整表快照） |
