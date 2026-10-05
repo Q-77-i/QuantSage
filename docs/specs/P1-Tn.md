@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.3 ｜ 2026-10-05 ｜ 状态：已通过
+> 版本 v0.5 ｜ 2026-10-05 ｜ 状态：已通过
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
 
@@ -16,7 +16,7 @@ QuantSage/
 │   │   ├── main.py                 # FastAPI 入口与路由挂载
 │   │   ├── api/                    # chat.py / backtest.py / market.py
 │   │   ├── agent/                  # graph.py / tools.py / prompts.py
-│   │   ├── backtest/               # types.py / events.py / engine.py / portfolio.py / broker.py / costs.py / metrics.py / strategies/
+│   │   ├── backtest/               # types.py / events.py / engine.py / portfolio.py / broker.py / costs.py / metrics.py / report.py / strategies/
 │   │   ├── data/                   # duckdb_client.py / xiaoshi.py（CLI 与 MCP 封装）
 │   │   └── core/                   # config.py / llm.py / langfuse.py
 │   ├── scripts/                    # download_bars.py / download_events.py
@@ -76,18 +76,37 @@ class Strategy(Protocol):
 ## 5. T5 分析输出
 
 - 指标：总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数；基准 = 同标的买入持有
+- 指标口径：年化按 252 交易日折算；夏普 rf=0，用日净值收益的样本标准差（ddof=1）年化，样本不足或标准差为 0 时为 `null`；最大回撤取**正值**幅度；胜率与交易次数只统计**已平仓**交易
+- 基准口径：首根 bar 收盘价**份额化**全额买入（不受 100 股整手限制，避免整手取整造成的现金拖累压低基准），按同一 `CostModel` 扣一次买入成本，持有到期末按收盘价估值（不卖出故不计印花税）；成本全关时退化为纯价格曲线
 - 输出结构：
 
 ```json
 {
-  "metrics": {},
+  "meta": {"symbol": "", "strategy": "", "mode": "", "start": "", "end": "", "bars": 0,
+           "initial_cash": 0, "adjust": "", "costs": "", "cutoff_field": "", "warnings": []},
+  "metrics": {"total_return": 0, "annual_return": 0, "max_drawdown": 0, "sharpe": 0,
+              "win_rate": 0, "trade_count": 0, "final_equity": 0,
+              "benchmark_return": 0, "excess_return": 0},
   "equity_curve": [{"date": "", "equity": 0, "benchmark": 0}],
-  "trades": [{"entry_date": "", "exit_date": "", "pnl": 0, "reason": ""}],
-  "pit_comparison": {"pit_metrics": {}, "non_pit_metrics": {}, "delta": {}}
+  "trades": [{"entry_date": "", "exit_date": "", "pnl": 0, "reason": "",
+              "entry_reason": "", "return_pct": 0, "hold_bars": 0, "qty": 0}],
+  "open_position": null,
+  "pit_comparison": {
+    "pit_metrics": {}, "non_pit_metrics": {},
+    "delta": {"final_equity_abs": 0, "final_equity_pct": 0, "total_return_pp": 0,
+              "annual_return_pp": 0, "max_drawdown_pp": 0, "sharpe_abs": 0,
+              "win_rate_pp": 0, "trade_count": 0},
+    "entry_dates": {"pit": [], "non_pit": []}
+  }
 }
 ```
 
-**验收**：对比报告能量化虚高幅度；指标与手工计算样例一致（pytest 快照）。
+- `trades.reason` 是**出场**原因（入场原因另列 `entry_reason`）
+- `pit_comparison` 为 `null` 表示本次未做对比：未请求，或该策略不消费事件（`ma_cross` 不读事件语料，两模式必然同结果，不做无意义的二次回测）。`delta` 的核心量化值是 `final_equity_pct`（期末权益虚高比例，分母恒为正，不会除零）；`entry_dates` 给出两模式入场日序列，是差异的最直接证据
+- `open_position` 非空时给出期末持仓的浮动盈亏（`unrealized_pnl` / `unrealized_return`）。它不进 `trades`，故不影响胜率——报告必须单列，否则「胜率」会失真
+- 样本量提示：`bars < 120` 时在 `meta.warnings` 标注。本期事件窗口仅约 54 个交易日，年化与夏普按 252 折算会放大噪声约 √(252/54)≈2.2 倍，报告与 UI 需如实标注
+
+**验收**：对比报告能量化虚高幅度；指标与手工计算样例一致（pytest 硬编码期望值，不引第三方快照库）。
 
 ## 6. T3 Agent 对话
 
@@ -132,4 +151,5 @@ class Strategy(Protocol):
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
 | 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
 | 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |
+| 2026-10-05 | v0.5 | T5 口径确认：基准改**份额化买入 + 扣一次成本**（整手取整会造成现金拖累、系统性压低基准）；`backtest/` 增设 `report.py`（metrics.py 保持纯函数）；明确指标口径（252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓）、`reason` 为出场原因、`pit_comparison` 可为 `null`、`delta` 以 `final_equity_pct` 为核心量化值；补 `meta` 与 `open_position` 两个可读性字段；`bars < 120` 时提示样本量 |
 | 2026-10-05 | v0.4 | T4 落地澄清：PIT 口径定为**收盘时刻级**（当天 15:00）；`backtest/` 增设 `types.py`（`BarContext` 独立成层避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列，护城河一眼可见）；撮合加 A 股实盘规则（100 股整手 + 佣金最低 5 元），费用与滑点拆成两个独立开关；`event_driven` 默认 `score >= 50`、持有 5 日；明确 **PIT 只作用于事件语料**，bars 不做逐 bar 设卡（`available_at` 为整表快照） |
