@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.2 ｜ 2026-10-05 ｜ 状态：已通过
+> 版本 v0.3 ｜ 2026-10-05 ｜ 状态：已通过
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
 
@@ -42,11 +42,17 @@ QuantSage/
 
 ## 3. T2 样例数据
 
-- 标的：贵州茅台、宁德时代、招商银行（代码格式以数据源为准）；日线 Parquet 下载至 `data/bars/`
-- 事件语料：小批量拉取至 `data/events/`，保留字段：`event_id` / `title` / `summary` / `event_time` / `available_at` / `direction` / `confidence` / `industries` / `stocks` / `factor_scores` / `source_verified`
+- 标的：贵州茅台 `600519`、宁德时代 `300750`、招商银行 `600036`（symbol 格式以落盘实测为准）
+- 日线：`cn-daily` 年度分片（year=2025/2026 × adjust=raw/qfq，共 4 片）下载后本地过滤 3 标的至 `data/bars/{symbol}.{adjust}.parquet`，保留分片全字段（含 `available_at`、`adj_factor`）
+- 事件语料：经 MCP `get_event_timeline` 按标的拉取至 `data/events/{symbol}.parquet`；在线 PIT 窗口上限约 3 个月，本期取 2026-07-05 → 2026-09-30
+  - 保留字段：`symbol` / `event_id` / `event_type` / `title` / `summary` / `event_time` / `available_at` / `observed_at` / `direction` / `direction_norm` / `confidence` / `importance_score` / `factor_value` / `factor_scores` / `industries` / `stocks` / `source` / `original_source` / `content_hash` / `quality_status` / `source_time_quality`
+  - `direction` 原值中英混用，派生 `direction_norm` 归一到 `bullish` / `bearish` / `neutral`；`高管人事` 这类非情绪标签归 NULL（无方向语义），不臆造情感极性
+  - `industries` / `stocks` 落原生嵌套类型，`factor_scores` 键集随事件类型变化故存 JSON 文本
+  - 溯源标注用 `source` + `original_source` + `content_hash` + `quality_status`；数据源无 `source_verified` 字段
+- 原始分片留档 `data/raw/`；下载清单（manifest 版本 / 时间 / sha256 / 行数 / 区间）落 `data/_meta/*.json`
 - DuckDB 查询层：对 `data/bars/*.parquet` 与 `data/events/*.parquet` 建只读视图
 
-**验收**：SQL 可查任意标的日线；事件 `available_at` 无空值；单标的 1 年日线查询 < 1s。
+**验收**：SQL 可查任意标的日线；事件 `available_at` 无空值且 `available_at >= event_time`；单标的 1 年日线查询 < 1s。
 
 ## 4. T4 最小回测引擎
 
@@ -62,7 +68,7 @@ class Strategy(Protocol):
 
 - 内置策略 ×2：
   - `ma_cross` 双均线：MA5/MA20 金叉全仓买入、死叉全仓卖出
-  - `event_driven` 事件驱动：利多事件（`direction` + `factor_scores.score` 阈值）触发买入，持有 N 天卖出。信号过滤两种模式——PIT 模式按 `available_at <= 当日` 过滤，非 PIT 模式按 `event_time` 过滤（模拟穿越未来）
+  - `event_driven` 事件驱动：利多事件（`direction_norm` + `factor_scores.score` 阈值）触发买入，持有 N 天卖出。信号过滤两种模式——PIT 模式按 `available_at <= 当日` 过滤，非 PIT 模式按 `event_time` 过滤（模拟穿越未来）
 
 **验收**：两策略均可跑通；手续费/滑点开关对结果有可见影响；PIT 与非 PIT 结果存在差异。
 
@@ -124,3 +130,4 @@ class Strategy(Protocol):
 |---|---|---|
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
 | 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
+| 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |

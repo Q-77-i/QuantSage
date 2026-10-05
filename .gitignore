@@ -33,7 +33,8 @@ next-env.d.ts
 .tools/
 
 # 数据与运行产物（本地下载的行情/语料，量大不入库）
-data/
+# 根目录锚定：不加前导斜杠会连 backend/app/data/ 源码目录一起忽略
+/data/
 logs/
 *.log
 tmp/

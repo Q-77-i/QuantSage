@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     xiaoshi_mcp_command: str = ""
     xiaoshi_cli_command: str = ""
 
+    # ── 样例数据（T2 落盘目录，DuckDB 查询层读它）──
+    data_dir: Path = REPO_ROOT / "data"
+
     # ── 模型（T3 使用）──
     deepseek_api_key: SecretStr = SecretStr("")
 

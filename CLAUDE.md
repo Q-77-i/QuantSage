@@ -43,7 +43,7 @@
 
 - PIT 语义：`event_time` 事发 / `available_at` 平台首次可用 / `observed_at` 观察
 - 对话查询走 MCP；批量历史/文件校验/因子验证/回测走 `xiaoshi-data` CLI
-- 在线事件接口单次上限 92 天；`source_verified` 做进 UI；进入决策的数据必须带来源标注
+- 在线事件接口单次上限 92 天、历史窗口约 3 个月；来源标注（`source` / `original_source` / `content_hash`）做进 UI；进入决策的数据必须带来源标注
 
 ## 五、安全红线
 
@@ -67,7 +67,7 @@
 - `docs/private/` 可读，但不可提交（.gitignore 已排除）
 - Bash 命令描述双语：「中文一句 — English 一句」，便于快速看懂命令用途
 - 每完成一个功能 ID（Tn/Mn/En），在聊天框输出该功能会话总结（做了什么/验收结果/新增记录，精炼不赘述），供用户更新全程跟进；总结不写进仓库文件
-- 每个功能 ID 验收通过后提交一次，commit message 带功能 ID（如 `feat(T1): 地基`）；功能会话收尾更新 `ROADMAP.md` 状态；里程碑达成更新 `CHANGELOG.md` 并打 git tag（`m-p1`、`m-p2`…）
+- 每个功能 ID 验收通过后提交一次，commit message 带功能 ID（如 `feat(T1): 地基`）；**提交与推送前先输出会话总结，再询问用户是否提交、是否推送，获同意后才执行**；功能会话收尾更新 `ROADMAP.md` 状态；里程碑达成更新 `CHANGELOG.md` 并打 git tag（`m-p1`、`m-p2`…）
 - SPEC 需要修改时：先改 SPEC 获用户确认，再改代码（防文档与代码漂移）
 - 遇到报错先查「踩坑记录」，解决后补记新坑
 - 顺序：规划（已定稿）→ 本文 → PRD（已通过）→ SPEC（P1 已通过，逐阶段滚动）→ demo → 落地
