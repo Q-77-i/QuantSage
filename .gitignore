@@ -29,6 +29,9 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
+# 本地工具链（小石 CLI/MCP 独立安装，量大不入库）
+.tools/
+
 # 数据与运行产物（本地下载的行情/语料，量大不入库）
 data/
 logs/

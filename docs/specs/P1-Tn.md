@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.1 ｜ 2026-10-04 ｜ 状态：待评审
+> 版本 v0.2 ｜ 2026-10-05 ｜ 状态：已通过
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
 
@@ -33,7 +33,8 @@ QuantSage/
 ## 2. T1 地基
 
 - Python 3.12 + uv。依赖：fastapi / uvicorn[standard] / pydantic / pydantic-settings / langgraph / langgraph-checkpoint-postgres / langchain / langchain-core / langchain-mcp-adapters / litellm / duckdb / pyarrow / langfuse / pytest / pytest-asyncio
-- Docker Compose 服务：postgres:18 / redis / qdrant / langfuse（自托管，共用 postgres 建独立库 `langfuse`）
+- Docker Compose 服务：postgres:18 / redis / qdrant（默认启动；postgres 宿主端口 5433，本机 5432 已被占用）
+- Langfuse 自托管全套（web/worker + clickhouse + minio + 独立 redis）挂 `profiles: [observability]`，默认不启动，T3 接入 trace 时开启；v4 起必须 ClickHouse + 对象存储，无法只在 postgres 上跑
 - 小石 CLI 装入独立 venv（不动系统环境）；MCP 以本地 stdio 接入；密钥只读 `.env`
 - LangGraph checkpointer 使用 Postgres
 
@@ -122,3 +123,4 @@ class Strategy(Protocol):
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
+| 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |

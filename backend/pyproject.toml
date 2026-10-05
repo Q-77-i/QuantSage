@@ -1,0 +1,49 @@
+[project]
+name = "quantsage-backend"
+version = "0.1.0"
+description = "QuantSage 后端：FastAPI + LangGraph，前视偏差为零的 AI 投研 Agent"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # ── 安全红线：checkpoint 与编排链显式 pin，防 `uv lock --upgrade` 静默漂移（CLAUDE.md §五）──
+    "langgraph==1.2.12",
+    "langgraph-checkpoint==4.2.0",
+    "langgraph-checkpoint-postgres==3.1.2",
+    "langchain==1.4.3",
+    "langchain-core==1.6.6",
+    "langchain-mcp-adapters==0.3.2",
+    # 适配器要求 mcp>=1.24,<2；上游已到 2.x，必须钉住
+    "mcp==1.30.0",
+    # checkpoint-postgres 只声明裸 psycopg，binary extra 需自行添加（否则走源码编译）
+    "psycopg[binary,pool]==3.3.6",
+    "psycopg-pool==3.3.3",
+    # ── 运行期 ──
+    "fastapi~=0.142.2",
+    "uvicorn[standard]~=0.54.0",
+    "pydantic~=2.13.5",
+    "pydantic-settings~=2.15.0",
+    "litellm~=1.104.0",
+    "langfuse~=4.16.0",
+    "duckdb~=1.5.6",
+    "pyarrow~=25.0.1",
+    "httpx~=0.28",
+]
+
+[dependency-groups]
+dev = [
+    "pytest~=9.1.1",
+    "pytest-asyncio~=1.4.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# 默认只跑离线单测；`pytest -m integration` 触发需要容器/网络/密钥的用例
+addopts = '-m "not integration" --strict-markers'
+markers = [
+    "integration: 需要容器 / 真实网络 / 真实密钥，默认不跑",
+]
