@@ -109,23 +109,27 @@ function Backdrop() {
 
 function BrandColumn() {
   return (
-    <div className="flex flex-col gap-9 self-center lg:gap-14">
-      <p className="font-heading text-lg font-semibold tracking-tight">
-        <span aria-hidden className="mr-2 inline-block h-4 w-[3px] translate-y-0.5 bg-primary" />
-        知策 <span className="text-muted-foreground">QuantSage</span>
+    <div className="flex flex-col gap-10 self-center lg:gap-14">
+      <p className="font-heading text-xl font-semibold tracking-tight lg:text-2xl">
+        <span aria-hidden className="mr-2.5 inline-block h-5 w-[3px] translate-y-0.5 bg-primary" />
+        知策{" "}
+        <span className="font-sans text-[0.8em] tracking-[0.08em] text-muted-foreground">
+          QuantSage
+        </span>
       </p>
 
       <div>
-        <h1 className="font-heading text-[1.9rem] leading-[1.18] font-bold tracking-tight text-balance lg:text-[3rem]">
+        <h1 className="font-heading text-[1.95rem] leading-[1.16] font-bold tracking-tight text-balance lg:text-[2.5rem] xl:text-[3rem]">
           前视偏差为零的
           <br />
           AI 投研 Agent
         </h1>
 
-        <ul className="mt-8 hidden gap-3 lg:grid">
+        {/* 行距 1.15rem：三条能力点是并列论据，挤在一起会读成一坨 */}
+        <ul className="mt-10 hidden gap-[1.15rem] lg:grid">
           {CORE_POINTS.map((point) => (
-            <li key={point} className="flex items-center gap-3 text-sm text-ink-2">
-              <span aria-hidden className="h-px w-5 bg-primary/60" />
+            <li key={point} className="flex items-center gap-3.5 text-[0.9375rem] text-ink-2">
+              <span aria-hidden className="h-px w-6 bg-primary/60" />
               {point}
             </li>
           ))}

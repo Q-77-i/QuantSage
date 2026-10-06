@@ -112,7 +112,9 @@ export function EquityChart({
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart) return;
+    // isDisposed 守卫：dev 的 StrictMode 会「挂载→卸载→再挂载」，卸载时实例已 dispose，
+    // 而 effect 的执行顺序可能让这里拿到那个旧实例——不挡会在控制台留「has been disposed」
+    if (!chart || chart.isDisposed()) return;
     // replaceMerge：重跑之后序列长度会变，默认的 merge 会残留旧点、把 y 轴范围撑大。
     // 颜色一律写在 option 字面值里（不用 init 的注册主题——那个只在 init 时生效一次），
     // 于是切主题就是再补一次 option，实例状态全部保留。
@@ -191,7 +193,8 @@ export function EquityChart({
     host.addEventListener("wheel", onWheel, { passive: false, capture: true });
     return () => {
       host.removeEventListener("wheel", onWheel, { capture: true });
-      chart.off("datazoom", onDataZoom);
+      // 同上：清理顺序可能晚于 dispose，对已销毁实例调 off 会打 warning
+      if (!chart.isDisposed()) chart.off("datazoom", onDataZoom);
     };
   }, [points.length]);
 
@@ -203,7 +206,16 @@ function buildOption(points: EquityPoint[], t: ChartTokens): EChartsCoreOption {
     animation: false,
     backgroundColor: "transparent",
     // bottom 给 slider 让位；ChartFrame 的高度是固定的，故从绘图区里扣
-    grid: { left: 4, right: 14, top: 30, bottom: 30, containLabel: true },
+    // ECharts 6 起 `containLabel` 废弃（只留 LegacyGridContainLabel 垫片，用了会打 warning）。
+    // 官方等价写法见 echarts/types 的 `GridOption`：containLabel ≡ 下面这两项
+    grid: {
+      left: 4,
+      right: 14,
+      top: 30,
+      bottom: 30,
+      outerBoundsMode: "same",
+      outerBoundsContain: "axisLabel",
+    },
     dataZoom: [
       {
         type: "inside",
