@@ -9,6 +9,14 @@ export type Strategy = "ma_cross" | "event_driven";
 export type PitMode = "pit" | "non_pit" | "both";
 export type Adjust = "qfq" | "raw";
 
+// ── GET /api/v1/market/freshness（M1）──────────────────────────────────────
+
+export interface DataFreshness {
+  /** 本地行情最后一根 bar 的交易日；数据未落盘时为 null */
+  latest_trade_date: string | null;
+  latest_event_available_at: string | null;
+}
+
 // ── GET /api/v1/auth/me（M1）────────────────────────────────────────────────
 
 export interface User {

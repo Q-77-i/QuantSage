@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -10,17 +10,27 @@ const MAX_LENGTH = 4000;
 export function Composer({
   disabled,
   isStreaming,
+  preset,
   onSend,
   onStop,
 }: {
   disabled: boolean;
   isStreaming: boolean;
+  /** 空态示例卡点选送进来的问题；每次点选都是新对象，同一个问题点两次也会重新灌入 */
+  preset: { text: string; nonce: number } | null;
   onSend: (text: string) => void;
   onStop: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const areaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const justComposedRef = useRef(false);
+
+  useEffect(() => {
+    if (!preset) return;
+    setDraft(preset.text);
+    areaRef.current?.focus();
+  }, [preset]);
 
   function submit() {
     const text = draft.trim();
@@ -54,6 +64,7 @@ export function Composer({
           输入问题
         </label>
         <textarea
+          ref={areaRef}
           id="composer"
           rows={2}
           maxLength={MAX_LENGTH}

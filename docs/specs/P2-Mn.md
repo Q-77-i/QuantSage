@@ -88,6 +88,8 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 - 受保护页迁入路由组 `app/(app)/`（对话页 / 回测页），`AuthGate` 与 `AppHeader` 上提到组布局——**守卫只有一个落点**
 - `AuthProvider`：挂载时 `GET /api/v1/auth/me` 探测登录态（httpOnly cookie 在 JS 侧读不到，这是唯一可行路径）；未定态渲染骨架，避免先闪内容再跳登录；未登录重定向登录页
 - `app/login`、`app/register`：表单 + `next` 回跳（只认站内路径，挡开放重定向）；注册成功即登录态；登录页带「记住我」（默认勾选）
+- 对话页空态做**引导**：三条示例问题按能力分类（行情 / 对比 / 事件），文案照本地数据能力写（示例点下去答不出来比没有示例更伤）；点选只把问题灌进输入框并聚焦，发不发由用户决定
+- 页头显示**数据时点**（「数据截至 X」）：值来自 `GET /api/v1/market/freshness`（查 DuckDB 的 `max(trade_date)` 与 `max(available_at)`），**不写死**——M2 日增量 ETL 接上后随每次拉取自动前移；取不到（数据未落盘 503）时不显示这枚标签，不编日期
 - 两页共用 `AuthShell`：整屏连续画布（网格 / 光晕 / 双曲线装饰铺满，CSS+SVG 无图片素材）+ 浮起的半透明表单卡，主题切换器放登录页且与登录后同源
 - `lib/api.ts` 与 `lib/sse.ts` 的**全部**请求带 `credentials: "include"`；后端 CORS 开 `allow_credentials=True`（`allow_origins` 已是显式列表，符合凭据模式要求）
 - 页头显示用户邮箱与「退出」

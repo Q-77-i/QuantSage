@@ -278,3 +278,28 @@ def test_cors_allows_frontend_origin_and_exposes_thread_header() -> None:
         },
     )
     assert "DELETE" in delete_preflight.headers["access-control-allow-methods"]
+
+
+# ── M1：数据时点（页头「数据截至 X」的数据源）────────────────
+
+
+def test_freshness_returns_latest_dates(data_dir: Path) -> None:
+    """必须来自真实 Parquet（离线用例也写真实文件，不 mock 查询层）。
+
+    事件夹具没给 `available_at`，落盘时按 `event_time` 兜底，所以两者末点同源。
+    """
+    response = client.get("/api/v1/market/freshness")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest_trade_date"] == str(trading_days(START, BAR_COUNT)[-1])
+    assert body["latest_event_available_at"].startswith("2026-08-05")
+
+
+def test_freshness_returns_503_without_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """数据没落盘时 503，前端据此不显示标签——不能编一个日期出来。"""
+    monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: tmp_path / "nope")
+
+    assert client.get("/api/v1/market/freshness").status_code == 503

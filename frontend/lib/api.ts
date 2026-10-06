@@ -14,6 +14,7 @@ import type {
   BacktestReport,
   BacktestRequest,
   BarsResponse,
+  DataFreshness,
   EventsResponse,
   ThreadMessagesResponse,
   ThreadSummary,
@@ -99,6 +100,9 @@ export const api = {
   logout: () => request<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
 
   // ── 数据 ──────────────────────────────────────────────────────────────
+  /** 页头「数据截至 X」的数据源。查出来的，不是写死的 */
+  freshness: () => request<DataFreshness>("/api/v1/market/freshness"),
+
   bars: (symbol: string, params: { start?: string; end?: string; adjust?: string } = {}) =>
     request<BarsResponse>(`/api/v1/market/${symbol}/bars${query(params)}`),
 

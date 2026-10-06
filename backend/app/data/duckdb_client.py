@@ -83,6 +83,27 @@ def bars(
         con.close()
 
 
+def latest_dates(data_dir: Path | None = None) -> dict[str, object]:
+    """样例数据的最新时点：行情最后一根 bar 的交易日、事件最晚 `available_at`。
+
+    前端页头拿它显示「数据截至 X」——**必须是查出来的**，不能写死：M2 的日增量 ETL
+    接上后这个值会随每次拉取自动前移，界面不用改一个字。
+    """
+    con = connect(data_dir)
+    try:
+        bars = _fetch(con, f"SELECT max(trade_date) AS day FROM {BARS_VIEW}", [])
+        events = _fetch(con, f"SELECT max(available_at) AS ts FROM {EVENTS_VIEW}", [])
+    finally:
+        con.close()
+
+    day = bars[0]["day"] if bars else None
+    stamp = events[0]["ts"] if events else None
+    return {
+        "latest_trade_date": day.isoformat() if day else None,
+        "latest_event_available_at": stamp.isoformat() if stamp else None,
+    }
+
+
 def events(
     symbol: str | None = None,
     *,

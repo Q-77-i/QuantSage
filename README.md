@@ -167,6 +167,7 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 | GET | `/api/v1/chat/threads` 🔒 | 会话列表（仅本人，按最近活动倒序） |
 | GET · DELETE | `/api/v1/chat/threads/{id}` · `.../messages` 🔒 | 会话历史（含工具步骤）与删除 |
 | POST | `/api/v1/backtest` | 跑回测，返回指标 / 净值 / 交易 / PIT 对比（落库属 M1c） |
+| GET | `/api/v1/market/freshness` | 本地数据最新时点（页头「数据截至 X」的数据源） |
 | GET | `/api/v1/market/{symbol}/bars` | 单标的日线（`adjust=qfq\|raw`） |
 | GET | `/api/v1/events` | 事件语料（`event_time` 与 `available_at` 并列，含来源三元组） |
 

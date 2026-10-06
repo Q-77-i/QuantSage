@@ -39,6 +39,16 @@ def _bar_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.get("/freshness")
+async def get_freshness() -> dict[str, object]:
+    """本地数据的最新时点，供页头显示「数据截至 X」。
+
+    路径不与 `/{symbol}/bars` 冲突（那个必须带 `/bars` 段）。数据没落盘时由
+    `DataNotReady` → 503，前端据此不显示这枚标签，而不是瞎写一个日期。
+    """
+    return await asyncio.to_thread(dc.latest_dates)
+
+
 @router.get("/{symbol}/bars")
 async def get_bars(
     symbol: Annotated[str, Path(pattern=SYMBOL_PATTERN)],

@@ -17,6 +17,7 @@
 
 - **登录 / 注册页改版**：整屏连续画布（网格／光晕／双净值曲线装饰铺满全屏，CSS+SVG，零图片素材）+ 浮起的半透明表单卡，左右不再割裂；左栏为字标、定位标语、三条能力点与一句钩子（Point-in-time：不让未来的信息，参与过去的决策）；主题切换移到登录页，深浅与登录后同源（`ThemeProvider` 共用）；登录页外壳提到 Suspense 边界之外，生产构建下品牌面直接 SSR
 - **标题字体由宋体改为无衬线**（`--font-heading`：PingFang SC 栈 + 字重），全站标题层级改由字重与字距拉开——宋体在 macOS 上只有 Regular/Bold 两档，正文尺寸下发虚观感旧
+- **对话页空态引导**：三条示例问题按能力分类（行情 / 对比 / 事件），点选灌进输入框并聚焦（不直接发送）；页头显示「数据截至 X」，值由 `GET /api/v1/market/freshness` 查询得出（M2 的日增量 ETL 接上后自动前移）
 - **「记住我」**：登录页默认勾选，勾选=持久 cookie（7 天），取消=会话 cookie（关浏览器失效）；只改 cookie 存活方式，不动 JWT 有效期、不建服务端会话表
 - `POST /api/v1/chat` 与三个会话端点要求登录（会话列表口径改为自有表 `last_active_at`）；`/api/v1/market`、`/api/v1/events` 保持公开（非用户资产）；`/api/v1/backtest` 待 M1c 落库时一并纳入鉴权
 - CORS 开 `allow_credentials=True`（凭据模式要求显式 origin 列表，已是）

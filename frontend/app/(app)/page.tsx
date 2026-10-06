@@ -5,6 +5,7 @@ import { MessageList } from "@/components/chat/message-list";
 import { ThreadList } from "@/components/chat/thread-list";
 import { useChat, useThreads } from "@/components/chat/use-chat";
 import { Button } from "@/components/ui/button";
+import { useState } from "react";
 
 /**
  * 对话页（T6b）。
@@ -15,6 +16,9 @@ import { Button } from "@/components/ui/button";
 export default function ChatPage() {
   const { threads, error: threadsError, refresh } = useThreads();
   const chat = useChat(refresh);
+
+  // nonce：同一个示例点两次也要重新灌入（只比字符串的话第二次不触发 effect）
+  const [preset, setPreset] = useState<{ text: string; nonce: number } | null>(null);
 
   return (
     <>
@@ -54,6 +58,7 @@ export default function ChatPage() {
             messages={chat.messages}
             loading={chat.loading}
             error={chat.loadError}
+            onPick={(text) => setPreset({ text, nonce: Date.now() })}
           />
 
           {chat.transportError && (
@@ -65,6 +70,7 @@ export default function ChatPage() {
           <Composer
             disabled={chat.isStreaming}
             isStreaming={chat.isStreaming}
+            preset={preset}
             onSend={chat.send}
             onStop={chat.stop}
           />
