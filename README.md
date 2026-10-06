@@ -52,7 +52,7 @@ flowchart LR
 
 - **控制流交给 LangGraph，合规判断交给纯 Python**——风控闸门与校验不做成 LLM 可决定的节点
 - **「读」并行、「写」单点**：P1 为单 Agent ReAct 路径；多 Agent 深路径（并行取证 → Bull⇄Bear 辩论 ≤3 轮 → 单点综合 → 代码化风控 → HITL）排在 P2-M8
-- 行情与事件为 Parquet 分片，DuckDB 只读视图直读，**零 ETL**
+- 行情与事件都是 Parquet 分片，DuckDB 只读视图直读：行情**零 ETL**（年度整片下载后本地过滤）；事件是**薄 ETL**（M2b：按日归档分片 → 合并成日分区 + 归一化标的数组），落盘即冻结
 
 ---
 
@@ -79,7 +79,7 @@ flowchart LR
 | 功能 | 内容 |
 |---|---|
 | 基础设施 | Docker Compose：PostgreSQL 18（宿主 5433）/ Redis / Qdrant；Langfuse v4 全套挂 `observability` profile 默认不启 |
-| 数据层 | **全市场 A 股日线**：`cn-daily` 21 片 = 2020–2026 × raw/qfq/hfq，约 5500 只 / 2397 万行，DuckDB 直读 Parquet 零 ETL（单标的查询 < 0.3s、单日全市场聚合 < 0.1s）；PIT 事件语料 355 条（示例标的，窗口 2026-07-05 → 2026-09-30），落盘即冻结，带 `source` / `original_source` / `content_hash` 溯源三元组 |
+| 数据层 | **全市场 A 股日线**：`cn-daily` 21 片 = 2020–2026 × raw/qfq/hfq，约 5500 只 / 2397 万行，DuckDB 直读 Parquet 零 ETL（单标的查询 < 0.3s、单日全市场聚合 < 0.1s）；**PIT 事件语料同为全市场**（M2b）：按日落盘 `data/events/cn-events_{日期}.parquet`，一条事件一行、标的是数组，带 `source` / `original_source` / `content_hash` 溯源三元组；交易日历冻结为仓库内文件（`app/data/trading_calendar.json`），运行期零第三方依赖 |
 | Agent 对话 | LangGraph 单 Agent，经 LiteLLM 网关调 `deepseek-flash`；小石 11 个工具收敛为 4 个只读白名单（动作型工具不进 LLM 工具集）；SSE 五类事件流式；会话列表 / 历史回看 / 删除；Langfuse 全链路 trace |
 | 回测引擎 | 自研最小事件驱动引擎；信号当根收盘生成、次根开盘成交；A 股撮合（100 股整手、佣金万 2.5 最低 5 元、卖出印花税 0.05%、滑点 5bps），费用与滑点独立开关；策略 `ma_cross` / `event_driven` |
 | 分析输出 | 总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数 + 份额化买入持有基准；`pit_comparison` 量化两口径差异；样本量不足时报告与 UI 双重提示 |
@@ -177,6 +177,8 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 | GET | `/api/v1/market/freshness` | 本地数据最新时点（页头「数据截至 X」的数据源） |
 | GET | `/api/v1/market/{symbol}/bars` | 单标的日线（`adjust=qfq\|raw`） |
 | GET | `/api/v1/events` | 事件语料（`event_time` 与 `available_at` 并列，含来源三元组） |
+| GET | `/api/v1/etl/status` 🔒 | 语料覆盖 / 缺口 / 最近一次运行 / 调度器状态 |
+| POST | `/api/v1/etl/run` 🔒 | 手动触发一次日增量（后台执行，已在跑返回 409） |
 
 交互式文档：后端起来后访问 `/docs`。
 
@@ -213,7 +215,17 @@ QuantSage/
 
 ## 数据来源与复现边界
 
-行情与事件来自**小石**数据平台（需授权密钥），通过本地 stdio MCP（在线查询）与 `xiaoshi-data` CLI（批量下载与校验）两条通道接入。数据落盘后即冻结，**不入 Git**（`/data/` 与 `.tools/` 均被忽略）。
+行情与事件来自**小石**数据平台（需授权密钥），通过本地 stdio MCP（对话内实时查询）与 `xiaoshi-data` CLI（归档批量下载与校验）两条通道接入。**事件语料走归档**：MCP 单次返回硬顶 500 行且不可翻页，装不下「全市场按日」（实测见 [docs/specs/P2-Mn.md](docs/specs/P2-Mn.md) §3 M2b）。数据落盘后即冻结，**不入 Git**（`/data/` 与 `.tools/` 均被忽略）。
+
+接入命令：
+
+```bash
+cd backend
+uv run python scripts/download_bars.py                 # 行情：21 片全市场日线（年度整片）
+uv run python scripts/download_events.py --backfill    # 事件：回填 92 天（≈ 归档保留期）
+uv run python scripts/download_events.py --status      # 覆盖 / 缺口 / 最近一次运行
+uv run python scripts/audit_calendar.py                # 交易日历 × 行情全期双向对账
+```
 
 因此教程里「照文档逐字复跑即对上数字」的口径有一处前提：**同一份数据快照**。两篇教程头部都写死了快照指纹（Parquet 的 sha256 前 12 位）与事件窗口——换一份快照，数字会变，结构与读法不变。
 
@@ -225,12 +237,13 @@ QuantSage/
 
 - **M1 已收口（M1a / M1b / M1c）**：鉴权与归属校验、自选股、个人空间页、「我的回测」全部落地；`POST /api/v1/backtest` 自 M1c 起**落库并需登录**，响应为信封 `{run_id, report}`（报告结构本身未变，见 [docs/specs/P1-Tn.md](docs/specs/P1-Tn.md) §7 的 P2-M1c 加注）
 - **自选股的价格取自本地行情快照**：取不到价的标的一律显示「—」，不编数；加入时价是当时最近可得**有价**交易日的收盘价，之后不随行情前移
-- **行情是 2020 年起的七年全市场日线，事件语料只覆盖少数示例标的**——两者的覆盖面差异是有意的（事件层要 P2-M2b 才改全市场）。回测页默认策略是事件驱动，选非示例标的会得到「没有事件数据」的提示，改用双均线即可
+- **事件语料窗口由数据源决定，回测要么落在窗口内、要么换策略**：新闻源只保留 3 个月（滚动），更早的事件永久不可得，所以本地语料的覆盖区间是「首次回填日 → 最新可用日」——**起点固化、终点随日增量前移**。事件驱动策略对显式早于覆盖起点的请求直接报 400 并给出出路，报告 `meta.event_coverage` 与回测页都显示这次看的是哪一段语料
 - **无价 bar 不进定价路径**：数据源用「整行价量为空」表示某天没观测到成交，`bars()` 只返回四价齐全的行——**无价即无价，不是零价**
 - **Redis 与 Qdrant 在 P1 未被后端调用**，只是 compose 里就位的服务（RAG 属 P2-M3）
 - **多 Agent 深路径尚未实现**，P1 是单 Agent ReAct
-- **回测引擎为最小实现**：无组合、无模拟盘、无常驻调度；`bars < 120` 时年化与夏普会被放大（UI 常驻提示）
-- **事件语料在线窗口约 3 个月**，归档入口同样受限；长历史只能靠日增量积累（P2-M2 的日增量 ETL 正是为此）
+- **回测引擎为最小实现**：无组合、无模拟盘；`bars < 120` 时年化与夏普会被放大（UI 常驻提示）
+- **事件语料的日增量默认不跑**（`ETL_ENABLED=false`）：定时任务要显式打开，或走 `POST /api/v1/etl/run` 手动触发。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**——这也是启动时自动补缺口的原因
+- **行情不随日增量更新**：`cn-daily` 是年度整片，日更需重下整片，本轮不做；行情止于导入当天，事件语料则会随 ETL 前移
 - **浏览器走查为人工核对**，前端只对纯函数做单测，未引组件测试框架
 
 ---

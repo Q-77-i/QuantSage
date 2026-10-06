@@ -32,10 +32,12 @@ dependencies = [
     # 不引 passlib：对 bcrypt 4.x 有 __about__ 告警且维护停滞；不引 python-jose（PyJWT 更轻）
     "bcrypt==5.0.0",
     "pyjwt==2.15.1",
+    "apscheduler>=3.11.3",
 ]
 
 [dependency-groups]
 dev = [
+    "exchange-calendars>=4.13.2",
     "pytest~=9.1.1",
     "pytest-asyncio~=1.4.0",
 ]

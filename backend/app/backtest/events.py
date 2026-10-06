@@ -60,7 +60,7 @@ def event_from_row(row: Mapping[str, object]) -> EventView:
     """从 `duckdb_client.events()` 的行构造 `EventView`。"""
     return EventView(
         event_id=str(row.get("event_id") or ""),
-        symbol=str(row.get("symbol") or ""),
+        symbols=tuple(str(item) for item in (row.get("symbols") or ())),
         title=str(row.get("title") or ""),
         event_time=row["event_time"],  # type: ignore[arg-type]
         available_at=row["available_at"],  # type: ignore[arg-type]

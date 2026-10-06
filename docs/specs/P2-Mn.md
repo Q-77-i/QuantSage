@@ -22,16 +22,20 @@
 
 ```
 backend/app/
-├── api/                    # + auth.py / watchlist.py / paper.py / dashboard.py / calendar.py
+├── api/                    # + auth.py / watchlist.py / etl.py / paper.py / dashboard.py / calendar.py
 ├── agent/                  # 深路径 fan-out 角色 A 股化（PIT 基本面 / 政策面）
 ├── backtest/               # + a_share_rules.py / overfit.py / factor_analysis.py
-├── data/                   # + etl.py（日增量）/ trading_calendar.py / data_health.py
+├── data/                   # + calendar.py（冻结交易日历）/ trading_calendar.json（冻结文件）/ data_health.py
+├── etl/                    # 事件语料接入（M2b）：archive.py（归档通道）/ store.py（日分区落盘）
+│                           #   runner.py（回填与日增量编排）/ scheduler.py（APScheduler 定时）
 ├── paper/                  # 模拟盘：account.py / broker.py / settlement.py / decisions.py
 ├── memory/                 # 决策记忆：decision_store.py / settle.py / reflection.py
 ├── strategy/               # 策略沙箱 + static_check.py（AST 前视检查，纯函数）
 ├── core/                   # + auth.py（哈希 / JWT / 依赖）/ db.py（自有连接池与幂等建表）
 │                           #   scheduler.py（ETL 与到期结算定时）
-scripts/                    # + run_etl.py / run_health_check.py / run_settlement.py / run_backfill.py
+scripts/                    # + generate_calendar.py（生成冻结日历）/ audit_calendar.py（日历×行情对账）
+│                           #   download_events.py（改薄壳：回填 / 日增量 / 状态）
+│                           #   run_health_check.py / run_settlement.py / run_backfill.py
 frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ space/（个人空间）paper/
 │                           #   dashboard/（研究首页）research/[id]/（研报页）
 │                           #   自选股不单开路由，是 space/ 的一个页签（M1c 定）
@@ -159,16 +163,23 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 
 ### M2b 交易日历 + 日增量 ETL
 
-- **交易日历**（来源已拍板）：用 `exchange_calendars` 的 XSHG 日历**一次性生成并冻结为仓库内数据文件**，运行期不依赖该库；生成脚本与来源 URL 入库以便重生成。落 Postgres + DuckDB 各一份；ETL 定时任务与回测撮合引用同一日历；抽查 1 年与实际交易日一致（国庆/春节等长假边界）
-- 日增量 ETL：进程内 APScheduler 定时 + 手动触发端点；拉取后按 `event_id` + `content_hash` 去重；幂等（同日重跑不产生重复行）；92 天全量回填一次性执行
-- 事件语料改**全市场按日**落盘（一条事件一行，不再按标的切分）：`stocks` 字段须归一化成干净的六位代码数组——实测该数组里 `code` 可为 null、非空时又带 `.SZ/.SH` 后缀，只认 `code` 会漏掉 10/355 条事件；归一化后 355/355 可归属，与 P1 的按标的集合完全一致
+- **交易日历**（来源已拍板）：用 `exchange_calendars` 的 XSHG 日历**一次性生成并冻结为仓库内数据文件**（`backend/app/data/trading_calendar.json`，入库）；生成脚本与来源 URL 一并入库，**只有生成脚本依赖该库，运行期零依赖**。落**冻结文件 + DuckDB 视图**两处（同一份文件的两个读法），ETL 定时任务与回测撮合引用同一模块；**Postgres 表本轮不做**——当前无消费方，等 M5/M7 出现真实读者再加，不为「表」而「表」
+- **日历验证升级为全期对账**：不再只抽查 1 年——拿 21 片全市场行情的 `distinct trade_date`（2020-01-02 → 2026-09-30）与日历**双向**比对（日历有而数据无、数据有而日历无都要报），例外逐条解释；另显式断言国庆/春节长假边界
+- **事件语料通道 = 归档按日整片（CLI）；MCP 退回只服务对话实时查询**。实测依据：MCP 单次硬顶 500 行，`cursor` 参数被 FastMCP 拒收（**结构上不可翻页**），而单日任一主要类型（news / announcement）都已触顶 → MCP 无法作为全市场语料采集通道。归档 `event-timeline` 是 `date=YYYY-MM-DD/event_type=*/data.parquet` 的（日 × 事件类型）整市场分片，逐片自带 `sha256` + `object_key` + `min/max_event_time`；保留期是**滚动**窗口（news 与其他事件 3 个月、公告 24 个月，轴均为 `event_time`，超期请求为 410 硬拒且平台声明不补采）
+- **保留期的两条产品后果**（做成行为，不靠文案打补丁）：① 日增量**不能断**——断了超过保留期，缺口永久不可得；② 本地语料覆盖区间 = `[首次回填日, 最新可用日]`，**起点固化、终点随日增前移**。一切「事件驱动能回测到哪」的判定都从数据里查，**不写死「最近 3 个月」**（那会让人误以为「等三个月就能回测 2020 年」）
+- **事件驱动策略的时间收口**：请求的 `start` 若**显式**早于本地语料覆盖起点 → 拒绝（400）并给可执行出路（把起点改到覆盖起点之后，或改用不消费事件的 `ma_cross`）；`start` 缺省口径不变（仍取语料窗口起点）。报告 `meta` 增 `event_coverage`（语料覆盖起止日）与窗口内事件数，前端在事件表处展示——**任何一次事件驱动回测都自证「我看的是哪一段语料」**，不留静默空转
+- **平台限流是停止信号，不是单日失败**：实测连续申请约 50 次（一天一次会话）会被平台 429，返回 `rate_limited_no_retry` + `Retry-After` ≈ 44 分钟。ETL 收到即**中止整轮**（换下一天接着撞只会把窗口越推越远，也是平台明确要求停下的语义），把 `retry_after_seconds` 与未处理天数写进台账，重跑同命令即续；同时**回填只补缺**——已有本地日分区的日子不再重复申请，「近期是否被平台修订」交给日增量的回落窗口负责
+- 日增量 ETL：进程内 APScheduler 定时 + 手动触发端点（登录必需 + 并发锁）；**拉最近 N 个自然日**（回落窗口吸收迟到与修订，实测 `available_at` 相对 `event_time` 中位滞后 2.2h、p90 达 3.4 天）而非只拉昨天；**归档按自然日发布，不是交易日**（实测中秋 09-25、周末 09-26/27 都有分片，新闻不停市）——采集窗口一律按自然日枚举，日历只用于**分类缺口**（落在交易日上的缺口更严重）与回测撮合；按平台 `dedup_key` 去重（`(event_id, content_hash)` 降为兜底）；幂等（同日重跑逐字节一致）；**92 天全量回填一次性执行**（2026-07-07 → 最新可用日），逐日可续跑
+- **落盘 schema 按 `quant-event-v2` 重定**：P1 的 21 列不够——新增 `dedup_key` / `revision_id` / `record_version` / `revision_time` / `is_corrected` / `correction_count` / `original_url` / `person` / `lineage`。落列前先读一次 `xiaoshi-data schema --dataset event-timeline` 定稿，不靠推测
+- **两条实测数据语义（下游都要知道）**：① **归档是「当前版本快照」**——平台会对既有事件重发修订版（内容一改 `content_hash` 就变；353 条 P1 锚点里 255 条在一天之内被改过），落盘以**拉取当刻的修订**为准，`event_id` 稳定、内容会变，故锚点比对锚 `event_id` 而不是 `content_hash`；② **`event_id` 不是全局唯一键**——它在日分区内唯一（物化时校验），但平台对「按月复发的同题事件」复用 id（实测 84 天里 18 例，如 `news:1818329` 既是 8 月 CPI 也是 9 月 CPI），因此查询层不得拿它当主键去重，前端列表的 React key 必须带上时间
+- 事件语料改**全市场按日**落盘（一条事件一行，不再按标的切分）：`data/events/cn-events_{YYYY-MM-DD}.parquet`（扁平命名，查询层 `*.parquet` glob 语义不变）+ 逐日原始档 `data/raw/events/{date}.jsonl`；`stocks` 归一化出 `symbols VARCHAR[]`（去 `.SZ/.SH` 后缀、`code` 为 null 时回退按 `name` 取六位码、去重排序，`stocks` 原样保留备审计）。P1 数据实测：709 条目标中 94 条 `code` 为 null、10 条带后缀；跨标的重复会**自然收敛**（355 行 → 353 条唯一）——这是回归锚点。**P1 的 `{symbol}.parquet` 必须清掉**（否则同一事件被算两遍，与 M2a 同款静默错误点，用例守着）
 
 ### M2c 数据体检 + 退市股覆盖核实
 
 - **数据质量体检（脚本级）**：缺失值比例、异常步长（单日涨跌超阈值）、`available_at` 空值 / 倒挂（< `event_time`）、重复行检测、无价 bar 计数、跨年边界连续性对账；输出报告 + 非零退出码（可挂定时告警）。完整版（快照/看板/告警推送）留 P3-E3，本处不建看板
 - **退市股覆盖确认**（生存者偏差核实）：对照全市场清单核验已退市标的是否在分片中
 
-**验收**：ETL 连续运行 3 天无重复、无漏拉；全市场日线 DuckDB 秒级查询；注入脏数据时体检脚本报警；交易日历抽查一致。
+**验收**：ETL 连续运行 3 天无重复、无漏拉（**会话内以「按日推演 + 幂等重跑」等价验证，真实三天连跑留 M2c 回填证据**）；全市场日线 DuckDB 秒级查询；注入脏数据时体检脚本报警；**交易日历与全市场行情 `trade_date` 全期双向对账一致**（例外逐条解释）；全市场语料对 P1 三标的的 **353 条 `(event_id, content_hash)` 包含性回归**通过；**事件驱动回测在语料覆盖区间外显式报错，不空转**。
 
 ## 4. M3 RAG 完整化
 
@@ -256,6 +267,7 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 - 归属校验是**双跑**的：越权矩阵在离线（内存实现，快反馈）与集成（真实 SQL 过滤，验真）各跑一遍——过滤逻辑写在 SQL 里，离线实现无法证明真库行为
 - M1c 增量：自选股离线用例注入内存业务库（未登录 401 门 / 重复 409 / 越权 404 / 分组 UPDATE 语义 / 涨幅与 NULL 口径 / 行情层不可用时的降级），**内存替身必须照抄 `UNIQUE(user_id, symbol)` 语义**，否则 409 用例是假的；回测落库用例验信封形状、列表只列本人、越权 404
 - M1c 回归：`POST /api/v1/backtest` 改信封与加鉴权后，P1 既有的 12 个离线回测用例统一挂 `signed_in` 夹具并改读 `body["report"]`；集成侧两个回测用例改为跑 lifespan + 真实注册（裸 `TestClient` 没有 `app.state.db`），账号在 teardown 里清（`users` 级联清 `watchlist` 与 `backtest_runs`）
+- M2b 增量：交易日历纯函数（长假边界 + 与行情 `trade_date` 的全期双向对账脚本）；`symbols` 归一化矩阵（`code` 为 null / 带 `.SZ/.SH` 后缀 / 多标的 / 无标的）；归档分片合并的**幂等**（同日重跑逐字节一致、中途 kill 后重跑与干净运行逐字节一致）；`list_contains` 按标的过滤；事件驱动窗口收口（显式越界 400、缺省仍取语料起点）。集成侧对真实归档分片跑一次小窗口回填，回归 P1 的 **353 条包含性**
 - 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验），不引组件测试框架（沿用 P1 口径）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
@@ -263,6 +275,7 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.4 | 2026-10-07 | M2b | §3 M2b 细化为可执行规格：**事件语料通道改归档按日整片**（实测 MCP 单次 500 硬顶 + `cursor` 被 FastMCP 拒收 ⇒ 结构上不可翻页，单日任一主要类型即触顶；归档为 `date × event_type` 整市场分片，逐片 sha256，保留期为滚动窗口）——MCP 退回只服务对话实时查询；**日历只落冻结文件 + DuckDB 视图**（PG 表延后，无消费方）；日历验证由「抽查 1 年」升级为**与 21 片行情 `trade_date` 全期双向对账**；**落盘 schema 按 `quant-event-v2` 重定**（新增 `dedup_key`/`revision_id`/`is_corrected` 等 9 列，去重键以平台 `dedup_key` 为准）；**新增事件驱动策略的时间收口**——判据为本地语料覆盖区间（起点固化、终点随日增前移，不写死「最近 3 个月」），显式越界 400、报告带 `event_coverage`；日任务改「拉最近 N 个交易日」的回落窗口 |
 | v1.3 | 2026-10-07 | M2a | §3 拆成 M2a / M2b / M2c 三段并把 M2a 细化为可执行规格：全市场 21 片与扁平命名（glob 不变）、**P1 按标的文件必须清掉**（唯一静默错误点）、物化先暂存后换入、数据版本指纹锚定逐片 `object_key` + sha256（顶层 manifest_version 不可用作锚点）、**无价 bar 不进定价路径**（`no_turnover_observed` 整行价量为空，全市场 271 行/复权）、满规模查询实测；**关闭两项待验证**（小石不覆盖指数、`cn-daily` 不含行业字段）并写明对 M5 基准与 M10 热力图的影响；事件长历史口径复核（归档 2026-07 起才有量，P1 结论成立）；M2b 记入交易日历来源的已拍板方案与事件语料归一化要求 |
 | v1.0 | 2026-10-06 | M1–M10 | 初版：P2-Mn 技术规格（含竞品调研后扩容的 15 项新功能与 M10 研究首页） |
 | v1.2 | 2026-10-07 | M1c | §2 M1c 细化为可执行规格：自选股六端点与分组名/「默认分组」约束、行情层不可用时的降级口径；回测落库（`request` 存解析后 config、`runs` 摘要取 metrics 整块、落库时机）、`POST /backtest` 纳入鉴权与信封化、**鉴权先于参数校验（未登录 401 覆盖 422）**；个人空间四页签与两条深链、会话列表增补 `last_active_at`；§1 自选股不单开路由（`watchlist/` → `space/`）；§12 补 M1c 增量与 P1 回测用例的回归口径 |

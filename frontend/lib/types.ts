@@ -15,6 +15,17 @@ export interface DataFreshness {
   /** 本地行情最后一根 bar 的交易日；数据未落盘时为 null */
   latest_trade_date: string | null;
   latest_event_available_at: string | null;
+  /**
+   * 事件语料覆盖区间（M2b，值是查出来的、不是写死的）。
+   * 起点由首次回填固化、终点随日增前移——事件驱动策略能回测到哪，看的就是这一段。
+   */
+  event_coverage: EventCoverage;
+}
+
+export interface EventCoverage {
+  start: string | null;
+  end: string | null;
+  rows: number;
 }
 
 // ── GET /api/v1/auth/me（M1）────────────────────────────────────────────────
@@ -147,6 +158,10 @@ export interface BacktestMeta {
   params: Record<string, number>;
   /** 样本量提示：必须在 UI 常驻展示，不能只留在 JSON 里 */
   warnings: string[];
+  /** 本次回测所依据的事件语料覆盖区间——让存下来的报告自证「看的是哪一段」 */
+  event_coverage: EventCoverage;
+  /** 窗口内该标的的事件条数；不消费事件的策略为 null（不是 0——含义不同） */
+  events_in_window: number | null;
 }
 
 export interface BacktestReport {

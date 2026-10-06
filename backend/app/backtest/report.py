@@ -21,7 +21,7 @@ from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from app.backtest.metrics import SHORT_WINDOW_BARS, Metrics, benchmark_curve, compute_metrics
 from app.backtest.strategies import EventDriven
-from app.backtest.types import Mode, NoDataError, Position
+from app.backtest.types import BacktestError, Mode, NoDataError, Position
 from app.data import duckdb_client as dc
 
 
@@ -154,6 +154,19 @@ def _first_event_date(symbol: str, data_dir: Path | None) -> date | None:
     return min(row["event_time"].date() for row in rows) if rows else None
 
 
+def _events_in_window(config: BacktestConfig) -> int | None:
+    """该标的在回测窗口内的事件条数；不消费事件的策略返回 `None`（不是 0——两者含义不同）。"""
+    if config.strategy != EventDriven.name or config.start is None or config.end is None:
+        return None
+    rows = dc.events(
+        config.symbol,
+        start=config.start.isoformat(),
+        end=config.end.isoformat(),
+        data_dir=config.data_dir,
+    )
+    return len(rows)
+
+
 def resolve_window(
     symbol: str,
     strategy: str,
@@ -165,7 +178,12 @@ def resolve_window(
     """把「可缺省的请求区间」解析成确定区间。
 
     `end` 缺省 = 该标的最后一根 bar；`start` 缺省 = `event_driven` 取事件窗口起点
-    （事件语料仅约 3 个月，从行情起点开跑等于大半程空转），其余策略取第一根 bar。
+    （语料只覆盖约 3 个月，从行情起点开跑等于大半程空转），其余策略取第一根 bar。
+
+    **事件驱动的时间收口（M2b）**：语料覆盖区间是 `[首次回填日, 最新可用日]`，起点固化、
+    终点随日增前移。请求**显式**把起点放在覆盖起点之前时一律拒绝——那种回测的结论是
+    「前六年空转、最后三个月交易」，与其跑出一个静默无意义的报告，不如给一句可执行的出路。
+    缺省起点仍自动取语料覆盖起点（缺省代决策、显式不被静默改写，与既有口径一致）。
 
     API 与 `scripts/run_report.py` **共用这一段**——两处各写一套默认值必然漂移。
     解析结果若落不到任何 bar，抛 `NoDataError`（API 映射 404）。
@@ -174,15 +192,22 @@ def resolve_window(
     if not rows:
         raise NoDataError(f"{symbol} 无行情数据，先跑 scripts/download_bars.py")
 
-    if start is None and strategy == EventDriven.name:
-        start = _first_event_date(symbol, data_dir)
-        if start is None:
-            # M2a 后行情是全市场、事件仍只覆盖少数示例标的，故这句不能再说「先跑下载脚本」
-            # ——那对绝大多数标的永远无效。给出真正可执行的出路。
-            raise NoDataError(
-                f"{symbol} 没有事件数据：本地事件语料只覆盖少数示例标的（在线接口窗口约 3 个月）。"
-                "改用示例标的，或把策略换成 ma_cross（双均线不需要事件）。"
+    if strategy == EventDriven.name:
+        coverage = dc.event_coverage(data_dir)
+        coverage_start = date.fromisoformat(coverage["start"]) if coverage["start"] else None
+        if start is not None and coverage_start is not None and start < coverage_start:
+            raise BacktestError(
+                f"事件语料只覆盖 {coverage['start']} 起（新闻源保留期 3 个月，更早的事件不可得），"
+                f"请求的起点 {start} 早于它——把 start 改到 {coverage['start']} 之后；"
+                "若要看更长的历史，请改用不消费事件的 ma_cross。"
             )
+        if start is None:
+            start = _first_event_date(symbol, data_dir)
+            if start is None:
+                raise NoDataError(
+                    f"{symbol} 在事件语料覆盖区间（{coverage['start']} → {coverage['end']}）内没有事件。"
+                    "换一个标的，或把策略换成 ma_cross（双均线不需要事件）。"
+                )
     start = start or rows[0]["trade_date"]
     end = end or rows[-1]["trade_date"]
 
@@ -211,6 +236,9 @@ def build_report(config: BacktestConfig, *, compare_pit: bool = False) -> dict[s
             "cutoff_field": result.cutoff_field,
             "params": dict(config.params),
             "warnings": _warnings(result),
+            # 语料覆盖区间 + 窗口内事件数：让存下来的报告自证「这次看的是哪一段事件语料」
+            "event_coverage": dc.event_coverage(config.data_dir),
+            "events_in_window": _events_in_window(config),
         },
         "metrics": _metrics_row(metrics, _benchmark_return(result, config)),
         "equity_curve": [

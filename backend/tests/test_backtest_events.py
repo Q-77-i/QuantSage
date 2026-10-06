@@ -35,7 +35,7 @@ def make_bar(day: date) -> Bar:
 def make_event(event_id: str, event_time: datetime, available_at: datetime) -> EventView:
     return EventView(
         event_id=event_id,
-        symbol="600519",
+        symbols=("600519",),
         title="t",
         event_time=event_time,
         available_at=available_at,
@@ -193,7 +193,7 @@ def test_event_from_row_parses_real_shape() -> None:
 
     row = {
         "event_id": "news:1",
-        "symbol": "600519",
+        "symbols": ["600519"],
         "title": "标题",
         "event_time": at("2026-08-03 10:00:00"),
         "available_at": at("2026-08-03 12:00:00"),
@@ -209,7 +209,7 @@ def test_event_from_row_parses_real_shape() -> None:
 def test_event_from_row_tolerates_null_direction_and_scores() -> None:
     row = {
         "event_id": "x",
-        "symbol": "600519",
+        "symbols": ["600519"],
         "title": None,
         "event_time": at("2026-08-03 10:00:00"),
         "available_at": at("2026-08-03 10:00:00"),

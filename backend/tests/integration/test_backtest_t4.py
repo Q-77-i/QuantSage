@@ -77,16 +77,45 @@ def test_costs_change_results_on_real_data() -> None:
     assert without.total_fees == 0.0
 
 
-def test_pit_and_non_pit_differ_on_real_data() -> None:
-    """验收判据③：PIT 与非 PIT 的入场日序列不同（首个入场日可能相同，故比整串）。"""
+def test_pit_and_non_pit_share_events_but_not_cutoffs() -> None:
+    """两口径的差别只在**设卡字段**：同一批事件、不同的可见时刻。
+
+    M2a 时这条断言写的是「入场日序列必须不同」——那是**数据性质**而非代码性质：只有当
+    「入场驱动事件的可见性跨过某根 bar 的收盘时刻」时才会分岔。M2b 换语料后 600519 恰好
+    不分岔（16 条驱动事件里 2 条跨日可见，但都落在持仓期内）。分岔与否交给报告如实呈现
+    （`pit_comparison.delta` 可为 0），测试守的是机制。
+    """
     pit = event_window_run(SYMBOL, Mode.PIT)
     non_pit = event_window_run(SYMBOL, Mode.NON_PIT)
 
-    assert pit.entry_dates != non_pit.entry_dates
     assert pit.cutoff_field == "available_at"
     assert non_pit.cutoff_field == "event_time"
-    # 同一批事件，只是设卡字段不同
     assert set(pit.visible_event_ids) == set(non_pit.visible_event_ids)
+
+
+def test_pit_never_trades_earlier_than_non_pit() -> None:
+    """**不变量**：PIT 的入场只会晚于或等于非 PIT，永远不会更早。
+
+    `available_at >= event_time` ⇒ 按可得时间设卡只会把事件推后，不可能提前。这条与数据无关，
+    换任何标的、任何窗口都该成立——比「两者必须不同」强得多（后者只是某些数据下恰好为真）。
+    """
+    pit = event_window_run(SYMBOL, Mode.PIT)
+    non_pit = event_window_run(SYMBOL, Mode.NON_PIT)
+
+    def event_fills(result) -> dict[str, object]:
+        return {
+            fill.event_id: fill.trade_date
+            for fill in result.fills
+            if fill.event_id and fill.side.value == "buy"
+        }
+
+    pit_by_event = event_fills(pit)
+    shared = 0
+    for event_id, day in event_fills(non_pit).items():
+        if event_id in pit_by_event:
+            shared += 1
+            assert pit_by_event[event_id] >= day, f"{event_id} 在 PIT 下反而更早成交：{pit_by_event[event_id]} < {day}"
+    assert shared > 0, "两种口径没有共同的入场事件，这条断言没有验证到任何东西"
 
 
 def test_no_lookahead_on_real_data() -> None:

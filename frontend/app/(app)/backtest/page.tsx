@@ -144,7 +144,7 @@ export default function BacktestPage() {
               <TradesTable trades={report.trades} openPosition={report.open_position} />
             </Section>
 
-            <EventsTable events={events} />
+            <EventsTable events={events} coverage={report.meta.event_coverage} />
           </div>
         )}
       </main>

@@ -43,8 +43,8 @@
 ## 四、数据源（小石）
 
 - PIT 语义：`event_time` 事发 / `available_at` 平台首次可用 / `observed_at` 观察
-- 对话查询与事件语料走 MCP；批量行情下载/文件校验/因子验证走 `xiaoshi-data` CLI（SPEC v0.3 已定：事件在线拉取只有 MCP 一条路）
-- 在线事件接口单次上限 92 天、历史窗口约 3 个月；来源标注（`source` / `original_source` / `content_hash`）做进 UI；进入决策的数据必须带来源标注
+- 对话查询（含 LLM 的实时事件问答）走 MCP；**事件语料采集走 `xiaoshi-data` CLI 的归档按日整片**、批量行情/文件校验/因子验证同理（M2b 实测：MCP 单次硬顶 500 行且 `cursor` 参数被 FastMCP 拒收，结构上不可翻页 → 全市场语料只能走归档；见 SPEC v1.4）
+- 在线事件接口窗口约 3 个月（滚动）、单次返回上限 500 行且**不可翻页**；归档保留期同为滚动窗口（news 3 个月 / 公告 24 个月，轴为 `event_time`），超期 410 硬拒、平台声明不补采；来源标注（`source` / `original_source` / `content_hash`）做进 UI；进入决策的数据必须带来源标注
 - 基本面数据不引第二数据源：akshare 等无 PIT 语义，引入会污染护城河；M8 基本面角色改读 announcement 公告语料（财报/业绩预告等，自带 `available_at`），做「PIT 基本面事件」
 
 ## 五、安全红线

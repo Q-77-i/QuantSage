@@ -1,17 +1,18 @@
-"""T2 数据层离线单测：DuckDB 视图/查询函数 + 事件归一化。
+"""T2 数据层离线单测：DuckDB 视图与查询函数（bars / events / 日历）。
 
 合成数据落在 tmp_path，不碰真实 data/；真实样例数据的验收在 integration 用例里。
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
 import pytest
 
 from app.data import duckdb_client as dc
-from scripts import download_events
+from tests.conftest import write_events_parquet
 
 
 @pytest.fixture
@@ -35,19 +36,30 @@ def sample_data_dir(tmp_path: Path) -> Path:
                     " ) t(symbol, adjustment, trade_date, open, high, low, close))"
                     f" TO '{target}' (FORMAT PARQUET)"
                 )
-        for symbol in ("600519", "300750"):
-            target = events_dir / f"{symbol}.parquet"
-            con.execute(
-                "COPY (SELECT * FROM (VALUES"
-                f" ('{symbol}', 'news:1', TIMESTAMPTZ '2026-07-10 10:00:00+08',"
-                "  TIMESTAMPTZ '2026-07-10 12:00:00+08', '利多', 'bullish'),"
-                f" ('{symbol}', 'news:2', TIMESTAMPTZ '2026-08-10 10:00:00+08',"
-                "  TIMESTAMPTZ '2026-08-11 09:00:00+08', '中性', 'neutral')"
-                " ) t(symbol, event_id, event_time, available_at, direction, direction_norm))"
-                f" TO '{target}' (FORMAT PARQUET)"
-            )
     finally:
         con.close()
+
+    # 事件走与生产同源的写盘函数：查询层对 `data/events/*.parquet` 是严格 glob，
+    # 列集不一致会直接报错（有意如此），夹具不能各写各的 schema
+    for symbol in ("600519", "300750"):
+        write_events_parquet(
+            events_dir,
+            symbol,
+            [
+                {
+                    "event_id": "news:1",
+                    "event_time": datetime.fromisoformat("2026-07-10T10:00:00+08:00"),
+                    "available_at": datetime.fromisoformat("2026-07-10T12:00:00+08:00"),
+                    "direction_norm": "bullish",
+                },
+                {
+                    "event_id": "news:2",
+                    "event_time": datetime.fromisoformat("2026-08-10T10:00:00+08:00"),
+                    "available_at": datetime.fromisoformat("2026-08-11T09:00:00+08:00"),
+                    "direction_norm": "neutral",
+                },
+            ],
+        )
     return tmp_path
 
 
@@ -134,38 +146,31 @@ def test_events_filters_symbol_and_window(sample_data_dir: Path) -> None:
     assert len(dc.events(data_dir=sample_data_dir)) == 4
 
 
-def test_normalize_maps_direction_and_keeps_nested_shapes() -> None:
-    record = {
-        "event_id": "news:1",
-        "direction": "利多",
-        "industries": ["食品饮料"],
-        "stocks": [{"code": "600519", "name": "贵州茅台", "reason": None}],
-        "factor_scores": {"score": 69.6},
-        "title": "标题",
-    }
-    row = download_events.normalize(record, "600519")
+def test_events_match_any_symbol_in_the_array(sample_data_dir: Path) -> None:
+    """一条事件挂多只股票只存一行（M2b）：数组里任一命中即该标的的事件。
 
-    assert row["direction"] == "利多"
-    assert row["direction_norm"] == "bullish"
-    assert row["symbol"] == "600519"
-    # 原生嵌套类型保持原样，只有键集不定的 factor_scores 序列化成 JSON 文本
-    assert row["industries"] == ["食品饮料"]
-    assert row["stocks"][0]["code"] == "600519"
-    assert row["factor_scores"] == '{"score": 69.6}'
-    assert row["summary"] is None
+    夹具必须**写全 schema**：查询层对 `data/events/*.parquet` 是严格 glob，列集不一致
+    会直接报错而不是静默并集——那是有意的（见 `store.py` 的落盘约定）。
+    """
+    write_events_parquet(
+        sample_data_dir / "events",
+        "600519",
+        [
+            {
+                "event_id": "news:9",
+                "symbols": ["600519", "300750"],
+                "event_time": datetime.fromisoformat("2026-09-01T10:00:00+08:00"),
+                "available_at": datetime.fromisoformat("2026-09-01T10:00:00+08:00"),
+            }
+        ],
+    )
 
-
-@pytest.mark.parametrize(
-    ("raw_value", "expected"),
-    [("利多", "bullish"), ("bullish", "bullish"), ("利空", "bearish"), ("bearish", "bearish"),
-     ("中性", "neutral"), ("neutral", "neutral")],
-)
-def test_direction_map_known_values(raw_value: str, expected: str) -> None:
-    assert download_events.DIRECTION_MAP[raw_value] == expected
+    for symbol in ("600519", "300750"):
+        ids = [row["event_id"] for row in dc.events(symbol, data_dir=sample_data_dir)]
+        assert "news:9" in ids
 
 
-def test_normalize_leaves_non_sentiment_direction_unmapped() -> None:
-    """「高管人事」这类非情绪标签不臆造 sentiment，归为 NULL（SQL 过滤自然跳过）。"""
-    row = download_events.normalize({"event_id": "x", "direction": "高管人事"}, "600519")
-    assert row["direction"] == "高管人事"
-    assert row["direction_norm"] is None
+def test_event_coverage_reads_from_data(sample_data_dir: Path) -> None:
+    """覆盖区间必须查出来：起点固化、终点随日增前移，写死「最近 3 个月」会骗人。"""
+    coverage = dc.event_coverage(data_dir=sample_data_dir)
+    assert coverage == {"start": "2026-07-10", "end": "2026-08-10", "rows": 4}

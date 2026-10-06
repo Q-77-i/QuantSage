@@ -1,4 +1,4 @@
-"""DuckDB 查询层：对 `data/bars/` 与 `data/events/` 建只读视图。
+"""DuckDB 查询层：对 `data/bars/`、`data/events/` 与冻结交易日历建只读视图。
 
 只读语义由两点保证：连接是进程内 `:memory:`，唯一数据源是 Parquet 文件（DuckDB 读 Parquet 本就只读）；
 本模块只建视图、不建表，也不提供任何写回数据的出口。
@@ -13,9 +13,12 @@ from pathlib import Path
 import duckdb
 
 from app.core.config import get_settings
+from app.data.calendar import CALENDAR_FILE
 
 BARS_VIEW = "bars"
 EVENTS_VIEW = "events"
+#: 交易日历视图：与 `data/` 下的行情/事件无关，直接读仓库内的冻结文件（M2b）
+CALENDAR_VIEW = "calendar"
 _SUBDIRS = {BARS_VIEW: "bars", EVENTS_VIEW: "events"}
 
 
@@ -48,6 +51,11 @@ def connect(data_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
             con.execute(
                 f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM read_parquet({_sql_str(pattern)})"
             )
+        # 日历视图读的是仓库内冻结文件，不是数据目录——它随代码版本走，与落盘数据无关
+        con.execute(
+            f"CREATE OR REPLACE VIEW {CALENDAR_VIEW} AS SELECT unnest(sessions)::DATE AS trade_date"
+            f" FROM read_json({_sql_str(str(CALENDAR_FILE))}, columns={{'sessions': 'VARCHAR[]'}})"
+        )
     except Exception:
         con.close()
         raise
@@ -123,6 +131,30 @@ def latest_closes(
     }
 
 
+def event_coverage(data_dir: Path | None = None) -> dict[str, object]:
+    """本地事件语料的覆盖区间与总条数——**从数据里查出来的**，不写死「最近 3 个月」。
+
+    起点由「首次回填日」固化，终点随日增前移；事件驱动策略的时间收口、
+    报告 `meta.event_coverage`、前端提示都读这一份。
+    """
+    con = connect(data_dir)
+    try:
+        rows = _fetch(
+            con,
+            f"SELECT min(event_time)::DATE AS first_day, max(event_time)::DATE AS last_day,"
+            f" count(*) AS rows FROM {EVENTS_VIEW}",
+            [],
+        )
+    finally:
+        con.close()
+    row = rows[0] if rows else {"first_day": None, "last_day": None, "rows": 0}
+    return {
+        "start": row["first_day"].isoformat() if row["first_day"] else None,
+        "end": row["last_day"].isoformat() if row["last_day"] else None,
+        "rows": int(row["rows"] or 0),
+    }
+
+
 def latest_dates(data_dir: Path | None = None) -> dict[str, object]:
     """样例数据的最新时点：行情最后一根 bar 的交易日、事件最晚 `available_at`。
 
@@ -132,15 +164,28 @@ def latest_dates(data_dir: Path | None = None) -> dict[str, object]:
     con = connect(data_dir)
     try:
         bars = _fetch(con, f"SELECT max(trade_date) AS day FROM {BARS_VIEW}", [])
-        events = _fetch(con, f"SELECT max(available_at) AS ts FROM {EVENTS_VIEW}", [])
+        events = _fetch(
+            con,
+            f"SELECT max(available_at) AS ts, min(event_time)::DATE AS first_day,"
+            f" max(event_time)::DATE AS last_day, count(*) AS rows FROM {EVENTS_VIEW}",
+            [],
+        )
     finally:
         con.close()
 
     day = bars[0]["day"] if bars else None
-    stamp = events[0]["ts"] if events else None
+    row = events[0] if events else {}
+    stamp = row.get("ts")
+    first, last = row.get("first_day"), row.get("last_day")
     return {
         "latest_trade_date": day.isoformat() if day else None,
         "latest_event_available_at": stamp.isoformat() if stamp else None,
+        # 语料覆盖区间（M2b）：事件驱动能回测到哪，看的就是这一段
+        "event_coverage": {
+            "start": first.isoformat() if first else None,
+            "end": last.isoformat() if last else None,
+            "rows": int(row.get("rows") or 0),
+        },
     }
 
 
@@ -153,6 +198,9 @@ def events(
 ) -> list[dict]:
     """事件语料，按 event_time 升序；`start` / `end` 过滤 `event_time`。
 
+    **按标的过滤走 `list_contains(symbols, ?)`**：M2b 起语料是「一条事件一行、标的是数组」
+    （同一事件挂多只股票只存一行），等值比较会永远匹配不到。传 `symbol=None` 取全市场。
+
     这里不做 PIT 过滤——按可得时间设卡是消费方（回测/对话工具）的职责，本层只提供事实数据。
     """
     con = connect(data_dir)
@@ -160,7 +208,7 @@ def events(
         sql = f"SELECT * FROM {EVENTS_VIEW} WHERE 1 = 1"
         params: list = []
         if symbol:
-            sql += " AND symbol = ?"
+            sql += " AND list_contains(symbols, ?)"
             params.append(symbol)
         if start:
             sql += " AND event_time >= ?"

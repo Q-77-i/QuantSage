@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # ── 样例数据（T2 落盘目录，DuckDB 查询层读它）──
     data_dir: Path = REPO_ROOT / "data"
 
+    # ── 数据接入（M2b）：事件语料日增量 ──
+    # **默认关**：定时任务会对外发请求、写数据目录，本地开发与测试不该被它打扰
+    etl_enabled: bool = False
+    etl_hour: int = 21  # 北京时间；行情当日 available_at 是 20:25，事件归档在盘后继续出
+    etl_minute: int = 10
+    etl_trailing_days: int = 7  # 回落窗口（自然日）：吸收迟到事件与平台修订
+    etl_catchup_on_start: bool = True  # 启动时对一次缺口（关机/长假后自动对齐）
+
     # ── 模型（T3 使用）──
     deepseek_api_key: SecretStr = SecretStr("")
 

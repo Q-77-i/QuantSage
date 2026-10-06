@@ -3,7 +3,7 @@
 import { Section } from "@/components/backtest/chart-frame";
 import { Cell, Row, TableShell } from "@/components/backtest/table";
 import { count, eventStamp, num, shortHash } from "@/lib/format";
-import type { MarketEvent } from "@/lib/types";
+import type { EventCoverage, MarketEvent } from "@/lib/types";
 
 /** 方向标签。`direction` 原值中英混用，后端已归一到 `direction_norm`（T2）。 */
 const DIRECTION: Record<string, { label: string; className: string }> = {
@@ -19,19 +19,29 @@ const DIRECTION: Record<string, { label: string; className: string }> = {
  * 文字解释都直观。来源三元组是 PRD §5 的硬性要求：行尾显示 `original_source`，
  * 展开见 `source` 与 `content_hash`（后者截前 12 位，全串对人不产生信息）。
  */
-export function EventsTable({ events }: { events: MarketEvent[] }) {
+export function EventsTable({
+  events,
+  coverage,
+}: {
+  events: MarketEvent[];
+  /** 本次回测依据的语料覆盖区间（来自报告 `meta`）：值是查出来的，不写死「约 3 个月」 */
+  coverage?: EventCoverage | null;
+}) {
+  const span = coverage?.start && coverage?.end ? `${coverage.start} → ${coverage.end}` : null;
   return (
     <Section
       title="事件语料"
       hint={
         events.length
-          ? `回测窗口内 ${count(events.length)} 条`
+          ? `回测窗口内 ${count(events.length)} 条${span ? ` · 语料覆盖 ${span}` : ""}`
           : "回测窗口内该标的没有事件"
       }
     >
       {events.length === 0 ? (
         <p className="mt-3 text-sm text-ink-2">
-          事件窗口约 3 个月，此区间内没有落库的事件。换标的或放宽区间再看看。
+          {span
+            ? `本地事件语料覆盖 ${span}，此区间内没有该标的的事件。换标的或放宽区间再看看。`
+            : "此区间内没有落库的事件。换标的或放宽区间再看看。"}
         </p>
       ) : (
         <>
@@ -40,7 +50,9 @@ export function EventsTable({ events }: { events: MarketEvent[] }) {
             head={["事发", "标题", "方向", "评分", "首次可用", "来源"]}
           >
             {events.map((event) => (
-              <Row key={event.event_id}>
+              // 键不能只用 event_id：平台对「按月复发的同题事件」复用 id（实测 84 天里 18 例），
+              // 同一窗口内出现两次时 React 会丢行，故带上首次可用时刻
+              <Row key={`${event.event_id}@${event.available_at ?? ""}`}>
                 <Cell numeric>{eventStamp(event.event_time)}</Cell>
                 <Cell className="max-w-[420px] truncate">
                   <span title={event.title}>{event.title}</span>

@@ -64,6 +64,7 @@ QuantSage/
 - 标的：贵州茅台 `600519`、宁德时代 `300750`、招商银行 `600036`（symbol 格式以落盘实测为准）
 - 日线：`cn-daily` 年度分片（year=2025/2026 × adjust=raw/qfq，共 4 片）下载后本地过滤 3 标的至 `data/bars/{symbol}.{adjust}.parquet`，保留分片全字段（含 `available_at`、`adj_factor`）
 - 事件语料：经 MCP `get_event_timeline` 按标的拉取至 `data/events/{symbol}.parquet`；在线 PIT 窗口上限约 3 个月，本期取 2026-07-05 → 2026-09-30
+  - ⚠️ **M2b 起本条已被取代**（P2 SPEC §3 M2b）：语料改「全市场按日」落盘，通道改归档按日整片（MCP 保留给对话实时查询）。P1 的 `{symbol}.parquet` 布局与字段集均已作废，仅作历史记录
   - 保留字段：`symbol` / `event_id` / `event_type` / `title` / `summary` / `event_time` / `available_at` / `observed_at` / `direction` / `direction_norm` / `confidence` / `importance_score` / `factor_value` / `factor_scores` / `industries` / `stocks` / `source` / `original_source` / `content_hash` / `quality_status` / `source_time_quality`
   - `direction` 原值中英混用，派生 `direction_norm` 归一到 `bullish` / `bearish` / `neutral`；`高管人事` 这类非情绪标签归 NULL（无方向语义），不臆造情感极性
   - `industries` / `stocks` 落原生嵌套类型，`factor_scores` 键集随事件类型变化故存 JSON 文本

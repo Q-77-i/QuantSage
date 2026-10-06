@@ -89,7 +89,8 @@ class EventView:
     """回测视角的单条事件（已从落盘行解析出 score）。"""
 
     event_id: str
-    symbol: str
+    #: 归一化后的六位码（M2b 起一条事件可挂多只股票；回测按其中一只取用）
+    symbols: tuple[str, ...]
     title: str
     event_time: datetime
     available_at: datetime

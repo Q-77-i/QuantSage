@@ -46,7 +46,9 @@ BARS_SCHEMA = pa.schema(
 EVENTS_SCHEMA = pa.schema(
     [
         ("event_id", pa.string()),
-        ("symbol", pa.string()),
+        # M2b 起一条事件一行、标的是数组（同一事件挂多只股票只存一行）
+        ("symbols", pa.list_(pa.string())),
+        ("event_type", pa.string()),
         ("title", pa.string()),
         ("event_time", pa.timestamp("us", tz=CN_TZ)),
         ("available_at", pa.timestamp("us", tz=CN_TZ)),
@@ -101,12 +103,18 @@ def write_events_parquet(
     symbol: str,
     rows: Iterable[Mapping[str, Any]],
 ) -> Path:
-    """写单标的事件语料；`score` 传入即按双重编码落盘。"""
+    """写该标的的事件语料；`score` 传入即按双重编码落盘。
+
+    文件名刻意**不用** P1 的 `{六位码}.parquet` 形状——那正是 `clean_legacy_files`
+    要清理的遗留命名，用它会让人分不清「夹具」和「待清理的旧文件」。
+    """
     directory.mkdir(parents=True, exist_ok=True)
     records = [
         {
             "event_id": row["event_id"],
-            "symbol": symbol,
+            # 传了 `symbols` 就按它写（多标的场景），否则单标的
+            "symbols": list(row.get("symbols") or [symbol]),
+            "event_type": row.get("event_type", "news"),
             "title": str(row.get("title", "")),
             "event_time": row["event_time"],
             "available_at": row.get("available_at", row["event_time"]),
@@ -118,7 +126,7 @@ def write_events_parquet(
         }
         for row in rows
     ]
-    target = directory / f"{symbol}.parquet"
+    target = directory / f"cn-events_{symbol}.parquet"
     table = pa.Table.from_pylist(records, schema=EVENTS_SCHEMA)
     pq.write_table(table, target)
     return target

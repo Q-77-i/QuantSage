@@ -1,10 +1,11 @@
-"""T2 + P2-M2a 验收：真实数据（data/bars、data/events）必须先在盘上。
+"""T2 + P2-M2a/M2b 验收：真实数据（data/bars、data/events）必须先在盘上。
 
 先跑 `uv run python scripts/download_bars.py` 与 `scripts/download_events.py`。
 默认不收集；用 `uv run pytest -m integration` 触发。
 
-M2a 起行情是**全市场**（21 片 = 7 年 × 3 复权，约 5500 只标的），事件语料仍是
-P1 的三只示例标的 + 约 3 个月窗口——两者的覆盖面差异是**有意的**，事件层要 M2b 才动。
+M2a 起行情是**全市场**（21 片 = 7 年 × 3 复权，约 5500 只标的）；M2b 起事件语料
+同样是**全市场按日**（一条事件一行、标的是数组），覆盖面差异不再是「行情全市场 /
+事件三只标的」那种断层。
 """
 
 from __future__ import annotations
@@ -19,16 +20,18 @@ import pytest
 from app.core.config import REPO_ROOT, get_settings
 from app.data import duckdb_client as dc
 from scripts.download_bars import ADJUSTS, BARS_NAME, LEGACY_PATTERN, PARTITIONS, YEARS
-from scripts.download_events import SYMBOLS as EVENT_SYMBOLS
 
 pytestmark = pytest.mark.integration
 
 DATA_DIR = get_settings().data_dir
-EVENT_WINDOW_START = "2026-07-05"
-EVENT_WINDOW_END = "2026-09-30"
 
-#: 示例标的（事件语料只覆盖这三只）。全市场另有约 5500 只，见下面的覆盖用例。
-SAMPLE_SYMBOLS = tuple(EVENT_SYMBOLS)
+#: 示例标的（P1 的三只）。M2b 起事件语料是全市场，这里只是挑三只做断言样例。
+SAMPLE_SYMBOLS = ("600519", "300750", "600036")
+
+#: P1 事件语料的回归锚点（清理按标的文件前导出的 353 对 event_id+content_hash）
+P1_EVENTS = json.loads(
+    (Path(__file__).resolve().parents[1] / "fixtures" / "p1_events.json").read_text(encoding="utf-8")
+)
 
 #: 分片里标的数的下限。实测 2020 年 5200+、2026 年 5500+，卡在 3000 是为了
 #: 「过滤成样例子集」这类退化能被立刻抓住，又不至于对数据源的正常波动过敏
@@ -175,6 +178,19 @@ def test_whole_market_single_day_aggregate_under_one_second() -> None:
         con.close()
 
 
+def test_events_are_market_wide_and_per_day() -> None:
+    """M2b 落盘形态：一条事件一行、按日分区、标的是数组；全市场覆盖（不是只剩三只）。"""
+    rows = dc.events()
+    assert rows, "事件语料为空"
+    symbols = {code for row in rows for code in row["symbols"]}
+    assert len(symbols) > 1000, f"只有 {len(symbols)} 只标的——不像全市场语料"
+
+    files = sorted((DATA_DIR / "events").glob("cn-events_*.parquet"))
+    assert files, "没有按日落盘的分区文件"
+    assert len(files) >= 60, f"只有 {len(files)} 个日分区（回填应覆盖 92 天窗口）"
+    assert not list((DATA_DIR / "events").glob("[0-9]" * 6 + ".parquet")), "P1 的按标的文件必须清掉"
+
+
 def test_events_pit_invariants_hold() -> None:
     """SPEC 验收：available_at 无空值；且不得早于 event_time（早于即为 PIT 破缺）。"""
     for symbol in SAMPLE_SYMBOLS:
@@ -185,30 +201,101 @@ def test_events_pit_invariants_hold() -> None:
             row["event_id"] for row in rows if row["available_at"] < row["event_time"]
         ]
         assert not violations, f"{symbol} 存在 available_at < event_time：{violations[:5]}"
-        assert {row["symbol"] for row in rows} == {symbol}
+        # 按标的过滤走数组包含：命中的每一行都必须真的挂着这只标的
+        assert all(symbol in row["symbols"] for row in rows)
 
 
-def test_events_stay_inside_bar_coverage() -> None:
-    """事件窗口必须落在行情覆盖区间内，否则事件驱动策略无价可成交。"""
+def test_p1_events_survive_the_layout_change() -> None:
+    """M2b 的回归锚点：P1 出现过的事件 **event_id 一条不少**。
+
+    换落盘形态最怕的是「看起来有数据、其实换丢了一批」。P1 的三只标的是**最老的读者**，
+    拿它们当锚点比统计总行数更能证明「没丢」。
+
+    锚点比对的是 **event_id 而不是 `(event_id, content_hash)`**：实测平台会对既有事件重发
+    修订版（内容一改 hash 就变，264 条缺失里 255 条属于这类），拿 hash 当锚点会把「平台改了
+    摘要」误判成「我们丢了数据」。真正要守的是**事件在不在**；内容以平台当前修订为准。
+
+    唯一合法缺口是**归档尚未发布的日期**（实测归档落后最新交易日 1 天，如 09-30）——
+    把「还没发布」与「真丢了」分开报，不用一句「等一等」掩盖真丢数据。
+    """
+    coverage_last = dc.event_coverage()["end"]
+    rows = dc.events()
+    ids = {row["event_id"] for row in rows}
+    pairs = {(row["event_id"], row["content_hash"]) for row in rows}
+
+    lost = [p for p in P1_EVENTS["pairs"] if p[2] <= coverage_last and p[0] not in ids]
+    assert not lost, f"归档已发布区间内丢了 {len(lost)} 条事件：{lost[:5]}"
+
+    pending = [p for p in P1_EVENTS["pairs"] if p[2] > coverage_last and p[0] not in ids]
+    revised = [p for p in P1_EVENTS["pairs"] if p[0] in ids and (p[0], p[1]) not in pairs]
+    print(
+        f"P1 锚点 {len(P1_EVENTS['pairs'])} 条：{len(P1_EVENTS['pairs']) - len(pending) - len(revised)} 条逐字节相同、"
+        f"{len(revised)} 条被平台修订（hash 变、事件在）、{len(pending)} 条待归档发布"
+    )
+
+
+def test_event_id_is_unique_within_a_day_but_not_globally() -> None:
+    """`event_id` 在**日分区内唯一**（物化时校验），但**不是全局唯一键**。
+
+    实测平台对「按月复发的同题事件」复用 id（如 `news:1818329` 既是 8 月 CPI 也是 9 月 CPI，
+    标题数值不同）——84 天里 18 例。所以：① 查询层不能拿它当主键去重；
+    ② 前端列表的 React key 必须带时间（否则同窗口内两次出现会丢行）。
+    """
+    con = duckdb.connect()
+    try:
+        pattern = str(DATA_DIR / "events" / "*.parquet")
+        dup_in_day = con.execute(
+            f"SELECT count(*) FROM (SELECT filename, event_id FROM read_parquet('{pattern}', filename=true)"
+            " GROUP BY 1, 2 HAVING count(*) > 1)"
+        ).fetchone()[0]
+        assert dup_in_day == 0, "同一个日分区里出现了重复 event_id"
+        cross_day = con.execute(
+            f"SELECT count(*) FROM (SELECT event_id FROM read_parquet('{pattern}')"
+            " GROUP BY 1 HAVING count(*) > 1)"
+        ).fetchone()[0]
+    finally:
+        con.close()
+    # 跨日重复是平台行为，不设硬上限，但数量级突变要有人看见
+    assert cross_day < 100, f"跨日重复 event_id 达 {cross_day} 条，平台行为可能变了，需复核"
+
+
+def test_events_cover_the_same_window_as_p1_and_more() -> None:
+    """语料覆盖区间只扩不缩，且必须追平归档已发布的最新日。"""
+    coverage = dc.event_coverage()
+    assert coverage["start"] and coverage["end"], "覆盖区间必须查得到"
+    p1_start, _ = P1_EVENTS["window"]
+    assert coverage["start"] <= p1_start, f"语料起点 {coverage['start']} 晚于 P1 的 {p1_start}"
+
+    from app.etl import archive
+
+    archive_last = archive.coverage().last_day.isoformat()
+    assert coverage["end"] == archive_last, (
+        f"本地语料止于 {coverage['end']}，归档已发布到 {archive_last}——漏拉了，跑 download_events.py"
+    )
+
     for symbol in SAMPLE_SYMBOLS:
         dates = [row["trade_date"].isoformat() for row in dc.bars(symbol, adjust="qfq")]
-        assert dates == sorted(dates), "日线必须按 trade_date 升序"
-        assert dates[0] <= EVENT_WINDOW_START and dates[-1] >= EVENT_WINDOW_END
+        assert dates[0] <= coverage["start"] and dates[-1] >= coverage["end"]
 
 
 def test_events_keep_spec_fields_and_nested_shapes() -> None:
     rows = dc.events("300750")
     required = {
         "event_id", "event_type", "title", "summary", "event_time", "available_at", "observed_at",
-        "direction", "direction_norm", "confidence", "importance_score", "factor_value",
-        "factor_scores", "industries", "stocks", "source", "original_source",
-        "content_hash", "quality_status", "source_time_quality",
+        "reported_available_at", "direction", "direction_norm", "confidence", "importance_score",
+        "factor_value", "factor_scores", "industries", "stocks", "symbols", "source",
+        "original_source", "source_url", "content_hash", "quality_status", "source_time_quality",
+        # quant-event-v2 的修订/去重字段（M2b 起按新 schema 落盘）
+        "dedup_key", "record_version", "revision_id", "is_corrected", "correction_count", "person",
     }
     assert required <= set(rows[0]), f"缺字段：{required - set(rows[0])}"
     assert all(row["content_hash"] and row["source"] for row in rows), "溯源字段不得为空"
+    assert all(row["original_source"] for row in rows), "原始发布方不得为空"
 
-    stocks = next(row["stocks"] for row in rows if row["stocks"])
-    assert isinstance(stocks, list) and {"code", "name", "reason"} <= set(stocks[0])
+    # `stocks` 原样存 JSON 文本备审计；查询走归一化的 `symbols` 数组
+    payload = json.loads(rows[0]["stocks"])
+    assert isinstance(payload, list) and {"code", "name", "reason"} <= set(payload[0])
+    assert all(isinstance(row["symbols"], list) for row in rows)
     assert all(isinstance(row["industries"], list) for row in rows)
     assert json.loads(rows[0]["factor_scores"]) is not None
 
@@ -221,9 +308,29 @@ def test_meta_files_match_materialized_rows() -> None:
         assert path.is_file(), f"清单里的文件不存在：{item['path']}"
 
     events_meta = _meta("events.json")
-    assert events_meta["window"] == {"since": EVENT_WINDOW_START, "to": EVENT_WINDOW_END}
-    total = sum(item["rows"] for item in events_meta["outputs"])
-    assert total == len(dc.events()), "事件清单行数与落盘不一致"
+    assert events_meta["schema"] == "quantsage.events_meta/v2"
+    assert events_meta["partition"]["key"].startswith("event_time")
+    for item in events_meta["days"]:
+        path = DATA_DIR / "events" / item["file"]
+        assert path.is_file(), f"清单里的日分区不存在：{item['file']}"
+        assert path.stat().st_size > 0
+    assert events_meta["fingerprint"]["days"] == len(events_meta["days"])
+    assert events_meta["fingerprint"]["rows"] == sum(item["rows"] for item in events_meta["days"])
+    print(
+        f"事件语料 {events_meta['fingerprint']['days']} 天 / {events_meta['fingerprint']['rows']} 行，"
+        f"指纹 {events_meta['fingerprint']['digest'][:16]}"
+    )
+
+
+def test_etl_status_agrees_with_disk() -> None:
+    """`/etl/status` 的口径来自同一个 runner：本地覆盖与磁盘一致，缺口可解释。"""
+    from app.etl import runner
+
+    status = runner.status()
+    files = sorted((DATA_DIR / "events").glob("cn-events_*.parquet"))
+    assert status["local"]["days"] == len(files)
+    assert status["local"]["start"] == files[0].name[len("cn-events_") : -len(".parquet")]
+    assert status["local"]["end"] == files[-1].name[len("cn-events_") : -len(".parquet")]
 
 
 def test_every_adjust_is_present() -> None:

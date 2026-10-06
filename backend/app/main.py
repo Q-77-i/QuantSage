@@ -1,7 +1,7 @@
 """FastAPI 入口。
 
-健康探针 + 六组业务路由：auth（M1）、watchlist（M1c）、chat / threads（T3）、
-backtest / market / events（T6）。
+健康探针 + 七组业务路由：auth（M1）、watchlist（M1c）、chat / threads（T3）、
+backtest / market / events（T6）、etl（M2b）。
 
 lifespan 里按「能降级就降级」的姿态装配：checkpointer → 业务库 → 工具 → Agent，
 任一环不可用都不阻断服务启动，由具体的 API 返回 503。
@@ -25,6 +25,7 @@ from app.agent.tools import load_xiaoshi_tools, query_market_bars
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
+from app.api.etl import router as etl_router
 from app.api.events import router as events_router
 from app.api.market import router as market_router
 from app.api.watchlist import router as watchlist_router
@@ -35,6 +36,7 @@ from app.core.db import Database, EmailTaken, SymbolTracked, init_schema, open_p
 from app.core.langfuse import build_langfuse_handler
 from app.core.llm import build_chat_model
 from app.core.logging import setup_logging
+from app.etl.scheduler import start_scheduler
 from app.data.duckdb_client import DataNotReady
 
 log = logging.getLogger(__name__)
@@ -54,6 +56,7 @@ async def lifespan(app: FastAPI):
     app.state.db_ready = False
     app.state.agent = None
     app.state.langfuse_handler = None
+    app.state.scheduler = None
 
     if not settings.jwt_secret.get_secret_value():
         # 不静默降级成无鉴权：/api/v1/auth/* 会返回 503，缺的是配置不是代码
@@ -111,7 +114,17 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001 —— 缺 key 时不要让整个服务起不来
             log.warning("Agent 未就绪（%s），/api/v1/chat 将返回 503", type(exc).__name__)
 
-        yield
+        # 事件语料定时（M2b）：默认不启用；启用了才起，起不来也不阻断服务
+        try:
+            app.state.scheduler = start_scheduler()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ETL 调度器未启动（%s），/api/v1/etl/run 仍可手动触发", type(exc).__name__)
+
+        try:
+            yield
+        finally:
+            if app.state.scheduler is not None:
+                app.state.scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="QuantSage API", version="0.1.0", lifespan=lifespan)
@@ -136,6 +149,7 @@ for router in (
     market_router,
     events_router,
     watchlist_router,
+    etl_router,
 ):
     app.include_router(router)
 
