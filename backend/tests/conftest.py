@@ -20,6 +20,12 @@ os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
+import pytest  # noqa: E402
+
+from app.core.auth import require_user  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
+from app.main import app  # noqa: E402
+from tests.fakes import FakeDatabase  # noqa: E402
 
 CN_TZ = "Asia/Shanghai"
 
@@ -142,3 +148,35 @@ def ts(text: str) -> datetime:
     from zoneinfo import ZoneInfo
 
     return datetime.fromisoformat(text).replace(tzinfo=ZoneInfo(CN_TZ))
+
+
+# ── M1：鉴权夹具 ────────────────────────────────────────────
+
+#: 回归用例里的「当前用户」。真鉴权行为在 test_auth_api.py / 集成用例里验
+TEST_USER = {"id": 1, "email": "tester@example.com"}
+
+
+@pytest.fixture
+def jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """给鉴权用例一个确定的密钥。环境变量优先于 .env，结果与本机配置无关。"""
+    # 32 字节以上：PyJWT 对短 HMAC 密钥会告警（RFC 7518 §3.2）
+    monkeypatch.setenv("JWT_SECRET", "test-secret-not-a-real-key-0123456789abcdef")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def signed_in(jwt_secret: Any) -> Any:
+    """已登录姿态：注入内存业务库，并把 `require_user` 换成固定用户。
+
+    只替换「当前用户是谁」这一层，端点仍走真实路由——供 P1 既有端点用例回归
+    （它们要验的是 503/404/422，不是鉴权本身）。返回 `FakeDatabase` 便于用例直接
+    摆会话归属。
+    """
+    db = FakeDatabase()
+    app.state.db = db
+    app.dependency_overrides[require_user] = lambda: dict(TEST_USER)
+    yield db
+    app.dependency_overrides.clear()
+    app.state.db = None

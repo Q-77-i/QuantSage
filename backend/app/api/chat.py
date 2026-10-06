@@ -7,6 +7,9 @@ SSE 帧手写而非引库：帧格式极简（`event:` + 单行 `data:` + 空行
   * 首字节一旦发出就无法再改状态码——图内的异常必须转成 `error` 帧，裸抛会让客户端
     直接断连、什么也收不到；
   * `asyncio.CancelledError`（客户端断连）必须原样抛，吞掉它会留下仍在跑的图。
+
+归属（M1）：会话的主人是自建的 `chat_threads` 表，不是 checkpointer 的 `checkpoints`。
+三个端点一律先按 `user_id` 查，命中 0 行翻 404——**与「会话不存在」同响应**，不泄露存在性。
 """
 
 from __future__ import annotations
@@ -19,12 +22,13 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent.graph import astream_chat
 from app.agent.history import messages_to_history
+from app.core.auth import require_db, require_user
 
 log = logging.getLogger(__name__)
 
@@ -58,13 +62,26 @@ def normalize_thread_id(raw: str | None) -> str:
 
 
 @router.post("")
-async def chat(request: Request, body: ChatRequest) -> StreamingResponse:
+async def chat(
+    request: Request, body: ChatRequest, user: dict[str, Any] = Depends(require_user)
+) -> StreamingResponse:
     # 参数校验先于资源检查：两者都在流开始前，客户端错误应当优先暴露
     thread_id = normalize_thread_id(body.thread_id)
+    db = require_db(request)
+
+    # 续聊既有会话：先验归属（不属于本人一律 404，不区分「不存在」）
+    if body.thread_id and await db.thread_owner(thread_id) != int(user["id"]):
+        raise HTTPException(status_code=404, detail="会话不存在")
 
     agent = getattr(request.app.state, "agent", None)
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent 未就绪（模型或依赖不可用）")
+
+    # 归属行必须赶在首字节之前落：中途失败宁可 500，也不留一条无主会话
+    if body.thread_id:
+        await db.touch_thread(thread_id, int(user["id"]))
+    else:
+        await db.claim_thread(thread_id, int(user["id"]))
 
     handler = getattr(request.app.state, "langfuse_handler", None)
     callbacks = [handler] if handler is not None else None
@@ -124,18 +141,6 @@ async def chat(request: Request, body: ChatRequest) -> StreamingResponse:
     )
 
 
-async def _thread_ids(checkpointer: Any, limit: int) -> list[str]:
-    """按最近活动排序取 thread_id。消息正文在 checkpoint_blobs 里，SQL 取不到。"""
-    async with checkpointer.conn.connection() as conn:
-        cur = await conn.execute(
-            "SELECT thread_id FROM checkpoints WHERE checkpoint_ns = '' "
-            "GROUP BY thread_id ORDER BY MAX(checkpoint_id) DESC LIMIT %s",
-            (limit,),
-        )
-        rows = await cur.fetchall()
-    return [row["thread_id"] for row in rows]
-
-
 async def _load_messages(checkpointer: Any, thread_id: str) -> list[Any] | None:
     """读最新 checkpoint 的消息；None 表示这个会话不存在。
 
@@ -160,27 +165,31 @@ async def _thread_summary(checkpointer: Any, thread_id: str) -> dict[str, Any]:
     return {"thread_id": thread_id, "title": title, "messages": len(messages)}
 
 
+async def _owned_or_404(request: Request, user_id: int, thread_id: str) -> None:
+    """归属闸门：不属于本人（含不存在、含 P1 遗留的无主会话）一律 404。"""
+    if await require_db(request).thread_owner(thread_id) != user_id:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
 @router.get("/threads")
 async def list_threads(
-    request: Request, limit: int = Query(20, ge=1, le=100)
+    request: Request,
+    limit: int = Query(20, ge=1, le=100),
+    user: dict[str, Any] = Depends(require_user),
 ) -> list[dict[str, Any]]:
-    """会话列表，供前端侧栏使用。
-
-    ⚠ 单用户 demo：**没有归属过滤**，任何调用方都能列出全部会话。
-    P2 引入登录后必须按用户过滤（SPEC §6 已记为 M1 阻塞项）。
-    """
+    """会话列表，供前端侧栏使用。只列本人的会话，按最近活动倒序。"""
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise HTTPException(status_code=503, detail="checkpointer 不可用")
 
-    return [
-        await _thread_summary(checkpointer, tid)
-        for tid in await _thread_ids(checkpointer, limit)
-    ]
+    thread_ids = await require_db(request).list_thread_ids(int(user["id"]), limit)
+    return [await _thread_summary(checkpointer, tid) for tid in thread_ids]
 
 
 @router.get("/threads/{thread_id}/messages")
-async def thread_messages(request: Request, thread_id: str) -> dict[str, Any]:
+async def thread_messages(
+    request: Request, thread_id: str, user: dict[str, Any] = Depends(require_user)
+) -> dict[str, Any]:
     """单个会话的历史消息，供对话页回看（含工具步骤）。"""
     # 路径参数不可能为空，`normalize_thread_id` 里「缺省生成 UUID」那条分支在这里不可达
     normalized = normalize_thread_id(thread_id)
@@ -189,19 +198,25 @@ async def thread_messages(request: Request, thread_id: str) -> dict[str, Any]:
     if checkpointer is None:
         raise HTTPException(status_code=503, detail="checkpointer 不可用")
 
+    await _owned_or_404(request, int(user["id"]), normalized)
+
     messages = await _load_messages(checkpointer, normalized)
     if messages is None:
+        # 归属行在、checkpoint 没了（上一次删除删到一半）：同上，404
         raise HTTPException(status_code=404, detail="会话不存在")
 
     return {"thread_id": normalized, "messages": messages_to_history(messages)}
 
 
 @router.delete("/threads/{thread_id}")
-async def delete_thread(request: Request, thread_id: str) -> dict[str, Any]:
+async def delete_thread(
+    request: Request, thread_id: str, user: dict[str, Any] = Depends(require_user)
+) -> dict[str, Any]:
     """删除一个会话及其全部 checkpoint。
 
-    先确认存在再删：`adelete_thread` 对不存在的 thread 是静默成功的，
-    直接删会让「点错了一个已经被删的会话」看起来像成功。
+    先验归属再删（`adelete_thread` 对不存在的 thread 是静默成功的，不自己把关会让
+    「点错了一个已经被删的会话」看起来像成功）；归属行最后删，两次删除之间失败
+    只可能留下「空会话」行，再删一次即可。
     """
     normalized = normalize_thread_id(thread_id)
 
@@ -209,8 +224,9 @@ async def delete_thread(request: Request, thread_id: str) -> dict[str, Any]:
     if checkpointer is None:
         raise HTTPException(status_code=503, detail="checkpointer 不可用")
 
-    if await _load_messages(checkpointer, normalized) is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    user_id = int(user["id"])
+    await _owned_or_404(request, user_id, normalized)
 
     await checkpointer.adelete_thread(normalized)
+    await require_db(request).drop_thread(normalized, user_id)
     return {"thread_id": normalized, "deleted": True}

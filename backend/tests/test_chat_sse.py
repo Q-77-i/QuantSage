@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -137,27 +138,27 @@ def test_tool_result_text_handles_content_blocks() -> None:
 # ── HTTP 层（不启动 lifespan） ──────────────────────────────
 
 
-def test_chat_returns_503_without_agent() -> None:
+def test_chat_returns_503_without_agent(signed_in: object) -> None:
     """lifespan 未跑（或 Agent 装配失败）时给 503，而不是 AttributeError。"""
     app.state.agent = None
     response = TestClient(app).post("/api/v1/chat", json={"message": "你好"})
     assert response.status_code == 503
 
 
-def test_chat_rejects_bad_thread_id() -> None:
+def test_chat_rejects_bad_thread_id(signed_in: object) -> None:
     response = TestClient(app).post(
         "/api/v1/chat", json={"message": "你好", "thread_id": "oops"}
     )
     assert response.status_code == 422
 
 
-def test_threads_returns_503_without_checkpointer() -> None:
+def test_threads_returns_503_without_checkpointer(signed_in: object) -> None:
     app.state.checkpointer = None
     response = TestClient(app).get("/api/v1/chat/threads")
     assert response.status_code == 503
 
 
-def test_chat_streams_sse_end_to_end() -> None:
+def test_chat_streams_sse_end_to_end(signed_in: Any) -> None:
     """端到端：假图 + 真实路由 + 帧编码，确认客户端能按 \\n\\n 切出事件。"""
     app.state.agent = _scripted_agent()
     app.state.langfuse_handler = None

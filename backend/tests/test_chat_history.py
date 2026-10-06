@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Any
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import (
@@ -22,6 +23,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.agent.graph import TOOL_RESULT_PREVIEW, astream_chat, build_agent, preview_text
 from app.agent.history import messages_to_history
 from app.main import app
+from tests.conftest import TEST_USER
 from tests.fakes import ToolCallingFakeModel
 
 
@@ -211,18 +213,18 @@ def test_empty_assistant_message_produces_no_bubble() -> None:
 # ── HTTP 层（不启动 lifespan）────────────────────────────────
 
 
-def test_thread_messages_returns_503_without_checkpointer() -> None:
+def test_thread_messages_returns_503_without_checkpointer(signed_in: object) -> None:
     app.state.checkpointer = None
     response = TestClient(app).get(f"/api/v1/chat/threads/{uuid.uuid4()}/messages")
     assert response.status_code == 503
 
 
-def test_thread_messages_rejects_bad_thread_id() -> None:
+def test_thread_messages_rejects_bad_thread_id(signed_in: object) -> None:
     response = TestClient(app).get("/api/v1/chat/threads/oops/messages")
     assert response.status_code == 422
 
 
-def test_thread_messages_returns_404_for_unknown_thread() -> None:
+def test_thread_messages_returns_404_for_unknown_thread(signed_in: object) -> None:
     app.state.checkpointer = InMemorySaver()
     try:
         response = TestClient(app).get(f"/api/v1/chat/threads/{uuid.uuid4()}/messages")
@@ -231,7 +233,7 @@ def test_thread_messages_returns_404_for_unknown_thread() -> None:
     assert response.status_code == 404
 
 
-def test_thread_messages_after_real_turn() -> None:
+def test_thread_messages_after_real_turn(signed_in: Any) -> None:
     """真跑一轮图（假模型 + 内存 checkpointer），确认端点还原出合并后的历史。"""
     thread_id = str(uuid.uuid4())
     saver = InMemorySaver()
@@ -246,6 +248,7 @@ def test_thread_messages_after_real_turn() -> None:
             pass
 
     asyncio.run(drain())
+    asyncio.run(signed_in.claim_thread(thread_id, TEST_USER["id"]))  # 直接跑图不经端点，归属行要自己落
 
     app.state.checkpointer = saver
     try:
@@ -268,19 +271,19 @@ def test_thread_messages_after_real_turn() -> None:
 # ── 会话删除 ────────────────────────────────────────────────
 
 
-def test_delete_thread_returns_503_without_checkpointer() -> None:
+def test_delete_thread_returns_503_without_checkpointer(signed_in: object) -> None:
     app.state.checkpointer = None
     response = TestClient(app).delete(f"/api/v1/chat/threads/{uuid.uuid4()}")
     assert response.status_code == 503
 
 
-def test_delete_thread_rejects_bad_thread_id() -> None:
+def test_delete_thread_rejects_bad_thread_id(signed_in: object) -> None:
     response = TestClient(app).delete("/api/v1/chat/threads/oops")
     assert response.status_code == 422
 
 
-def test_delete_thread_returns_404_for_unknown_thread() -> None:
-    """`adelete_thread` 对不存在的 thread 静默成功，端点必须自己先确认存在。"""
+def test_delete_thread_returns_404_for_unknown_thread(signed_in: object) -> None:
+    """`adelete_thread` 对不存在的 thread 静默成功，端点必须自己先验归属。"""
     app.state.checkpointer = InMemorySaver()
     try:
         response = TestClient(app).delete(f"/api/v1/chat/threads/{uuid.uuid4()}")
@@ -289,12 +292,8 @@ def test_delete_thread_returns_404_for_unknown_thread() -> None:
     assert response.status_code == 404
 
 
-def test_delete_thread_removes_messages() -> None:
-    """删完之后历史端点应当 404。
-
-    「列表里也不再出现」那条要靠真实 Postgres（列表端点走的是 Postgres 特有的 SQL），
-    见 `tests/integration/test_chat_history_t6.py`。
-    """
+def test_delete_thread_removes_messages(signed_in: Any) -> None:
+    """删完之后历史端点应当 404（归属行也一并删掉，列表里不再有它）。"""
     thread_id = str(uuid.uuid4())
     saver = InMemorySaver()
     agent = build_agent(
@@ -306,6 +305,7 @@ def test_delete_thread_removes_messages() -> None:
             pass
 
     asyncio.run(drain())
+    asyncio.run(signed_in.claim_thread(thread_id, TEST_USER["id"]))
 
     app.state.checkpointer = saver
     try:
@@ -315,5 +315,6 @@ def test_delete_thread_removes_messages() -> None:
         assert created.json() == {"thread_id": thread_id, "deleted": True}
 
         assert client.get(f"/api/v1/chat/threads/{thread_id}/messages").status_code == 404
+        assert client.get("/api/v1/chat/threads").json() == []
     finally:
         app.state.checkpointer = None

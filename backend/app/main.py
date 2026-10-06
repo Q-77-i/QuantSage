@@ -1,8 +1,8 @@
 """FastAPI 入口。
 
-健康探针 + 四组业务路由：chat / threads（T3）、backtest / market / events（T6）。
+健康探针 + 五组业务路由：auth（M1）、chat / threads（T3）、backtest / market / events（T6）。
 
-lifespan 里按「能降级就降级」的姿态装配：checkpointer → 工具 → Agent，
+lifespan 里按「能降级就降级」的姿态装配：checkpointer → 业务库 → 工具 → Agent，
 任一环不可用都不阻断服务启动，由具体的 API 返回 503。
 
 业务异常到 HTTP 状态的映射统一在这里注册（见文件末），端点里不写 try/except：
@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent.graph import build_agent
 from app.agent.tools import load_xiaoshi_tools, query_market_bars
+from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
 from app.api.events import router as events_router
@@ -28,6 +29,7 @@ from app.api.market import router as market_router
 from app.backtest.types import BacktestError, NoDataError
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
+from app.core.db import Database, EmailTaken, init_schema, open_pool
 from app.core.langfuse import build_langfuse_handler
 from app.core.llm import build_chat_model
 from app.core.logging import setup_logging
@@ -46,9 +48,14 @@ async def lifespan(app: FastAPI):
 
     # 先立默认值：路由在任何阶段都能安全地 getattr，而不是撞 AttributeError
     app.state.checkpointer = None
+    app.state.db = None
     app.state.db_ready = False
     app.state.agent = None
     app.state.langfuse_handler = None
+
+    if not settings.jwt_secret.get_secret_value():
+        # 不静默降级成无鉴权：/api/v1/auth/* 会返回 503，缺的是配置不是代码
+        log.warning("JWT_SECRET 未配置，鉴权相关端点将返回 503（见 .env.example）")
 
     async with AsyncExitStack() as stack:
         try:
@@ -63,6 +70,19 @@ async def lifespan(app: FastAPI):
             log.warning(
                 "Postgres 不可用（%s），降级启动；先跑 docker compose up -d --wait",
                 type(exc).__name__,
+            )
+
+        # 业务库（自建表）与 checkpointer 用两个独立的池：各管各的表，互不牵扯
+        try:
+            pool = await stack.enter_async_context(open_pool(settings.postgres_dsn))
+            await init_schema(pool)
+            app.state.db = Database(pool)
+            log.info("业务库就绪（%s）", settings.postgres_summary)
+        except Exception as exc:  # noqa: BLE001
+            if settings.startup_require_db:
+                raise
+            log.warning(
+                "业务库不可用（%s），登录鉴权与会话归属将返回 503", type(exc).__name__
             )
 
         tools = [query_market_bars]
@@ -99,12 +119,23 @@ app.add_middleware(
     allow_origins=get_settings().cors_origins,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
+    # 会话 cookie 要跨源发送（前端 3001 ↔ API 8000，同 site 不同 origin）。
+    # 凭据模式下 allow_origins 不能是 "*"，上面已是显式列表。
+    allow_credentials=True,
     # 会话号在断连时靠响应头兜底回传（SPEC §6）；跨源下浏览器读不到未暴露的响应头
     expose_headers=["X-Thread-Id"],
 )
 
-for router in (chat_router, backtest_router, market_router, events_router):
+for router in (auth_router, chat_router, backtest_router, market_router, events_router):
     app.include_router(router)
+
+
+@app.exception_handler(EmailTaken)
+async def _email_taken(_: Request, exc: EmailTaken) -> JSONResponse:
+    """邮箱唯一约束冲突：请求本身没写错，是「这个邮箱已被占用」，与 422 区分开。"""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT, content={"detail": "该邮箱已被注册"}
+    )
 
 
 @app.exception_handler(DataNotReady)

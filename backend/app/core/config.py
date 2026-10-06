@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr = SecretStr("")
     langfuse_tracing_enabled: bool = True
 
+    # ── 鉴权（M1）──
+    # 只从环境变量读；为空时 /api/v1/auth/* 返回 503，**不静默降级为无鉴权**
+    jwt_secret: SecretStr = SecretStr("")
+    jwt_ttl_seconds: int = 7 * 24 * 3600
+
     # ── 启动姿态：False 时连不上 Postgres 也降级启动（本地开发用）──
     startup_require_db: bool = False
 

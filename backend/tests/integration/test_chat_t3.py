@@ -19,12 +19,14 @@ from fastapi.testclient import TestClient
 
 from app.agent.graph import astream_chat, build_agent
 from app.agent.tools import XIAOSHI_ALLOWLIST, load_xiaoshi_tools, query_market_bars
-from app.api.chat import _thread_ids, _thread_summary
+from app.api.chat import _thread_summary
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
+from app.core.db import Database, init_schema, open_pool
 from app.core.langfuse import build_langfuse_handler
 from app.core.llm import build_chat_model
 from app.main import app
+from tests.integration.conftest import purge_rows
 
 pytestmark = pytest.mark.integration
 
@@ -71,25 +73,50 @@ async def test_agent_calls_tool_and_streams_tokens() -> None:
 
 
 async def test_conversation_persists_and_lists() -> None:
-    """一轮对话后，会话列表能查到它（标题取自首条人类消息）。"""
+    """一轮对话后，会话列表能查到它（标题取自首条人类消息）。
+
+    M1 起列表口径是自有表 `chat_threads.last_active_at`：这里同时验归属行落库。
+    """
     settings = get_settings()
-    async with open_checkpointer(settings.postgres_dsn) as saver:
-        agent = await _assemble(saver)
-        thread_id = str(uuid.uuid4())
-        async for _ in astream_chat(agent, message=QUESTION, thread_id=thread_id):
-            pass
+    email = f"t3-persist-{uuid.uuid4().hex[:8]}@example.com"
+    async with open_pool(settings.postgres_dsn) as pool:
+        await init_schema(pool)
+        db = Database(pool)
+        user = await db.create_user(email, "not-a-real-hash")
+        async with open_checkpointer(settings.postgres_dsn) as saver:
+            agent = await _assemble(saver)
+            thread_id = str(uuid.uuid4())
+            async for _ in astream_chat(agent, message=QUESTION, thread_id=thread_id):
+                pass
 
-        ids = await _thread_ids(saver, 50)
-        assert thread_id in ids, "会话没有落到 checkpointer"
+            await db.claim_thread(thread_id, int(user["id"]))
+            ids = await db.list_thread_ids(int(user["id"]), 50)
+            assert thread_id in ids, "会话没有进本人的列表"
 
-        summary = await _thread_summary(saver, thread_id)
-        assert summary["messages"] >= 2  # 至少一问一答
-        assert summary["title"].startswith("贵州茅台")
+            summary = await _thread_summary(saver, thread_id)
+            assert summary["messages"] >= 2  # 至少一问一答
+            assert summary["title"].startswith("贵州茅台")
+
+            await saver.adelete_thread(thread_id)
+        async with pool.connection() as conn:
+            await conn.execute("DELETE FROM users WHERE email = %s", (email,))
 
 
-def test_chat_endpoint_streams_sse() -> None:
-    """HTTP 层：真实 lifespan + 真实模型，确认 SSE 帧按序到达。"""
+def test_chat_endpoint_streams_sse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP 层：真实 lifespan + 真实模型，确认 SSE 帧按序到达。
+
+    M1 起对话端点要登录，所以先用真实注册端点拿一个账号（注册即登录态）。
+    """
+    monkeypatch.setenv("JWT_SECRET", "integration-secret-not-a-real-key-0123456789")
+    get_settings.cache_clear()
+    email = f"t3-sse-{uuid.uuid4().hex[:8]}@example.com"
+
     with TestClient(app) as client:  # with 才跑 lifespan（会连库、拉起小石 MCP）
+        signed_up = client.post(
+            "/api/v1/auth/register", json={"email": email, "password": "integration-pass"}
+        )
+        assert signed_up.status_code == 201, signed_up.text
+
         with client.stream(
             "POST", "/api/v1/chat", json={"message": QUESTION}
         ) as response:
@@ -114,6 +141,8 @@ def test_chat_endpoint_streams_sse() -> None:
         # 会话列表在同一 lifespan 内查询（退出 with 后 checkpointer 已关闭）
         listed = client.get("/api/v1/chat/threads").json()
         assert any(t["thread_id"] == thread_id for t in listed)
+
+    purge_rows([email], [thread_id])
 
 
 async def test_langfuse_receives_trace() -> None:

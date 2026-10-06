@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.0 ｜ 2026-10-06 ｜ 状态：待评审
+> 版本 v1.1 ｜ 2026-10-07 ｜ 状态：M1 章节已过审并落地（M1a / M1b 已交付，M1c 待做）；M2–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -29,23 +29,76 @@ backend/app/
 ├── paper/                  # 模拟盘：account.py / broker.py / settlement.py / decisions.py
 ├── memory/                 # 决策记忆：decision_store.py / settle.py / reflection.py
 ├── strategy/               # 策略沙箱 + static_check.py（AST 前视检查，纯函数）
-├── core/                   # + auth.py / scheduler.py（ETL 与到期结算定时）
+├── core/                   # + auth.py（哈希 / JWT / 依赖）/ db.py（自有连接池与幂等建表）
+│                           #   scheduler.py（ETL 与到期结算定时）
 scripts/                    # + run_etl.py / run_health_check.py / run_settlement.py / run_backfill.py
-frontend/app/               # + login/ register/ dashboard/（研究首页）research/[id]/（研报页）
-│                           #   watchlist/ paper/
-frontend/components/        # + dashboard/ evidence/ agent-run/ calendar/
+frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ watchlist/ paper/
+│                           #   dashboard/（研究首页）research/[id]/（研报页）
+frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run/ calendar/
 ```
 
 ## 2. M1 用户系统
 
-- 注册/登录：邮箱 + 密码，密码 bcrypt 哈希入库（不回显、不进日志）；JWT access token 经 httpOnly cookie 传递（防 XSS）；邮箱唯一约束
-- Postgres 用户表 `users`；会话 / 策略 / 回测 / 自选股全部挂 `user_id` 外键
-- **归属校验（P1 遗留阻塞项，本功能第一优先级）**：会话列表 / 会话历史 / 回测列表 / 自选股等一切查询端点强制按 `user_id` 过滤；越权访问一律 404（不区分「不存在」与「无权限」，避免泄露存在性）
-- 自选股：`watchlist(user_id, symbol, group_name, added_at, added_price)`；加自选时落当日收盘价，涨幅 = (最新收盘 − added_price) / added_price（最新价取数走 DuckDB 行情层）；分组 CRUD
-- 个人空间页：会话历史 / 我的策略 / 我的回测 / 我的自选
-- 前端：注册 / 登录页 + 路由守卫（未登录重定向登录页）
+> 本功能同时清理 P1 遗留阻塞项（会话无归属校验，P1 SPEC §4 记录），是 P2 的第一道门。
+> 切片：**M1a** 后端地基与归属校验 → **M1b** 前端认证闭环 → **M1c** 自选股 · 个人空间 · 我的回测。
 
-**验收**：注册 → 登录 → 用户 A/B 数据互不可见（含会话列表归属过滤，回归 P1 会话端点）；刷新后会话可恢复；自选股增删分组后涨幅显示正确。
+### M1a 后端地基与归属校验
+
+**数据模型**：四表落同一业务库，幂等 DDL（`CREATE TABLE IF NOT EXISTS`）在 lifespan 内执行，用独立于 checkpointer 的连接池；`app.state.db` 可注入（离线测试注入内存实现），连不上库时受保护端点 503、公开端点照常——沿用 P1「能降级就降级」姿态。
+
+| 表 | 列（要点） |
+|---|---|
+| `users` | `id BIGSERIAL PK` / `email TEXT UNIQUE NOT NULL`（统一存小写）/ `password_hash` / `created_at` |
+| `chat_threads` | `thread_id UUID PK` / `user_id FK→users ON DELETE CASCADE` / `created_at` / `last_active_at`；索引 `(user_id, last_active_at DESC)` |
+| `watchlist` | `id` / `user_id FK` / `symbol` / `group_name TEXT NOT NULL DEFAULT '默认分组'` / `added_at` / `added_price NUMERIC(18,4)`；`UNIQUE(user_id, symbol)` |
+| `backtest_runs` | `id UUID PK` / `user_id FK` / `created_at` / `request JSONB` / `report JSONB`（M1c 用） |
+
+- **归属真源是自建的 `chat_threads`，不是 checkpointer 的 `checkpoints` 表**：后者由 `langgraph-checkpoint-postgres` 自己的迁移管理（`saver.setup()`），不得加列改结构
+- 会话列表口径随之改为 `chat_threads.last_active_at DESC`（每轮对话更新），**不再直读 `checkpoints` 内部表**——解除对第三方库内部 schema 的依赖，并使列表逻辑离线可测；标题仍按 checkpointer 官方读接口取
+- 项目此前无自有建表机制（不引 Alembic）：本功能立第一套
+- 策略表随 M4 建，届时沿用同一 `user_id` 归属约定
+
+**认证**
+
+| 端点 | 行为 |
+|---|---|
+| `POST /api/v1/auth/register` | `{email, password}` → 201；邮箱唯一冲突 → 409；成功即签发会话（与登录共用签发函数，少一次往返） |
+| `POST /api/v1/auth/login` | 成功 → 200 + `Set-Cookie`；失败（邮箱不存在或密码错）→ 401，**同一响应、近似耗时**，不区分原因 |
+| `POST /api/v1/auth/logout` | 清除 cookie |
+| `GET /api/v1/auth/me` | 已登录 → `{id, email}`；未登录 → 401 |
+
+- 密码：`bcrypt` 直用（不引 passlib——对 bcrypt 4.x 有告警且维护停滞）；哈希只入库、不回显、不进日志
+- **密码长度 8 ≤ len ≤ 72 字节在 schema 层显式限制**：bcrypt 只取前 72 字节，超长必须拒绝而非静默截断
+- 会话：HS256 单 access token，7 天，claims = `sub`(user id) + `iat` + `exp`；不做 refresh token
+- Cookie：`httpOnly` + `SameSite=Lax` + `path=/`（`secure=False` 仅因本地 http，生产必须置 True）；Lax 同时挡掉跨站表单类 CSRF
+- `JWT_SECRET` 只读环境变量（`SecretStr`，不回显、不入库）；缺失时启动打 warning 且 `/api/v1/auth/*` 返回 503——**不得静默降级为无鉴权**
+- 前端 `127.0.0.1:3001` ↔ API `127.0.0.1:8000`：同 site 跨 origin，SameSite 按 site（忽略端口）计算 → Lax 可行；**两端 host 必须一致（同用 `127.0.0.1` 或同用 `localhost`），混用会静默掉 cookie**
+
+**归属校验（P1 遗留阻塞项，本功能第一优先级）**
+
+- 唯一规则：凡读写用户数据一律带 `user_id`；命中 0 行 → **404（与「不存在」同响应，不区分「无权限」，避免泄露存在性）**；未登录 → **401**
+- 覆盖端点：`POST /api/v1/chat`（续聊既有会话）、`GET /api/v1/chat/threads`、`GET|DELETE /api/v1/chat/threads/{id}`；会话 / 回测 / 自选股的一切查询端点同规
+- 新建会话在**流开始前**落归属行（失败即 500，不产生无名会话）；客户端传入的 `thread_id` 必须已属于本人，否则 404。P1 无主会话一律孤儿化：不迁移、不认领、不出现在任何列表
+- 删除语义：先 `adelete_thread`（对不存在的 thread 静默成功，非新行为），再删归属行；失败残留只可能是「空会话」行，再删一次即可
+- 公开 / 受保护边界：公开 = `/health*`、`/api/v1/market/*`、`/api/v1/events`（非用户资产，也是 M7「研报未登录只读」的前置口径）；受保护 = `/api/v1/chat/*`、`/api/v1/watchlist/*`、`/api/v1/auth/me`；`POST /api/v1/backtest` 在 M1a/M1b 仍公开（无状态计算），M1c 随落库一并纳入
+
+### M1b 前端认证闭环
+
+- 受保护页迁入路由组 `app/(app)/`（对话页 / 回测页），`AuthGate` 与 `AppHeader` 上提到组布局——**守卫只有一个落点**
+- `AuthProvider`：挂载时 `GET /api/v1/auth/me` 探测登录态（httpOnly cookie 在 JS 侧读不到，这是唯一可行路径）；未定态渲染骨架，避免先闪内容再跳登录；未登录重定向登录页
+- `app/login`、`app/register`：表单 + `next` 回跳；注册成功即登录态
+- `lib/api.ts` 与 `lib/sse.ts` 的**全部**请求带 `credentials: "include"`；后端 CORS 开 `allow_credentials=True`（`allow_origins` 已是显式列表，符合凭据模式要求）
+- 页头显示用户邮箱与「退出」
+
+### M1c 自选股 · 个人空间 · 我的回测
+
+- 自选股：`GET|POST /api/v1/watchlist`、`PATCH|DELETE /api/v1/watchlist/{symbol}`；分组按 SPEC 原文用 `group_name` 字符串列（不建分组实体表），重命名 / 删除各一条 UPDATE，删除分组 = 组内标的回落默认分组
+- `added_price` = 加入时**最近可得交易日收盘价**（qfq，走 DuckDB 行情层）；样例数据只覆盖少数标的，取不到即存 NULL，UI 显示「—」，**不得编数**；涨幅 = (最新可得收盘 − `added_price`) / `added_price`
+- 个人空间页：会话历史 / 我的策略（M4 前占位）/ 我的回测 / 我的自选
+- 回测最小持久化：`POST /api/v1/backtest` 响应改信封 **`{run_id, report}`**（报告结构本身不动，见 P1 SPEC §6；契约改动记录于本阶段）；`request` 存**解析后的 config**（区间已填充，非原始请求）；`GET /api/v1/backtest/runs` 摘要列表 + `GET /api/v1/backtest/runs/{id}` 完整报告（越权 404）
+
+**验收**：注册 → 登录 → 用户 A/B 数据互不可见（含会话列表归属过滤，回归 P1 会话端点）；刷新后会话可恢复；自选股增删分组后涨幅显示正确；越权一律 404、未登录一律 401。
+**本轮不做（记录待议）**：密码重置、邮箱验证、refresh token、记住我、第三方登录、资料页（改密 / 改邮箱）、全局 401 拦截（守卫层已覆盖）、旧会话认领脚本、多设备会话管理（P3-E2）。
 
 ## 3. M2 数据层
 
@@ -138,8 +191,9 @@ frontend/components/        # + dashboard/ evidence/ agent-run/ calendar/
 
 ## 12. 测试策略
 
-- 单元：AST 检查器规则样例矩阵（M4）；A 股规则各拒绝码（M5）；Deflated Sharpe / 因子 IC 与分层（M5）；交易日历与体检脚本（M2）；到期结算与反思（结算用固定价格快照，M7）；证据链组装（M7）；归属过滤（越权一律 404，M1）
-- 集成：auth 注册登录流与越权矩阵（M1）；ETL 幂等重跑（M2）；模拟盘全链路（M6）；研报导出与重放一致（M7）；深路径降级（M8）
+- 单元：AST 检查器规则样例矩阵（M4）；A 股规则各拒绝码（M5）；Deflated Sharpe / 因子 IC 与分层（M5）；交易日历与体检脚本（M2）；到期结算与反思（结算用固定价格快照，M7）；证据链组装（M7）；鉴权纯函数（密码哈希 / JWT / cookie 属性）与归属过滤（M1：离线跑「未登录 401 门 + 内存 DB 的越权矩阵」，注入 `app.state.db` 与 `InMemorySaver`）
+- 集成：auth 注册登录流与 A/B 隔离矩阵（M1，真实 Postgres；用唯一邮箱前缀 + teardown 清理，不污染 dev 库）；ETL 幂等重跑（M2）；模拟盘全链路（M6）；研报导出与重放一致（M7）；深路径降级（M8）
+- 归属校验是**双跑**的：越权矩阵在离线（内存实现，快反馈）与集成（真实 SQL 过滤，验真）各跑一遍——过滤逻辑写在 SQL 里，离线实现无法证明真库行为
 - 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组），不引组件测试框架（沿用 P1 口径）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
@@ -148,3 +202,4 @@ frontend/components/        # + dashboard/ evidence/ agent-run/ calendar/
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
 | v1.0 | 2026-10-06 | M1–M10 | 初版：P2-Mn 技术规格（含竞品调研后扩容的 15 项新功能与 M10 研究首页） |
+| v1.1 | 2026-10-06 | M1 | §2 细化为可执行规格并切 M1a / M1b / M1c：四张自有表与幂等建表机制（不引 Alembic）；**会话归属真源改用自有表，不再直读 checkpointer 内部表**；auth 端点、cookie 属性、密码 72 字节上限、`JWT_SECRET` 缺失的降级姿态；越权 404 规则与公开/受保护边界；`POST /backtest` 响应改信封 `{run_id, report}`（M1c）；§1 补 `core/db.py` 与前端路由组 `(app)/`；§12 补 M1 测试分工与双跑口径 |
