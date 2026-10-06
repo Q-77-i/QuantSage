@@ -58,3 +58,11 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
 export function chartTokens(isDark: boolean): ChartTokens {
   return isDark ? CHART_TOKENS.dark : CHART_TOKENS.light;
 }
+
+/**
+ * 画布上的字体栈，`globals.css` 的 `--font-mono` 副本。
+ *
+ * 图表上的文字几乎全是数字（价格轴、时间轴、标记旁的「买 700」），用等宽栈与表格的
+ * `.num` 同一口径。**不随主题变**，故不走上面的 token 表，也不需要两份。
+ */
+export const CHART_FONT = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace';

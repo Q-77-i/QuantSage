@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { openPositionMarker, tradesToMarkers } from "./markers";
+import { buildMarkers, openPositionMarker, tradesToMarkers } from "./markers";
 import type { Bar, Trade } from "./types";
 
 const PALETTE = { up: "#d03b3b", down: "#0e8f6b" };
@@ -95,5 +95,53 @@ describe("openPositionMarker", () => {
     expect(
       openPositionMarker({ entry_date: "2026-07-04", shares: 200 }, BARS, PALETTE),
     ).toBeNull();
+  });
+});
+
+describe("buildMarkers", () => {
+  it("成交与期末持仓合并后整体升序 —— setMarkers 只对整组要求升序", () => {
+    const markers = buildMarkers(
+      [trade("2026-07-06", "2026-07-07")],
+      { entry_date: "2026-07-02", shares: 300 },
+      BARS,
+      PALETTE,
+    );
+
+    expect(markers.map((marker) => marker.time)).toEqual([
+      "2026-07-02",
+      "2026-07-06",
+      "2026-07-07",
+    ]);
+  });
+
+  it("持仓买入点排在末位时也照样升序", () => {
+    const markers = buildMarkers(
+      [trade("2026-07-01", "2026-07-02")],
+      { entry_date: "2026-07-07", shares: 300 },
+      BARS,
+      PALETTE,
+    );
+
+    expect(markers.map((marker) => marker.time)).toEqual([
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-07",
+    ]);
+    expect(markers.at(-1)?.text).toContain("持有中");
+  });
+
+  it("窗口外的成交与持仓都不产生幽灵点（K 线只有窗口内的 bar）", () => {
+    const markers = buildMarkers(
+      [trade("2026-06-01", "2026-06-02")],
+      { entry_date: "2026-08-01", shares: 300 },
+      BARS,
+      PALETTE,
+    );
+
+    expect(markers).toEqual([]);
+  });
+
+  it("无成交无持仓时返回空数组", () => {
+    expect(buildMarkers([], null, BARS, PALETTE)).toEqual([]);
   });
 });

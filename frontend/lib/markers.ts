@@ -56,12 +56,35 @@ export function tradesToMarkers(
     }
   }
 
-  // v5 要求升序。同日买卖（事件策略换仓时会撞上）按「先买后卖」排——
-  // 显式给序号，不靠 position 字符串的字母序（aboveBar 恰好排在 belowBar 前面）
+  return sortMarkers(markers);
+}
+
+/** v5 要求升序。同日买卖（事件策略换仓时会撞上）按「先买后卖」排——显式给序号，不靠
+ * `position` 字符串的字母序（`aboveBar` 恰好排在 `belowBar` 前面）。 */
+export function sortMarkers(markers: SeriesMarker[]): SeriesMarker[] {
   const order: Record<SeriesMarker["position"], number> = { belowBar: 0, aboveBar: 1 };
   return markers.sort(
     (a, b) => a.time.localeCompare(b.time) || order[a.position] - order[b.position],
   );
+}
+
+/**
+ * 一次给全：成交记录 + 期末持仓，并保证**整体**升序。
+ *
+ * 分别调用上面两个函数再拼起来是错的——`setMarkers` 只对传入数组整体要求升序，
+ * 持仓那笔是追加的，当前单仓位策略下它恰好落在末位，但那是策略实现细节而非契约。
+ * 换策略（允许加仓、多笔并存）后拼接顺序就会乱，而 v5 对乱序是**静默丢点**。
+ */
+export function buildMarkers(
+  trades: Trade[],
+  openPosition: { entry_date: string | null; shares: number } | null,
+  bars: Bar[],
+  palette: MarkerPalette,
+): SeriesMarker[] {
+  const markers = tradesToMarkers(trades, bars, palette);
+  const pending = openPositionMarker(openPosition, bars, palette);
+  if (pending) markers.push(pending);
+  return sortMarkers(markers);
 }
 
 /** 持仓中的那一笔还没有卖方点，单独补一个买入标记，免得图上「只买不卖」像是 bug。 */

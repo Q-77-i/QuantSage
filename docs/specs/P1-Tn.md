@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.8 ｜ 2026-10-06 ｜ 状态：已通过
+> 版本 v0.9 ｜ 2026-10-06 ｜ 状态：已通过
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
 
@@ -102,11 +102,11 @@ class Strategy(Protocol):
 ```
 
 - `trades.reason` 是**出场**原因（入场原因另列 `entry_reason`）
-- `pit_comparison` 为 `null` 表示本次未做对比：未请求，或该策略不消费事件（`ma_cross` 不读事件语料，两模式必然同结果，不做无意义的二次回测）。`delta` 的核心量化值是 `final_equity_pct`（期末权益虚高比例，分母恒为正，不会除零）；`entry_dates` 给出两模式入场日序列，是差异的最直接证据
+- `pit_comparison` 为 `null` 表示本次未做对比：未请求，或该策略不消费事件（`ma_cross` 不读事件语料，两模式必然同结果，不做无意义的二次回测）。`delta` 的核心量化值是 `final_equity_pct`（期末权益**差异**比例：非 PIT 相对 PIT，分母恒为正，不会除零，**方向不预设、可正可负**）；`entry_dates` 给出两模式入场日序列，是差异的最直接证据
 - `open_position` 非空时给出期末持仓的浮动盈亏（`unrealized_pnl` / `unrealized_return`）。它不进 `trades`，故不影响胜率——报告必须单列，否则「胜率」会失真
 - 样本量提示：`bars < 120` 时在 `meta.warnings` 标注。本期事件窗口仅约 54 个交易日，年化与夏普按 252 折算会放大噪声约 √(252/54)≈2.2 倍，报告与 UI 需如实标注
 
-**验收**：对比报告能量化虚高幅度；指标与手工计算样例一致（pytest 硬编码期望值，不引第三方快照库）。
+**验收**：对比报告能量化两口径差异（方向不预设，如实呈现）；指标与手工计算样例一致（pytest 硬编码期望值，不引第三方快照库）。
 
 ## 6. T3 Agent 对话
 
@@ -152,6 +152,9 @@ class Strategy(Protocol):
   - `/backtest` 回测页：参数表单（策略/标的/区间/成本开关/模式）、指标卡、净值曲线（ECharts）、K 线（TradingView Lightweight Charts，标注买卖点）、交易明细表、PIT 对比表
     - lightweight-charts **v5 的 markers 是独立图元**：`chart.addSeries(CandlestickSeries, …)` 建序列后，用 `createSeriesMarkers(series, [])` 取**常驻句柄**再 `handle.setMarkers(...)`；重复调用工厂会叠加图元而非替换。**marker 的 `time` 必须与某根 bar 的 `time` 精确相等且按时间升序，否则静默丢弃**——「买卖点与明细一致」这条验收就靠它成立，映射逻辑须是**可单测的纯函数**
     - `meta.warnings`（`bars < 120` 的样本量提示：年化/夏普按 252 折算，本期事件窗仅约 54 个交易日，噪声放大 √(252/54)≈2.2 倍）必须在 UI 常驻展示，不能只留在 JSON 里
+    - 第 6 块**事件表**：该标的在回测窗口（`meta.start` → `meta.end`）内的全部事件，`event_time` 与 `available_at` **并列成列**（两者之差即 PIT 语义最直观的展示位），行尾「来源」单元格显示 `original_source`，展开见 `source` 与 `content_hash` 前 12 位——PRD §5「来源标注必须可见」在回测页的落点
+    - 主指标区的口径标签**必须以响应体为准**：`pit_mode=both` 时 `meta.mode` 恒为 `"pit"`（主指标跑的就是 PIT），不得回显表单值；`pit_comparison` 为 `null` 时（策略不消费事件语料）须给「两模式必然同结果，不做无意义的二次回测」的解释，不得留空表
+    - K 线的取数窗口与复权口径一律取自响应：`meta.start` / `meta.end` + `adjust=qfq`（缺省区间由 `resolve_window` 代决策，用表单值或全量取数会让 K 线范围与净值曲线不一致）
 - API 契约：
   - `POST /api/v1/chat`（SSE，见 §6）
     - 浏览器 `EventSource` 只支持 GET，前端须 `fetch` + `ReadableStream` 手解帧（按 `\n\n` 切帧，忽略 `: keepalive` 注释帧，不得假设「一个网络分片 = 一个事件」）
@@ -181,7 +184,7 @@ class Strategy(Protocol):
 
 - 单元：引擎撮合/成本/PIT 过滤（T4/T5）、指标计算（T5）、DuckDB 查询层（T2）、SSE 帧编码与事件映射、工具白名单过滤（T3）
 - 集成：chat 端点 SSE、backtest / market / events 端点（离线的端点用例同样写真实 Parquet，不 mock 查询层）
-- 前端：Vitest 只测纯函数（SSE 帧解析、`trades → markers` 的 time 对齐与升序、对话状态机 reducer 与历史消息映射），不引组件测试框架
+- 前端：Vitest 只测纯函数（SSE 帧解析、`trades → markers` 的 time 对齐与升序、对话状态机 reducer 与历史消息映射、指标格式化与表单↔请求映射），不引组件测试框架
 - T3 的离线流式测试需自备假模型：现成的 `FakeMessagesListChatModel` 没实现 `bind_tools`（`create_agent` 运行时会调用），`GenericFakeChatModel` 不产出 `tool_calls`——两者都不足以单独驱动「先调工具、再逐 token 作答」的两轮
 - Langfuse trace 断言：每次集成测试产生 trace
 
@@ -192,6 +195,7 @@ class Strategy(Protocol):
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
 | 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
 | 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |
+| 2026-10-06 | v0.9 | T6c 契约补丁：§7 回测页补第 6 块**事件表**（`event_time` / `available_at` 并列成列 + 来源三元组，PRD §5 的落点），补「口径标签以响应体为准」（`pit_mode=both` 时 `meta.mode` 恒为 `pit`）与「K 线窗口与复权口径取自响应」两条；§5 措辞校正——`final_equity_pct` 由「虚高比例」改「差异比例（可正可负）」，验收句同步（T5 实测非 PIT 均未高于 PIT，旧措辞与事实相反）；§9 前端纯函数清单补指标格式化与表单↔请求映射 |
 | 2026-10-06 | v0.8 | T6b 契约补丁：新增会话历史端点 `GET /api/v1/chat/threads/{id}/messages`（含「按回合合并、与实时 SSE 同构」的合并语义与复用 `TOOL_RESULT_PREVIEW` 的截断口径）与会话删除端点 `DELETE /api/v1/chat/threads/{id}`（CORS 相应放行 `DELETE`）；§7 对话页补停止生成、历史会话回看与会话删除；前端 Vitest 覆盖对话状态机纯函数 |
 | 2026-10-06 | v0.7 | T6 契约补丁：钉死 §7 五处留白——`costs` 改结构化 `{fees, slippage, slippage_bps}`、`start`/`end` 缺省口径与 `run_report.py` 共用、请求补 `params` 且**未知键返回 422**、bars/events 响应结构（events 须含来源三元组，且不做 PIT 过滤）、CORS 与前端 **3001** 端口（3000 已被 Langfuse 占用）；写入 lightweight-charts v5 的 markers 图元与「`time` 必须精确匹配且升序，否则静默丢弃」踩坑预警；样本量 `warnings` 要求进 UI；测试策略补端点与前端纯函数两层 |
 | 2026-10-06 | v0.6 | T3 落地澄清：新增 `GET /api/v1/chat/threads` 会话列表与 `thread_id` 缺省规则（服务端生成 + 响应头/`done` 双通道回传）；SSE 事件补字段定义、`tool_result` 只发截断预览、补保活帧；小石工具改**白名单**暴露（动作型工具有昂贵副作用）；记录三条静默失败陷阱（litellm 裸模型名被拒、`.env` 不进 `os.environ` 致 trace 静默丢失、checkpointer 在 compile 期固化），并写明本轮不做的四项（并发串行化 / 幂等 / 历史裁剪 / 上下文超限） |
