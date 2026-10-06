@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EMPTY, amount, count, eventStamp, num, pct, pp, shortHash } from "./format";
+import { EMPTY, amount, count, dayStamp, eventStamp, num, pct, pp, shortHash } from "./format";
 
 describe("pct —— 输入是比例（0.124 = 12.4%）", () => {
   it("比例转百分数", () => {
@@ -72,6 +72,21 @@ describe("eventStamp", () => {
   it("null 给占位符，认不出的串原样显示（不吞线索）", () => {
     expect(eventStamp(null)).toBe(EMPTY);
     expect(eventStamp("不是时间")).toBe("不是时间");
+  });
+});
+
+describe("dayStamp —— 比 eventStamp 多一个年份", () => {
+  it("补出年份（会话与回测记录是跨月摆放的，少了年份就得猜）", () => {
+    expect(dayStamp("2026-07-15T10:12:58+08:00")).toBe("2026-07-15 10:12");
+  });
+
+  it("与 eventStamp 同一套时区口径：UTC 写法也换算成北京时间", () => {
+    expect(dayStamp("2026-07-15T02:12:58Z")).toBe("2026-07-15 10:12");
+  });
+
+  it("null 给占位符，认不出的串原样显示", () => {
+    expect(dayStamp(null)).toBe(EMPTY);
+    expect(dayStamp("不是时间")).toBe("不是时间");
   });
 });
 

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from app.data import duckdb_client
 from app.main import app
 from tests.conftest import make_backtest_dir, trading_days, ts, write_bars_parquet
+from tests.fakes import FakeDatabase
 
 client = TestClient(app)
 
@@ -167,6 +168,14 @@ def test_events_empty_window_is_not_404(data_dir: Path) -> None:
 
 
 # ── POST /api/v1/backtest ───────────────────────────────────────────────────
+#
+# M1c 起本端点纳入鉴权（跑完要落库，归属是必要信息），响应改信封 `{run_id, report}`。
+# 用例一律挂 `signed_in`：这里验的是回测本身，不是鉴权——「未登录 401」与
+# 「越权 404 / 落库」在 test_backtest_runs.py 与 tests/integration/ 里单独验。
+#
+# 需要留意的一条新契约：**鉴权先于 body 校验**，未登录 + 非法请求体返回 401 而非 422
+# （唯一例外是 JSON 本身解析失败）。下面几条 422/404/503 之所以还能拿到原状态码，
+# 正是因为挂了登录夹具。
 
 
 def post_backtest(**overrides) -> object:
@@ -174,79 +183,104 @@ def post_backtest(**overrides) -> object:
     return client.post("/api/v1/backtest", json=payload)
 
 
-def test_backtest_returns_spec_section5_shape(data_dir: Path) -> None:
+def test_backtest_returns_envelope_around_spec_section5_shape(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """信封是新增的一层，报告结构本身没动（P1 SPEC §6）。"""
     response = post_backtest()
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"meta", "metrics", "equity_curve", "trades", "open_position", "pit_comparison"}
-    assert body["meta"]["bars"] == BAR_COUNT
-    assert len(body["equity_curve"]) == BAR_COUNT
+    assert set(body) == {"run_id", "report"}
+
+    report = body["report"]
+    assert set(report) == {"meta", "metrics", "equity_curve", "trades", "open_position", "pit_comparison"}
+    assert report["meta"]["bars"] == BAR_COUNT
+    assert len(report["equity_curve"]) == BAR_COUNT
 
 
-def test_backtest_default_window_uses_event_start_for_event_driven(data_dir: Path) -> None:
+def test_backtest_default_window_uses_event_start_for_event_driven(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
     """缺省区间与 CLI 同口径：事件策略从事件窗口起跑，不从行情起点空转。"""
-    body = post_backtest(strategy="event_driven").json()
+    body = post_backtest(strategy="event_driven").json()["report"]
     assert body["meta"]["start"] == EVENT_START.isoformat()
 
 
-def test_backtest_default_window_uses_bar_start_for_ma_cross(data_dir: Path) -> None:
-    body = post_backtest(strategy="ma_cross").json()
+def test_backtest_default_window_uses_bar_start_for_ma_cross(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    body = post_backtest(strategy="ma_cross").json()["report"]
     assert body["meta"]["start"] == START.isoformat()
 
 
-def test_backtest_both_modes_yields_comparison_for_event_driven(data_dir: Path) -> None:
-    body = post_backtest(strategy="event_driven", pit_mode="both").json()
+def test_backtest_both_modes_yields_comparison_for_event_driven(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    body = post_backtest(strategy="event_driven", pit_mode="both").json()["report"]
     comparison = body["pit_comparison"]
     assert comparison is not None
     assert set(comparison) == {"pit_metrics", "non_pit_metrics", "delta", "entry_dates"}
 
 
-def test_backtest_both_modes_stays_null_for_ma_cross(data_dir: Path) -> None:
+def test_backtest_both_modes_stays_null_for_ma_cross(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
     """ma_cross 不消费事件语料，两模式必然同结果——不做无意义的二次回测。"""
-    body = post_backtest(strategy="ma_cross", pit_mode="both").json()
+    body = post_backtest(strategy="ma_cross", pit_mode="both").json()["report"]
     assert body["pit_comparison"] is None
 
 
-def test_backtest_pit_mode_selects_cutoff_field(data_dir: Path) -> None:
-    assert post_backtest(pit_mode="pit").json()["meta"]["cutoff_field"] == "available_at"
+def test_backtest_pit_mode_selects_cutoff_field(signed_in: FakeDatabase, data_dir: Path) -> None:
+    assert post_backtest(pit_mode="pit").json()["report"]["meta"]["cutoff_field"] == "available_at"
     assert (
-        post_backtest(pit_mode="non_pit").json()["meta"]["cutoff_field"] == "event_time"
+        post_backtest(pit_mode="non_pit").json()["report"]["meta"]["cutoff_field"]
+        == "event_time"
     )
 
 
-def test_backtest_cost_switches_reach_the_engine(data_dir: Path) -> None:
-    with_costs = post_backtest(costs={"fees": True, "slippage": True}).json()
-    without = post_backtest(costs={"fees": False, "slippage": False}).json()
+def test_backtest_cost_switches_reach_the_engine(signed_in: FakeDatabase, data_dir: Path) -> None:
+    with_costs = post_backtest(costs={"fees": True, "slippage": True}).json()["report"]
+    without = post_backtest(costs={"fees": False, "slippage": False}).json()["report"]
     assert with_costs["meta"]["costs"] != without["meta"]["costs"]
 
 
-def test_backtest_unknown_strategy_is_422(data_dir: Path) -> None:
+def test_backtest_unknown_strategy_is_422(signed_in: FakeDatabase, data_dir: Path) -> None:
     response = post_backtest(strategy="buy_and_hold")
     assert response.status_code == 422
 
 
-def test_backtest_unknown_param_is_422(data_dir: Path) -> None:
+def test_backtest_unknown_param_is_422(signed_in: FakeDatabase, data_dir: Path) -> None:
     """拼错的键必须报错：`from_params` 会静默忽略它，用户会以为参数生效了。"""
     response = post_backtest(strategy="event_driven", params={"minscore": 50})
     assert response.status_code == 422
     assert "minscore" in response.text
 
 
-def test_backtest_reversed_window_is_422(data_dir: Path) -> None:
+def test_backtest_reversed_window_is_422(signed_in: FakeDatabase, data_dir: Path) -> None:
     response = post_backtest(start="2026-08-01", end="2026-07-01")
     assert response.status_code == 422
 
 
-def test_backtest_unknown_symbol_is_404(data_dir: Path) -> None:
+def test_backtest_unknown_symbol_is_404(signed_in: FakeDatabase, data_dir: Path) -> None:
     response = post_backtest(symbol="000001")
     assert response.status_code == 404
 
 
-def test_backtest_data_not_ready_is_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_backtest_data_not_ready_is_503(
+    signed_in: FakeDatabase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: empty)
     assert post_backtest().status_code == 503
+
+
+def test_backtest_failure_leaves_no_run_record(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """落库在 `build_report` 成功之后：异常路径不该留下半条记录。"""
+    assert post_backtest(symbol="000001").status_code == 404
+    assert signed_in.runs == {}
 
 
 # ── CORS ────────────────────────────────────────────────────────────────────
@@ -278,6 +312,16 @@ def test_cors_allows_frontend_origin_and_exposes_thread_header() -> None:
         },
     )
     assert "DELETE" in delete_preflight.headers["access-control-allow-methods"]
+
+    # 自选股改分组 / 重命名分组走 PATCH（M1c），同一个坑：漏了它浏览器直接拦掉
+    patch_preflight = client.options(
+        "/api/v1/watchlist/600519",
+        headers={
+            "Origin": "http://127.0.0.1:3001",
+            "Access-Control-Request-Method": "PATCH",
+        },
+    )
+    assert "PATCH" in patch_preflight.headers["access-control-allow-methods"]
 
 
 # ── M1：数据时点（页头「数据截至 X」的数据源）────────────────

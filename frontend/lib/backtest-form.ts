@@ -8,7 +8,7 @@
  *     前端不重复实现，这条路也正好验证「后端 422 → 内联显示」的通路
  */
 
-import type { BacktestRequest, PitMode, Strategy } from "./types";
+import type { BacktestRequest, PitMode, StoredBacktestRequest, Strategy } from "./types";
 
 /** 与 `data/bars/*.parquet` 落盘的三个标的对应（T2）。 */
 export const SYMBOLS = [
@@ -151,6 +151,32 @@ export function buildRequest(state: FormState): BacktestRequest {
     },
     pit_mode: state.pitMode,
     params,
+  };
+}
+
+/**
+ * 存下来的请求 → 表单（重开历史回测用）。
+ *
+ * 必须回填：不回填的话表单显示的是默认值、报告却是那一次的，两者对不上，用户会以为
+ * 参数没生效。区间存的是**解析后的结果**（不是空串），所以填回去之后再点「运行」=
+ * 「按当时那段区间重跑」——这正是「重开」该有的语义。
+ */
+export function formFromRequest(request: StoredBacktestRequest): FormState {
+  return {
+    strategy: request.strategy,
+    symbol: request.symbol,
+    start: request.start,
+    end: request.end,
+    fees: request.costs.fees,
+    slippage: request.costs.slippage,
+    slippageBps: String(request.costs.slippage_bps),
+    pitMode: request.pit_mode,
+    params: Object.fromEntries(
+      PARAMS[request.strategy].map((field) => [
+        field.key,
+        String(request.params[field.key] ?? field.fallback),
+      ]),
+    ),
   };
 }
 

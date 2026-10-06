@@ -11,14 +11,17 @@
  */
 
 import type {
-  BacktestReport,
   BacktestRequest,
+  BacktestResponse,
+  BacktestRunDetail,
+  BacktestRunSummary,
   BarsResponse,
   DataFreshness,
   EventsResponse,
   ThreadMessagesResponse,
   ThreadSummary,
   User,
+  WatchlistItem,
 } from "./types";
 
 /** 后端端口。只在本机联调时改（见 .env.local 说明）。 */
@@ -61,6 +64,14 @@ export async function errorMessage(response: Response): Promise<string> {
     // 非 JSON 响应（网关错误页一类）走下面的兜底
   }
   return `请求失败（HTTP ${response.status}）`;
+}
+
+/**
+ * 把异常翻成一句人话：`ApiError` 带的是后端的 detail，其余（断网、后端没起）用调用方给的兜底。
+ * 面板与 hook 都走这一条，免得同一种失败在不同页面说法不一。
+ */
+export function describeError(cause: unknown, fallback: string): string {
+  return cause instanceof ApiError ? cause.message : fallback;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -109,12 +120,50 @@ export const api = {
   events: (symbol: string, params: { start?: string; end?: string } = {}) =>
     request<EventsResponse>(`/api/v1/events${query({ symbol, ...params })}`),
 
+  /** M1c 起返回信封 `{run_id, report}`，且需要登录（跑完会落库） */
   backtest: (body: BacktestRequest) =>
-    request<BacktestReport>("/api/v1/backtest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+    request<BacktestResponse>("/api/v1/backtest", jsonInit("POST", body)),
+
+  // ── 我的回测（M1c）────────────────────────────────────────────────────
+  runs: (limit = 20) =>
+    request<BacktestRunSummary[]>(`/api/v1/backtest/runs${query({ limit })}`),
+
+  /** 重开某次回测：取回完整报告 + 当次的请求配置 */
+  run: (runId: string) =>
+    request<BacktestRunDetail>(`/api/v1/backtest/runs/${encodeURIComponent(runId)}`),
+
+  // ── 自选股（M1c）──────────────────────────────────────────────────────
+  watchlist: () => request<WatchlistItem[]>("/api/v1/watchlist"),
+
+  addWatchlist: (symbol: string, groupName?: string) =>
+    request<WatchlistItem>(
+      "/api/v1/watchlist",
+      jsonInit("POST", groupName ? { symbol, group_name: groupName } : { symbol }),
+    ),
+
+  moveWatchlist: (symbol: string, groupName: string) =>
+    request<{ symbol: string; group_name: string }>(
+      `/api/v1/watchlist/${encodeURIComponent(symbol)}`,
+      jsonInit("PATCH", { group_name: groupName }),
+    ),
+
+  removeWatchlist: (symbol: string) =>
+    request<{ symbol: string; deleted: boolean }>(
+      `/api/v1/watchlist/${encodeURIComponent(symbol)}`,
+      { method: "DELETE" },
+    ),
+
+  renameWatchlistGroup: (from: string, to: string) =>
+    request<{ group_name: string; renamed_from: string }>(
+      `/api/v1/watchlist/groups/${encodeURIComponent(from)}`,
+      jsonInit("PATCH", { name: to }),
+    ),
+
+  deleteWatchlistGroup: (name: string) =>
+    request<{ group_name: string; deleted: boolean; fallback_group: string }>(
+      `/api/v1/watchlist/groups/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
 
   threads: () => request<ThreadSummary[]>("/api/v1/chat/threads"),
 

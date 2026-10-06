@@ -86,15 +86,18 @@ flowchart LR
 | 前端 | 对话页（流式渲染、工具步骤可视化、停止生成、历史回看）与回测页（指标卡、净值曲线、K 线买卖点、PIT 对比表、交易明细、事件表含来源标注） |
 | 教程 | [`ma_cross.md`](docs/tutorials/ma_cross.md)、[`event_driven.md`](docs/tutorials/event_driven.md)——策略逻辑、参数含义、复现命令与期望数字、易误读点 |
 
-**已落地（P2-Mn · M1 进行中）**
+**已落地（P2-Mn · M1 完成）**
 
 | 功能 | 内容 |
 |---|---|
 | 用户系统（M1a / M1b） | 注册 / 登录 / 退出 / 当前用户（bcrypt 哈希 + HS256 JWT，httpOnly + SameSite=Lax cookie）；**用户数据隔离**：会话归属过滤，越权与不存在同返 404、未登录 401；前端受保护路由组与登录守卫 |
+| 自选股（M1c） | 加自选 / 分组增删改 / **加自选以来涨幅**（加入时记最近可得收盘价，取不到即留空显示「—」） |
+| 个人空间（M1c） | 「我的自选 / 我的回测 / 会话历史 / 我的策略（M4 前占位）」四页签（`/space?tab=`） |
+| 我的回测（M1c） | 每次回测落库；摘要列表 + **重开**（`/backtest?run=<id>` 载入完整报告并回填表单） |
 
 **规划中**
 
-P2-Mn 其余功能（自选股与个人空间 · M1c / 日增量 ETL / RAG 完整化 / 策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
+P2-Mn 其余功能（日增量 ETL / RAG 完整化 / 策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
 
 ---
 
@@ -166,14 +169,18 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 | POST | `/api/v1/chat` 🔒 | SSE 流式问答（`token` / `tool_call` / `tool_result` / `done` / `error`） |
 | GET | `/api/v1/chat/threads` 🔒 | 会话列表（仅本人，按最近活动倒序） |
 | GET · DELETE | `/api/v1/chat/threads/{id}` · `.../messages` 🔒 | 会话历史（含工具步骤）与删除 |
-| POST | `/api/v1/backtest` | 跑回测，返回指标 / 净值 / 交易 / PIT 对比（落库属 M1c） |
+| POST | `/api/v1/backtest` 🔒 | 跑回测并落库，返回信封 `{run_id, report}`（报告含指标 / 净值 / 交易 / PIT 对比） |
+| GET | `/api/v1/backtest/runs` · `/runs/{id}` 🔒 | 我的回测摘要列表 / 按 id 取回完整报告（越权 404） |
+| GET · POST | `/api/v1/watchlist` 🔒 | 自选股列表（含最新价与加自选以来涨幅）/ 加自选（重复 409） |
+| PATCH · DELETE | `/api/v1/watchlist/{symbol}` 🔒 | 改分组 / 移出自选 |
+| PATCH · DELETE | `/api/v1/watchlist/groups/{name}` 🔒 | 重命名分组（撞名即合并）/ 删除分组（组内标的回落默认分组） |
 | GET | `/api/v1/market/freshness` | 本地数据最新时点（页头「数据截至 X」的数据源） |
 | GET | `/api/v1/market/{symbol}/bars` | 单标的日线（`adjust=qfq\|raw`） |
 | GET | `/api/v1/events` | 事件语料（`event_time` 与 `available_at` 并列，含来源三元组） |
 
 交互式文档：后端起来后访问 `/docs`。
 
-🔒 = 需登录（`auth/me`、`chat/*` 全部受保护；`market` 与 `events` 是非用户资产，保持公开）。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API（`localhost` 打开就连 `localhost:8000`）——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
+🔒 = 需登录（`auth/me`、`chat/*`、`watchlist/*`、`backtest` 与其记录全部受保护；`market` 与 `events` 是非用户资产，保持公开）。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API（`localhost` 打开就连 `localhost:8000`）——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
 
 ---
 
@@ -184,16 +191,16 @@ QuantSage/
 ├── backend/
 │   ├── app/
 │   │   ├── agent/      # LangGraph 图、工具白名单、prompt、历史回合合并
-│   │   ├── api/        # chat / backtest / market / events 四组路由
+│   │   ├── api/        # auth / chat / backtest / watchlist / market / events 六组路由
 │   │   ├── backtest/   # 引擎、PIT 闸门、撮合、成本、指标、报告、策略
 │   │   ├── core/       # 配置、checkpointer、LLM 与 Langfuse 入口、日志脱敏
 │   │   └── data/       # DuckDB 客户端、小石 CLI/MCP 装配
 │   ├── scripts/        # 下载、建库、回测与 MCP 验收脚本
 │   └── tests/          # 离线 + tests/integration
 ├── frontend/
-│   ├── app/            # / 对话页、/backtest 回测页
-│   ├── components/     # chat / backtest / ui
-│   └── lib/            # SSE、图表主题、对话状态机、格式化（纯函数 + 单测）
+│   ├── app/            # / 对话页、/backtest 回测页、/space 个人空间、/login、/register
+│   ├── components/     # chat / backtest / space / auth / ui
+│   └── lib/            # SSE、图表主题、对话状态机、自选股分组、格式化（纯函数 + 单测）
 ├── docs/
 │   ├── PRD.md          # 需求与验收
 │   ├── specs/          # 技术规格（逐阶段滚动）
@@ -216,7 +223,8 @@ QuantSage/
 
 这是当前进度的诚实清单，避免读者误判完成度：
 
-- **鉴权与归属校验已落地（M1a / M1b）**，但 M1 未收口：自选股、个人空间页与「我的回测」（`backtest_runs` 落库）属 M1c，**回测目前仍是无状态计算、不落库也不纳入鉴权**
+- **M1 已收口（M1a / M1b / M1c）**：鉴权与归属校验、自选股、个人空间页、「我的回测」全部落地；`POST /api/v1/backtest` 自 M1c 起**落库并需登录**，响应为信封 `{run_id, report}`（报告结构本身未变，见 [docs/specs/P1-Tn.md](docs/specs/P1-Tn.md) §7 的 P2-M1c 加注）
+- **自选股的价格取自本地行情快照**：样例数据只覆盖少数标的，取不到价的标的一律显示「—」，不编数；加入时价是当时最近可得收盘价，之后不随行情前移
 - **Redis 与 Qdrant 在 P1 未被后端调用**，只是 compose 里就位的服务（RAG 属 P2-M3）
 - **多 Agent 深路径尚未实现**，P1 是单 Agent ReAct
 - **回测引擎为最小实现**：无组合、无模拟盘、无常驻调度；`bars < 120` 时年化与夏普会被放大（UI 常驻提示）

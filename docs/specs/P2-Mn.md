@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.1 ｜ 2026-10-07 ｜ 状态：M1 章节已过审并落地（M1a / M1b 已交付，M1c 待做）；M2–M10 随各功能开工滚动过审
+> 版本 v1.2 ｜ 2026-10-07 ｜ 状态：M1 章节已细化并落地（M1a / M1b / M1c 三段）；M2–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -32,15 +32,16 @@ backend/app/
 ├── core/                   # + auth.py（哈希 / JWT / 依赖）/ db.py（自有连接池与幂等建表）
 │                           #   scheduler.py（ETL 与到期结算定时）
 scripts/                    # + run_etl.py / run_health_check.py / run_settlement.py / run_backfill.py
-frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ watchlist/ paper/
+frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ space/（个人空间）paper/
 │                           #   dashboard/（研究首页）research/[id]/（研报页）
-frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run/ calendar/
+│                           #   自选股不单开路由，是 space/ 的一个页签（M1c 定）
+frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ agent-run/ calendar/
 ```
 
 ## 2. M1 用户系统
 
 > 本功能同时清理 P1 遗留阻塞项（会话无归属校验，P1 SPEC §4 记录），是 P2 的第一道门。
-> 切片：**M1a** 后端地基与归属校验 → **M1b** 前端认证闭环 → **M1c** 自选股 · 个人空间 · 我的回测。
+> 切片：**M1a** 后端地基与归属校验 → **M1b** 前端认证闭环 → **M1c** 自选股 · 个人空间 · 我的回测（M1a / M1b 已交付；M1c 按 v1.2 规格实施中）。
 
 ### M1a 后端地基与归属校验
 
@@ -81,7 +82,7 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 - 覆盖端点：`POST /api/v1/chat`（续聊既有会话）、`GET /api/v1/chat/threads`、`GET|DELETE /api/v1/chat/threads/{id}`；会话 / 回测 / 自选股的一切查询端点同规
 - 新建会话在**流开始前**落归属行（失败即 500，不产生无名会话）；客户端传入的 `thread_id` 必须已属于本人，否则 404。P1 无主会话一律孤儿化：不迁移、不认领、不出现在任何列表
 - 删除语义：先 `adelete_thread`（对不存在的 thread 静默成功，非新行为），再删归属行；失败残留只可能是「空会话」行，再删一次即可
-- 公开 / 受保护边界：公开 = `/health*`、`/api/v1/market/*`、`/api/v1/events`（非用户资产，也是 M7「研报未登录只读」的前置口径）；受保护 = `/api/v1/chat/*`、`/api/v1/watchlist/*`、`/api/v1/auth/me`；`POST /api/v1/backtest` 在 M1a/M1b 仍公开（无状态计算），M1c 随落库一并纳入
+- 公开 / 受保护边界：公开 = `/health*`、`/api/v1/market/*`、`/api/v1/events`（非用户资产，也是 M7「研报未登录只读」的前置口径）；受保护 = `/api/v1/chat/*`、`/api/v1/watchlist/*`、`/api/v1/auth/me`。`POST /api/v1/backtest` 与 `GET /api/v1/backtest/runs*` 自 M1c 起纳入受保护（落库需要归属；M1a/M1b 时它还是无状态计算、公开）
 
 ### M1b 前端认证闭环
 
@@ -96,12 +97,42 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 
 ### M1c 自选股 · 个人空间 · 我的回测
 
-- 自选股：`GET|POST /api/v1/watchlist`、`PATCH|DELETE /api/v1/watchlist/{symbol}`；分组按 SPEC 原文用 `group_name` 字符串列（不建分组实体表），重命名 / 删除各一条 UPDATE，删除分组 = 组内标的回落默认分组
-- `added_price` = 加入时**最近可得交易日收盘价**（qfq，走 DuckDB 行情层）；样例数据只覆盖少数标的，取不到即存 NULL，UI 显示「—」，**不得编数**；涨幅 = (最新可得收盘 − `added_price`) / `added_price`
-- 个人空间页：会话历史 / 我的策略（M4 前占位）/ 我的回测 / 我的自选
-- 回测最小持久化：`POST /api/v1/backtest` 响应改信封 **`{run_id, report}`**（报告结构本身不动，见 P1 SPEC §6；契约改动记录于本阶段）；`request` 存**解析后的 config**（区间已填充，非原始请求）；`GET /api/v1/backtest/runs` 摘要列表 + `GET /api/v1/backtest/runs/{id}` 完整报告（越权 404）
+**自选股**（`app/api/watchlist.py`；表结构见 M1a）
 
-**验收**：注册 → 登录 → 用户 A/B 数据互不可见（含会话列表归属过滤，回归 P1 会话端点）；刷新后会话可恢复；自选股增删分组后涨幅显示正确；越权一律 404、未登录一律 401。
+| 端点 | 行为 |
+|---|---|
+| `GET /api/v1/watchlist` | 本人全部自选，**扁平数组**（分组由前端聚合）：`[{symbol, group_name, added_at, added_price, latest_close, latest_trade_date, change_pct}]` |
+| `POST /api/v1/watchlist` | `{symbol, group_name?}` → 201 + 同形状单条；`UNIQUE(user_id, symbol)` 冲突 → **409**；symbol 非六位数字 → 422；`group_name` 缺省「默认分组」 |
+| `PATCH /api/v1/watchlist/{symbol}` | `{group_name}` 改分组（一条 UPDATE）；不属于本人 / 不存在 → 404 |
+| `DELETE /api/v1/watchlist/{symbol}` | 200 `{symbol, deleted: true}`；不存在 → 404 |
+| `PATCH /api/v1/watchlist/groups/{name}` | `{name}` 重命名分组；**撞名即合并**（`UPDATE ... SET group_name` 的自然语义，不设 409）；原名不存在 → 404 |
+| `DELETE /api/v1/watchlist/groups/{name}` | 组内标的回落「默认分组」（一条 UPDATE）；原名不存在 → 404 |
+
+- 分组名去首尾空白后 1–24 字符，**不得含 `/`**（`%2F` 在路由层被解码成路径分隔符 → 404）与控制字符，否则 422
+- **「默认分组」是回落目标**：重命名与删除它一律 **400**（改名会让回落目标与建表默认值脱节）
+- `added_price` = 加入时**最近可得交易日收盘价**（qfq，走 DuckDB 行情层）；取不到即存 NULL
+- `change_pct` = (最新可得收盘 − `added_price`) / `added_price`；分母 ≤ 0 或任一为 NULL → `null`，UI 显示「—」，**不得编数**
+- **降级**：行情层不可用（`DataNotReady`）时本端点**不 503**——价格字段全 null 并打 warning（自选股是用户资产，不该被行情依赖拖死，与「取不到即留空」同口径）；加自选照常，`added_price` 记 NULL。Postgres 不可用仍由 `require_user` 503
+- 分组无实体表（见 M1a）⇒ **不存在「空分组」**，分组视图由 items 去重得出；`GET /api/v1/watchlist/groups` 这类单段路由会与 `/watchlist/{symbol}` 相撞，不设
+
+**回测最小持久化**
+
+- `POST /api/v1/backtest` **纳入鉴权**（`require_user` + `require_db`），响应改信封 **`{run_id, report}`**（报告结构本身不动，见 P1 SPEC §6；契约变更同步记入 P1 SPEC §10）
+- 落库 `request` = **解析后的 config**：请求体 `model_dump(mode="json")` 后覆盖 `resolve_window` 解出的 `start`/`end`，并显式补 `adjust: "qfq"`；`costs` 取请求的 `CostOptions`（`CostModel` 不可序列化）；`pit_mode` 存**请求值**（`"both"`），不存归一后的 `Mode.PIT`
+- 落库时机：`build_report` **成功之后**（异常路径不落库），失败即 500
+- `GET /api/v1/backtest/runs?limit=20` → `[{id, created_at, symbol, strategy, start, end, pit_mode, metrics}]`；`metrics` 取 `report.metrics` **整块**（9 键）——逐键用 `->>` 抽取会把数字静默变成字符串
+- `GET /api/v1/backtest/runs/{id}` → `{id, created_at, request, report}`；越权 / 不存在 → 404；非 UUID → 422
+- **鉴权先于参数校验**：`POST` 未登录 + 非法体返回 **401**（FastAPI 先解依赖再校验 body；唯一例外是 JSON 本身解析失败，仍 422）
+
+**个人空间页**（`app/(app)/space/`，导航只加这一项）
+
+- 四页签（`?tab=watchlist|runs|threads|strategies`，默认 `watchlist`）：我的自选（完整增删改分组）/ 我的回测 / 会话历史 / 我的策略（M4 前占位）
+- 深链回原页完整恢复：会话历史 → `/?thread=<id>`；我的回测 → `/backtest?run=<id>`（载入存下来的完整报告，**并把表单回填成该次请求**；跑完一次把地址更新为 `?run=`）
+- 深链的 `useSearchParams` 以「只渲染 `null` 的子组件」形式包在 `Suspense` 内：生产构建下边界内整棵子树降级为 CSR，把整页包进去会让全高布局塌陷（同 `app/login/page.tsx`）
+- `(app)/layout.tsx` 的守卫把 `next` 写成 `pathname + window.location.search`，否则深链在重新登录后丢失
+- `GET /api/v1/chat/threads` 响应**增补 `last_active_at`**（additive）：会话列表口径不变，只是把排序依据一并带出，供个人空间显示「最近活动」
+
+**验收**：注册 → 登录 → 用户 A/B 数据互不可见（含会话列表归属过滤，回归 P1 会话端点）；刷新后会话可恢复；自选股增删分组后涨幅显示正确；回测跑完可在「我的回测」里重开且表单与报告对得上；越权一律 404、未登录一律 401。
 **本轮不做（记录待议）**：密码重置、邮箱验证、refresh token、记住我、第三方登录、资料页（改密 / 改邮箱）、全局 401 拦截（守卫层已覆盖）、旧会话认领脚本、多设备会话管理（P3-E2）。
 
 ## 3. M2 数据层
@@ -198,7 +229,9 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 - 单元：AST 检查器规则样例矩阵（M4）；A 股规则各拒绝码（M5）；Deflated Sharpe / 因子 IC 与分层（M5）；交易日历与体检脚本（M2）；到期结算与反思（结算用固定价格快照，M7）；证据链组装（M7）；鉴权纯函数（密码哈希 / JWT / cookie 属性）与归属过滤（M1：离线跑「未登录 401 门 + 内存 DB 的越权矩阵」，注入 `app.state.db` 与 `InMemorySaver`）
 - 集成：auth 注册登录流与 A/B 隔离矩阵（M1，真实 Postgres；用唯一邮箱前缀 + teardown 清理，不污染 dev 库）；ETL 幂等重跑（M2）；模拟盘全链路（M6）；研报导出与重放一致（M7）；深路径降级（M8）
 - 归属校验是**双跑**的：越权矩阵在离线（内存实现，快反馈）与集成（真实 SQL 过滤，验真）各跑一遍——过滤逻辑写在 SQL 里，离线实现无法证明真库行为
-- 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组），不引组件测试框架（沿用 P1 口径）
+- M1c 增量：自选股离线用例注入内存业务库（未登录 401 门 / 重复 409 / 越权 404 / 分组 UPDATE 语义 / 涨幅与 NULL 口径 / 行情层不可用时的降级），**内存替身必须照抄 `UNIQUE(user_id, symbol)` 语义**，否则 409 用例是假的；回测落库用例验信封形状、列表只列本人、越权 404
+- M1c 回归：`POST /api/v1/backtest` 改信封与加鉴权后，P1 既有的 12 个离线回测用例统一挂 `signed_in` 夹具并改读 `body["report"]`；集成侧两个回测用例改为跑 lifespan + 真实注册（裸 `TestClient` 没有 `app.state.db`），账号在 teardown 里清（`users` 级联清 `watchlist` 与 `backtest_runs`）
+- 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验），不引组件测试框架（沿用 P1 口径）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
 ## 13. 变更记录
@@ -206,4 +239,5 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
 | v1.0 | 2026-10-06 | M1–M10 | 初版：P2-Mn 技术规格（含竞品调研后扩容的 15 项新功能与 M10 研究首页） |
+| v1.2 | 2026-10-07 | M1c | §2 M1c 细化为可执行规格：自选股六端点与分组名/「默认分组」约束、行情层不可用时的降级口径；回测落库（`request` 存解析后 config、`runs` 摘要取 metrics 整块、落库时机）、`POST /backtest` 纳入鉴权与信封化、**鉴权先于参数校验（未登录 401 覆盖 422）**；个人空间四页签与两条深链、会话列表增补 `last_active_at`；§1 自选股不单开路由（`watchlist/` → `space/`）；§12 补 M1c 增量与 P1 回测用例的回归口径 |
 | v1.1 | 2026-10-06 | M1 | §2 细化为可执行规格并切 M1a / M1b / M1c：四张自有表与幂等建表机制（不引 Alembic）；**会话归属真源改用自有表，不再直读 checkpointer 内部表**；auth 端点、cookie 属性、密码 72 字节上限、`JWT_SECRET` 缺失的降级姿态；越权 404 规则与公开/受保护边界；`POST /backtest` 响应改信封 `{run_id, report}`（M1c）；§1 补 `core/db.py` 与前端路由组 `(app)/`；§12 补 M1 测试分工与双跑口径 |

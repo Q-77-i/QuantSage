@@ -21,7 +21,11 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!loading && !user) {
-      router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+      // 带上查询串：`/?thread=x`、`/backtest?run=y` 这类深链在重新登录后要能回到原处。
+      // 用 `window.location.search` 而不是 `useSearchParams`——后者要求边界在 layout 之上，
+      // 这一层做不到（也正因如此守卫才能只写一处）。
+      const next = `${pathname}${window.location.search}`;
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
     }
   }, [loading, user, router, pathname]);
 

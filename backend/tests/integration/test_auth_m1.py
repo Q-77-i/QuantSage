@@ -13,47 +13,17 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 from app.agent.graph import build_agent
-from app.core.config import get_settings
 from app.main import app
 from tests.fakes import ToolCallingFakeModel
-from tests.integration.conftest import purge_rows
+from tests.integration.conftest import PASSWORD, purge_rows, sign_up
 
 pytestmark = pytest.mark.integration
-
-PASSWORD = "integration-pass"
-
-
-@pytest.fixture
-def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv("JWT_SECRET", "integration-secret-not-a-real-key-0123456789")
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-@pytest.fixture
-def real_stack(jwt_env: None) -> Iterator[TestClient]:
-    """起真实应用（跑 lifespan：连库、建表；小石 MCP 起不来也只是降级，不影响本用例）。"""
-    with TestClient(app) as client:
-        yield client
-
-
-def _sign_up(email: str) -> TestClient:
-    client = TestClient(app)
-    response = client.post(
-        "/api/v1/auth/register", json={"email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    return client
-
-
 
 
 def test_register_login_and_ab_isolation(real_stack: TestClient) -> None:
@@ -71,7 +41,7 @@ def test_register_login_and_ab_isolation(real_stack: TestClient) -> None:
     try:
         assert TestClient(app).get("/api/v1/chat/threads").status_code == 401
 
-        alice, bob = _sign_up(alice_email), _sign_up(bob_email)
+        alice, bob = sign_up(alice_email), sign_up(bob_email)
 
         # 邮箱唯一约束在真库上生效
         duplicate = TestClient(app).post(

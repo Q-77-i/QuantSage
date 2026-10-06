@@ -1,6 +1,7 @@
 """FastAPI 入口。
 
-健康探针 + 五组业务路由：auth（M1）、chat / threads（T3）、backtest / market / events（T6）。
+健康探针 + 六组业务路由：auth（M1）、watchlist（M1c）、chat / threads（T3）、
+backtest / market / events（T6）。
 
 lifespan 里按「能降级就降级」的姿态装配：checkpointer → 业务库 → 工具 → Agent，
 任一环不可用都不阻断服务启动，由具体的 API 返回 503。
@@ -26,10 +27,11 @@ from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
 from app.api.events import router as events_router
 from app.api.market import router as market_router
+from app.api.watchlist import router as watchlist_router
 from app.backtest.types import BacktestError, NoDataError
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
-from app.core.db import Database, EmailTaken, init_schema, open_pool
+from app.core.db import Database, EmailTaken, SymbolTracked, init_schema, open_pool
 from app.core.langfuse import build_langfuse_handler
 from app.core.llm import build_chat_model
 from app.core.logging import setup_logging
@@ -117,7 +119,8 @@ app = FastAPI(title="QuantSage API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
-    allow_methods=["GET", "POST", "DELETE"],
+    # PATCH 是自选股改分组用的：漏了它浏览器直接拦掉且报错难懂（T6b 漏 DELETE 同款）
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
     # 会话 cookie 要跨源发送（前端 3001 ↔ API 8000，同 site 不同 origin）。
     # 凭据模式下 allow_origins 不能是 "*"，上面已是显式列表。
@@ -126,7 +129,14 @@ app.add_middleware(
     expose_headers=["X-Thread-Id"],
 )
 
-for router in (auth_router, chat_router, backtest_router, market_router, events_router):
+for router in (
+    auth_router,
+    chat_router,
+    backtest_router,
+    market_router,
+    events_router,
+    watchlist_router,
+):
     app.include_router(router)
 
 
@@ -135,6 +145,14 @@ async def _email_taken(_: Request, exc: EmailTaken) -> JSONResponse:
     """邮箱唯一约束冲突：请求本身没写错，是「这个邮箱已被占用」，与 422 区分开。"""
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": "该邮箱已被注册"}
+    )
+
+
+@app.exception_handler(SymbolTracked)
+async def _symbol_tracked(_: Request, exc: SymbolTracked) -> JSONResponse:
+    """自选股唯一约束冲突：与邮箱冲突同姿态，是「已经在里面了」而不是请求写错了。"""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT, content={"detail": f"{exc.args[0]} 已在自选股中"}
     )
 
 

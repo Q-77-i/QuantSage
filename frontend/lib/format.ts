@@ -97,6 +97,31 @@ export function eventStamp(iso: string | null): string {
   return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
+const DAY_STAMP = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/**
+ * 时间戳 → `2026-07-15 10:12`（列表用，带年份）。
+ *
+ * 与 `eventStamp` 同一套时区口径，只差年份：会话历史与回测记录是跨月摆放的，
+ * 少了年份就得靠上下文猜。
+ */
+export function dayStamp(iso: string | null): string {
+  if (!iso) return EMPTY;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  const parts: Record<string, string> = {};
+  for (const part of DAY_STAMP.formatToParts(parsed)) parts[part.type] = part.value;
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
 /** 截断长哈希一类。`abc…` 前 `n` 位（`content_hash` 展示用）。 */
 export function shortHash(value: string | null, n = 12): string {
   if (!value) return EMPTY;

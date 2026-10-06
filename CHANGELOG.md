@@ -9,6 +9,10 @@
 - **M1a 用户地基与归属校验**：注册 / 登录 / 退出 / 当前用户四端点（bcrypt + HS256 JWT，httpOnly + SameSite=Lax cookie）；自建业务表（`users` / `chat_threads` / `watchlist` / `backtest_runs`）与幂等建表机制；**会话归属真源改为自有表**——列表不再直读 langgraph 的 `checkpoints` 内部表，越权与不存在同返 404、未登录一律 401（P1 遗留阻塞项清零）
 - **M1b 前端认证闭环**：`app/(app)/` 受保护路由组（守卫 + 页头唯一落点）、登录 / 注册页（含开放重定向白名单）、`AuthProvider` 经 `/auth/me` 探测登录态、全部请求与 SSE 带 `credentials: "include"`；页头显示账号与退出
 - 后端 `app/core/{auth,db}.py`、`app/api/auth.py`；前端 `lib/auth-form.ts` 纯函数（密码按字节判长、`next` 回跳白名单）
+- **M1c 自选股**：`GET|POST /api/v1/watchlist`、`PATCH|DELETE /api/v1/watchlist/{symbol}`、`PATCH|DELETE /api/v1/watchlist/groups/{name}`；分组是 `group_name` 字符串列（无分组实体表），重命名撞名即合并、删组时标的回落「默认分组」；**加自选以来涨幅**取加入时最近可得收盘价（qfq），**取不到即留空**（显示「—」，不编数）；行情层不可用时列表照常返回（价格降级 + warning），不被行情依赖拖死
+- **M1c 我的回测**：每次回测落库（`backtest_runs`，request 存解析后的 config），`GET /api/v1/backtest/runs` 摘要列表（SQL 抽 JSONB 子集）+ `GET /api/v1/backtest/runs/{id}` 完整报告（越权 404）
+- **M1c 个人空间页** `/space`：四页签「我的自选 / 我的回测 / 会话历史 / 我的策略（M4 前占位）」；**深链回原页完整恢复**——会话历史 → `/?thread=<id>`、我的回测 → `/backtest?run=<id>`（载入完整报告并回填表单）；跑完一次把地址更新为 `?run=`
+- 前端 `lib/watchlist.ts`（分组视图与 symbol 校验，纯函数 + 单测）、`lib/api.ts` 的 `describeError`、`components/space/*`
 - **T6d 图表交互**：净值曲线与 K 线的手势统一为「捏合缩放 / 横向滚轮平移 / 拖拽平移 / 竖直滚动归还页面」，两图各自独立缩放并各带「重置缩放」；缩放数学抽为纯函数 `lib/chart-gesture.ts`（附单测）
 - 根 `README.md`：项目门面（定位与护城河、架构图、界面截图、快速开始、API、已知边界）
 - `docs/images/`：三张界面截图，配 Playwright 截图脚本（`pnpm screenshots`，可重跑）
@@ -19,13 +23,18 @@
 - **标题字体由宋体改为无衬线**（`--font-heading`：PingFang SC 栈 + 字重），全站标题层级改由字重与字距拉开——宋体在 macOS 上只有 Regular/Bold 两档，正文尺寸下发虚观感旧
 - **对话页空态引导**：三条示例问题按能力分类（行情 / 对比 / 事件），点选灌进输入框并聚焦（不直接发送）；页头显示「数据截至 X」，值由 `GET /api/v1/market/freshness` 查询得出（M2 的日增量 ETL 接上后自动前移）
 - **「记住我」**：登录页默认勾选，勾选=持久 cookie（7 天），取消=会话 cookie（关浏览器失效）；只改 cookie 存活方式，不动 JWT 有效期、不建服务端会话表
-- `POST /api/v1/chat` 与三个会话端点要求登录（会话列表口径改为自有表 `last_active_at`）；`/api/v1/market`、`/api/v1/events` 保持公开（非用户资产）；`/api/v1/backtest` 待 M1c 落库时一并纳入鉴权
+- `POST /api/v1/chat` 与三个会话端点要求登录（会话列表口径改为自有表 `last_active_at`）；`/api/v1/market`、`/api/v1/events` 保持公开（非用户资产）
+- **`POST /api/v1/backtest` 纳入鉴权并改信封 `{run_id, report}`**（M1c 落库使归属成为必要信息）：报告结构本身未动，契约变更同步记入 P1 SPEC §7 与 §10（v0.13）；**鉴权先于参数校验**——未登录 + 非法体返回 401 而非 422
+- `GET /api/v1/chat/threads` 增补 `last_active_at`（排序依据顺带带出，供个人空间显示「最近活动」）；`Database.list_thread_ids` 改为 `list_threads`
+- CORS `allow_methods` 补 `PATCH`（自选股改分组用；漏了浏览器直接拦掉且报错难懂，T6b 漏 DELETE 同款）
 - CORS 开 `allow_credentials=True`（凭据模式要求显式 origin 列表，已是）
 - 依赖新增 `bcrypt==5.0.0`、`pyjwt==2.15.1`（与 checkpoint 链同等显式 pin）
 - 文档链同步：PRD 升 v0.5（状态行改「已通过」、§6 待确认①证伪②③转 M2）；SPEC 升 v0.12（样本量订正 55 / 2.1 倍、T1 依赖清单补齐、章节按功能 ID 重排、§7 补图表交互口径）；CLAUDE.md 技术栈表增「落地状态」列、数据源通道对齐 SPEC
+- 文档链同步（M1c）：P2 SPEC 升 v1.2（§2 M1c 细化为可执行规格、§1 自选股不单开路由改 `space/`、§12 补 M1c 增量与回归口径）；P1 SPEC 升 v0.13（§7 给 `POST /backtest` 加注、§10 记契约变更）
 
 ### 修复
 
+- **登录守卫会吃掉深链**：`(app)/layout.tsx` 重定向登录页时只带 `pathname`，`/?thread=x`、`/backtest?run=y` 在会话失效重登后丢失。改为带上查询串（`window.location.search`，该层不能用 `useSearchParams`）
 - **从 `localhost` 打开时登录/注册看似失败**：API 基址原写死 `127.0.0.1:8000`，页面在 `localhost` 时两者跨站，`SameSite=Lax` 的会话 cookie 被浏览器静默丢弃（后端其实已注册成功）。改为 `apiBase()` 跟随页面 host，两个 hostname 下都跑通端到端
 - 定下 SPEC 版本编号规则：主版本 = 阶段序号（P1 → `0`、P2 → `1`、P3 → `2`）
 - 后端前视偏差措辞中性化（注释与 docstring 7 处，无行为变更）

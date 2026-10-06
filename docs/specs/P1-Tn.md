@@ -185,6 +185,7 @@ class Strategy(Protocol):
   - `POST /api/v1/chat`（SSE，见 §4）
     - 浏览器 `EventSource` 只支持 GET，前端须 `fetch` + `ReadableStream` 手解帧（按 `\n\n` 切帧，忽略 `: keepalive` 注释帧，不得假设「一个网络分片 = 一个事件」）
   - `POST /api/v1/backtest`，请求 `{strategy, symbol, start?, end?, costs?, pit_mode?, params?}`，同步返回 §6 输出结构
+    - **P2-M1c 起**：响应外套信封 `{run_id, report}`（`report` 即 §6 结构，本身未动），且端点纳入鉴权（未登录 401）。本行其余口径不变，详见 P2 SPEC `P2-Mn.md` §2 M1c
     - `costs` = `{fees: bool = true, slippage: bool = true, slippage_bps: number = 5.0}`；`fees=false` 关佣金与印花税，`slippage=false` 关滑点，两者皆 false 等价 `CostModel.disabled()`
     - `pit_mode` ∈ `pit` / `non_pit` / `both`（默认 `pit`）；`both` 时返回的 `pit_comparison` 非空。只有 `event_driven` 消费事件语料，`ma_cross` 传 `both` 时 `pit_comparison` 仍为 `null`（两模式必然同结果，不做无意义的二次回测）
     - `start` / `end` 缺省：`end` = 该标的最后一根 bar；`start` = `event_driven` 取该标的事件窗口起点、其余策略取第一根 bar（与 `scripts/run_report.py` 同口径，两处必须共用同一段解析逻辑）
@@ -232,3 +233,4 @@ class Strategy(Protocol):
 | v0.10 | 2026-10-06 | 收尾 | §6 与 §7 样本量订正 约 54 / √(252/54)≈2.2 倍 → **约 55 / √(252/55)≈2.1 倍**（实际由 bars 数动态计算）；§2 T1 依赖清单补齐 6 项实际依赖 |
 | v0.11 | 2026-10-06 | 收尾 | 正文章节改为**按功能 ID 排序**（§2–§8 对应 T1–T7，此前 §4 曾是 T4、§6 曾是 T3）；§1 仓库结构补齐实际模块 |
 | v0.12 | 2026-10-06 | T6d | §7 新增**图表交互口径**：两图均可缩放平移且**各自独立**；**竖直滚轮一律归还页面**；缩放下限 `MIN_VISIBLE_BARS` = 8 根；每图一个「重置缩放」 |
+| v0.13 | 2026-10-07 | P2-M1c | §7 的 `POST /api/v1/backtest` 契约加注：响应自 P2-M1c 起外套 `{run_id, report}` 并纳入鉴权（§6 报告结构未动）——回测落库后归属成为必要信息 |

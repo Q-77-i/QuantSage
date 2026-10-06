@@ -10,12 +10,16 @@
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.data import duckdb_client as dc
 from app.main import app
+from tests.integration.conftest import purge_rows, sign_up
 
 pytestmark = pytest.mark.integration
 
@@ -23,6 +27,20 @@ client = TestClient(app)
 
 DATA_DIR = get_settings().data_dir
 SYMBOLS = ("600519", "300750", "600036")
+
+
+@pytest.fixture
+def member_client(real_stack: TestClient) -> Iterator[TestClient]:
+    """已登录的客户端：`market` / `events` 是公开的，**回测自 M1c 起要登录**（跑完落库）。
+
+    账号在 teardown 里清——`users` 级联带走这个账号的 `backtest_runs`，不留垃圾。
+    """
+    email = f"m1c-t6-{uuid.uuid4().hex[:8]}@example.com"
+    signed = sign_up(email)
+    try:
+        yield signed
+    finally:
+        purge_rows([email], [])
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
@@ -50,14 +68,14 @@ def test_events_endpoint_keeps_source_annotations() -> None:
         assert event["available_at"] is not None
 
 
-def test_event_driven_backtest_quantifies_pit_gap() -> None:
+def test_event_driven_backtest_quantifies_pit_gap(member_client: TestClient) -> None:
     """T6 回测页的核心展示项：两模式对比必须真的有数，不是空壳。"""
-    response = client.post(
+    response = member_client.post(
         "/api/v1/backtest",
         json={"strategy": "event_driven", "symbol": "300750", "pit_mode": "both"},
     )
     assert response.status_code == 200
-    body = response.json()
+    body = response.json()["report"]  # M1c 起外套信封 {run_id, report}
 
     comparison = body["pit_comparison"]
     assert comparison is not None
@@ -69,12 +87,12 @@ def test_event_driven_backtest_quantifies_pit_gap() -> None:
     assert "交易明细" not in body["meta"]["warnings"][0]  # 提示的是样本量，不是别的
 
 
-def test_ma_cross_backtest_covers_full_history() -> None:
-    response = client.post(
+def test_ma_cross_backtest_covers_full_history(member_client: TestClient) -> None:
+    response = member_client.post(
         "/api/v1/backtest", json={"strategy": "ma_cross", "symbol": "600519"}
     )
     assert response.status_code == 200
-    body = response.json()
+    body = response.json()["report"]
 
     assert body["meta"]["bars"] == len(dc.bars("600519", data_dir=DATA_DIR))
     assert body["pit_comparison"] is None

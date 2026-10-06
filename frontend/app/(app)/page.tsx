@@ -1,11 +1,13 @@
 "use client";
 
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+
 import { Composer } from "@/components/chat/composer";
 import { MessageList } from "@/components/chat/message-list";
 import { ThreadList } from "@/components/chat/thread-list";
 import { useChat, useThreads } from "@/components/chat/use-chat";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
 
 /**
  * 对话页（T6b）。
@@ -22,6 +24,12 @@ export default function ChatPage() {
 
   return (
     <>
+      {/* 边界只包一个渲染 null 的子组件：生产构建下边界内整棵子树降级为 CSR，
+          把整页包进去会让全高布局先塌一下（登录页同款写法，见其注释） */}
+      <Suspense fallback={null}>
+        <ThreadDeepLink onOpen={chat.openThread} />
+      </Suspense>
+
       <div className="mx-auto flex h-[calc(100dvh-3.5rem)] max-w-[1400px]">
         <aside className="hidden w-60 shrink-0 flex-col border-r border-border p-3 md:flex">
           <Button
@@ -78,6 +86,27 @@ export default function ChatPage() {
       </div>
     </>
   );
+}
+
+/**
+ * `/?thread=<id>`：个人空间的会话历史点进来时直接打开那条会话。
+ *
+ * 打开后**立刻把参数摘掉**（`router.replace("/")`）：留在地址栏的话，用户接着点侧栏
+ * 里的另一个会话时，这个 effect 会拿旧 id 把他拽回去。摘掉之后地址栏回到「对话页」的
+ * 常态——这一页本来就没有 URL 状态（发消息新建的会话号也不进地址栏）。
+ */
+function ThreadDeepLink({ onOpen }: { onOpen: (id: string) => void }) {
+  const params = useSearchParams();
+  const router = useRouter();
+
+  useEffect(() => {
+    const threadId = params.get("thread");
+    if (!threadId) return;
+    onOpen(threadId);
+    router.replace("/");
+  }, [params, router, onOpen]);
+
+  return null;
 }
 
 function ThreadListSkeleton() {

@@ -177,13 +177,19 @@ async def list_threads(
     limit: int = Query(20, ge=1, le=100),
     user: dict[str, Any] = Depends(require_user),
 ) -> list[dict[str, Any]]:
-    """会话列表，供前端侧栏使用。只列本人的会话，按最近活动倒序。"""
+    """会话列表，供前端侧栏与个人空间的会话历史使用。只列本人的会话，按最近活动倒序。
+
+    `last_active_at` 就是排序依据本身（自有表列），顺带带出去——个人空间要显示「最近活动」。
+    """
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise HTTPException(status_code=503, detail="checkpointer 不可用")
 
-    thread_ids = await require_db(request).list_thread_ids(int(user["id"]), limit)
-    return [await _thread_summary(checkpointer, tid) for tid in thread_ids]
+    rows = await require_db(request).list_threads(int(user["id"]), limit)
+    return [
+        {**await _thread_summary(checkpointer, row["thread_id"]), "last_active_at": row["last_active_at"]}
+        for row in rows
+    ]
 
 
 @router.get("/threads/{thread_id}/messages")

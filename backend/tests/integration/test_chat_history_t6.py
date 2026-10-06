@@ -73,12 +73,14 @@ async def test_thread_round_trip_through_real_checkpointer() -> None:
 
                 await db.claim_thread(thread_id, int(user["id"]))
                 claimed_owner = await db.thread_owner(thread_id)
-                listed = await db.list_thread_ids(int(user["id"]), 50)
+                listed = [row["thread_id"] for row in await db.list_threads(int(user["id"]), 50)]
 
                 await saver.adelete_thread(thread_id)
                 await db.drop_thread(thread_id, int(user["id"]))
                 deleted = await _load_messages(saver, thread_id)
-                still_listed = thread_id in await db.list_thread_ids(int(user["id"]), 50)
+                still_listed = thread_id in [
+                    row["thread_id"] for row in await db.list_threads(int(user["id"]), 50)
+                ]
         finally:
             async with pool.connection() as conn:
                 await conn.execute("DELETE FROM users WHERE email = %s", (email,))

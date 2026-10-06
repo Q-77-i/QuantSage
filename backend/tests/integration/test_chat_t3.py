@@ -90,8 +90,8 @@ async def test_conversation_persists_and_lists() -> None:
                 pass
 
             await db.claim_thread(thread_id, int(user["id"]))
-            ids = await db.list_thread_ids(int(user["id"]), 50)
-            assert thread_id in ids, "会话没有进本人的列表"
+            listed = await db.list_threads(int(user["id"]), 50)
+            assert thread_id in [row["thread_id"] for row in listed], "会话没有进本人的列表"
 
             summary = await _thread_summary(saver, thread_id)
             assert summary["messages"] >= 2  # 至少一问一答

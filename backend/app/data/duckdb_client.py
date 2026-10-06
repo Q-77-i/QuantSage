@@ -83,6 +83,33 @@ def bars(
         con.close()
 
 
+def latest_closes(
+    symbols: list[str], *, adjust: str = "qfq", data_dir: Path | None = None
+) -> dict[str, dict]:
+    """一批标的各自最近一根 bar 的收盘价（自选股「加自选以来涨幅」用）。
+
+    一次连接批量取，不做 N 次 connect/close。**未命中的 symbol 不进结果**——调用方按
+    缺省处理（自选股要如实留空，不得编价）。空列表提前返回：`IN ()` 是语法错误。
+    """
+    if not symbols:
+        return {}
+    con = connect(data_dir)
+    try:
+        placeholders = ", ".join("?" for _ in symbols)
+        rows = _fetch(
+            con,
+            f"SELECT symbol, trade_date, close FROM {BARS_VIEW} "
+            f"WHERE adjustment = ? AND symbol IN ({placeholders}) "
+            "QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1",
+            [adjust, *symbols],
+        )
+    finally:
+        con.close()
+    return {
+        row["symbol"]: {"trade_date": row["trade_date"], "close": row["close"]} for row in rows
+    }
+
+
 def latest_dates(data_dir: Path | None = None) -> dict[str, object]:
     """样例数据的最新时点：行情最后一根 bar 的交易日、事件最晚 `available_at`。
 

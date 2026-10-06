@@ -20,7 +20,7 @@
 | 前端 | Next.js 15 (App Router) + TS + Tailwind + shadcn/ui；K 线用 TradingView Lightweight Charts，其余 ECharts | ✅ 已用 |
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
 | 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用 |
-| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | 🚧 checkpointer + 业务表（用户/会话归属）已用；Store 待用 |
+| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | 🚧 checkpointer + 四张自有表（用户 / 会话归属 / 自选股 / 回测记录）已用；Store 待用 |
 | 缓存/限流 | Redis | ⬜ P2–P3（P1 仅 compose 服务） |
 | 向量库 | Qdrant | ⬜ P2–P3（P1 仅 compose 服务） |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | 🚧 快档已用；深度档 P2 起 |

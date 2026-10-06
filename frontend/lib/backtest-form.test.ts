@@ -4,6 +4,7 @@ import {
   buildRequest,
   defaultForm,
   defaultParams,
+  formFromRequest,
   hasErrors,
   pitModeLabel,
   strategyLabel,
@@ -133,6 +134,45 @@ describe("buildRequest", () => {
     expect(body.symbol).toBe("300750");
     expect(body.pit_mode).toBe("pit");
     expect(body.params).toEqual({ fast: 5, slow: 20 });
+  });
+});
+
+describe("formFromRequest —— 重开历史回测时把表单填回当时的样子", () => {
+  const stored = {
+    strategy: "ma_cross" as const,
+    symbol: "300750",
+    start: "2026-07-05",
+    end: "2026-09-30",
+    adjust: "qfq" as const,
+    pit_mode: "pit" as const,
+    costs: { fees: false, slippage: true, slippage_bps: 8 },
+    params: { fast: 3, slow: 15 },
+  };
+
+  it("区间、成本开关、参数原样回填（不回填的话表单与报告对不上）", () => {
+    expect(formFromRequest(stored)).toEqual({
+      strategy: "ma_cross",
+      symbol: "300750",
+      start: "2026-07-05",
+      end: "2026-09-30",
+      fees: false,
+      slippage: true,
+      slippageBps: "8",
+      pitMode: "pit",
+      params: { fast: "3", slow: "15" },
+    });
+  });
+
+  it("回填后再构造请求，跑的是当时那段区间", () => {
+    const body = buildRequest(formFromRequest(stored));
+    expect(body.start).toBe("2026-07-05");
+    expect(body.end).toBe("2026-09-30");
+    expect(body.params).toEqual({ fast: 3, slow: 15 });
+  });
+
+  it("参数缺项回落到默认值（老记录里可能没有该键）", () => {
+    const partial = { ...stored, params: { fast: 3 } as Record<string, number> };
+    expect(formFromRequest(partial).params).toEqual({ fast: "3", slow: "20" });
   });
 });
 

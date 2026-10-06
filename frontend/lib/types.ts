@@ -164,6 +164,64 @@ export interface CostOptions {
   slippage_bps: number;
 }
 
+// ── 我的回测（M1c）─────────────────────────────────────────────────────────
+
+/** `POST /api/v1/backtest` 的响应信封：报告外面多一层归属标识（M1c 起） */
+export interface BacktestResponse {
+  run_id: string;
+  report: BacktestReport;
+}
+
+/** 落库的 `request` = **解析后的 config**（区间已填充，不是原始请求体） */
+export interface StoredBacktestRequest {
+  strategy: Strategy;
+  symbol: string;
+  start: string;
+  end: string;
+  adjust: Adjust;
+  pit_mode: PitMode;
+  costs: CostOptions;
+  params: Record<string, number>;
+}
+
+/** 摘要列表项：**只有 metrics，没有曲线与明细**（列表不该把整份报告拉回来） */
+export interface BacktestRunSummary {
+  id: string;
+  created_at: string;
+  symbol: string;
+  strategy: Strategy;
+  start: string | null;
+  end: string | null;
+  pit_mode: PitMode;
+  metrics: Metrics;
+}
+
+export interface BacktestRunDetail {
+  id: string;
+  created_at: string;
+  request: StoredBacktestRequest;
+  report: BacktestReport;
+}
+
+// ── 自选股（M1c）───────────────────────────────────────────────────────────
+
+export interface WatchlistItem {
+  symbol: string;
+  group_name: string;
+  added_at: string;
+  /** 加入时最近可得收盘价；样例数据没有这个标的时为 null */
+  added_price: number | null;
+  latest_close: number | null;
+  latest_trade_date: string | null;
+  /** 加自选以来涨幅（**比例**，走 `pct()`）；任一价缺失时为 null */
+  change_pct: number | null;
+}
+
+export interface WatchlistGroup {
+  name: string;
+  items: WatchlistItem[];
+}
+
 export interface BacktestRequest {
   strategy: Strategy;
   symbol: string;
@@ -180,6 +238,8 @@ export interface ThreadSummary {
   thread_id: string;
   title: string;
   messages: number;
+  /** 最近活动时间（就是列表的排序依据）；个人空间的会话历史用它显示「最近活动」 */
+  last_active_at: string;
 }
 
 export interface TokenData {
