@@ -223,4 +223,93 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+
+  /* 助手回答的 Markdown 排版。紧凑、不套卡片盒，颜色一律取语义 token，
+     不引 typography 插件——那会带进一套与本项目 token 打架的默认值。 */
+  .md-body > :first-child {
+    margin-top: 0;
+  }
+  .md-body > :last-child {
+    margin-bottom: 0;
+  }
+  .md-body p,
+  .md-body ul,
+  .md-body ol,
+  .md-body blockquote,
+  .md-body pre,
+  .md-body table {
+    margin: 0.6em 0;
+  }
+  .md-body h1,
+  .md-body h2,
+  .md-body h3,
+  .md-body h4 {
+    margin: 1em 0 0.4em;
+    font-family: var(--font-heading);
+    font-size: 1em;
+    font-weight: 600;
+  }
+  .md-body ul,
+  .md-body ol {
+    padding-left: 1.25em;
+  }
+  .md-body ul {
+    list-style: disc;
+  }
+  .md-body ol {
+    list-style: decimal;
+  }
+  .md-body li + li {
+    margin-top: 0.2em;
+  }
+  .md-body code {
+    padding: 0.1em 0.3em;
+    border-radius: 2px;
+    background: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+  }
+  .md-body pre {
+    overflow-x: auto;
+    padding: 0.6em 0.8em;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .md-body pre code {
+    padding: 0;
+    background: none;
+  }
+  .md-body blockquote {
+    padding-left: 0.8em;
+    border-left: 2px solid var(--hairline);
+    color: var(--ink-2);
+  }
+  .md-body a {
+    color: var(--brand);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  /* 宽表在窄屏要能横滚，而不是把主区撑破 */
+  .md-body table {
+    display: block;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.875em;
+  }
+  .md-body th,
+  .md-body td {
+    padding: 0.35em 0.6em;
+    border: 1px solid var(--hairline);
+    text-align: left;
+  }
+  .md-body th {
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+  .md-body hr {
+    margin: 1em 0;
+    border: 0;
+    border-top: 1px solid var(--hairline);
+  }
 }

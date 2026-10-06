@@ -196,3 +196,26 @@ export interface ChatErrorData {
   code: string;
   message: string;
 }
+
+// ── GET /api/v1/chat/threads/{thread_id}/messages（SPEC §6）─────────────────
+
+export interface ToolStep {
+  /** 实时是 LangGraph run_id、历史是 tool_call_id；只用于单条消息内配对，不跨源比较 */
+  id: string;
+  name: string;
+  args: unknown;
+  /** null = 该步没有结果（回合中断） */
+  content: string | null;
+  is_error: boolean;
+}
+
+export interface ThreadMessage {
+  role: "user" | "assistant";
+  content: string;
+  tools: ToolStep[];
+}
+
+export interface ThreadMessagesResponse {
+  thread_id: string;
+  messages: ThreadMessage[];
+}

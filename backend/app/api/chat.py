@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent.graph import astream_chat
+from app.agent.history import messages_to_history
 
 log = logging.getLogger(__name__)
 
@@ -135,13 +136,21 @@ async def _thread_ids(checkpointer: Any, limit: int) -> list[str]:
     return [row["thread_id"] for row in rows]
 
 
+async def _load_messages(checkpointer: Any, thread_id: str) -> list[Any] | None:
+    """读最新 checkpoint 的消息；None 表示这个会话不存在。
+
+    消息正文落在 `checkpoint_blobs`（msgpack），**不能手写 SQL 反序列化**，
+    必须经 checkpointer 官方读接口取。
+    """
+    state = await checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+    if state is None:
+        return None
+    return state.checkpoint.get("channel_values", {}).get("messages", [])
+
+
 async def _thread_summary(checkpointer: Any, thread_id: str) -> dict[str, Any]:
-    """反序列化最新 checkpoint，取首条人类消息当标题（不自己解 msgpack blob）。"""
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await checkpointer.aget_tuple(config)
-    messages = (state.checkpoint.get("channel_values", {}) if state else {}).get(
-        "messages", []
-    )
+    """取首条人类消息当标题。"""
+    messages = await _load_messages(checkpointer, thread_id) or []
     title = "（空会话）"
     for msg in messages:
         if getattr(msg, "type", None) == "human":
@@ -168,3 +177,40 @@ async def list_threads(
         await _thread_summary(checkpointer, tid)
         for tid in await _thread_ids(checkpointer, limit)
     ]
+
+
+@router.get("/threads/{thread_id}/messages")
+async def thread_messages(request: Request, thread_id: str) -> dict[str, Any]:
+    """单个会话的历史消息，供对话页回看（含工具步骤）。"""
+    # 路径参数不可能为空，`normalize_thread_id` 里「缺省生成 UUID」那条分支在这里不可达
+    normalized = normalize_thread_id(thread_id)
+
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    if checkpointer is None:
+        raise HTTPException(status_code=503, detail="checkpointer 不可用")
+
+    messages = await _load_messages(checkpointer, normalized)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    return {"thread_id": normalized, "messages": messages_to_history(messages)}
+
+
+@router.delete("/threads/{thread_id}")
+async def delete_thread(request: Request, thread_id: str) -> dict[str, Any]:
+    """删除一个会话及其全部 checkpoint。
+
+    先确认存在再删：`adelete_thread` 对不存在的 thread 是静默成功的，
+    直接删会让「点错了一个已经被删的会话」看起来像成功。
+    """
+    normalized = normalize_thread_id(thread_id)
+
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    if checkpointer is None:
+        raise HTTPException(status_code=503, detail="checkpointer 不可用")
+
+    if await _load_messages(checkpointer, normalized) is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    await checkpointer.adelete_thread(normalized)
+    return {"thread_id": normalized, "deleted": True}

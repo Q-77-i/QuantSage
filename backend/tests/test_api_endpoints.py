@@ -268,3 +268,13 @@ def test_cors_allows_frontend_origin_and_exposes_thread_header() -> None:
     )
     assert preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:3001"
     assert "POST" in preflight.headers["access-control-allow-methods"]
+
+    # 会话删除（T6b）走 DELETE，预检不放行的话浏览器直接拦掉，且报错很难懂
+    delete_preflight = client.options(
+        "/api/v1/chat/threads/00000000-0000-0000-0000-000000000000",
+        headers={
+            "Origin": "http://127.0.0.1:3001",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+    assert "DELETE" in delete_preflight.headers["access-control-allow-methods"]

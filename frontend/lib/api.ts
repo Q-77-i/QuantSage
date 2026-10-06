@@ -10,6 +10,7 @@ import type {
   BacktestRequest,
   BarsResponse,
   EventsResponse,
+  ThreadMessagesResponse,
   ThreadSummary,
 } from "./types";
 
@@ -26,7 +27,7 @@ export class ApiError extends Error {
 }
 
 /** 把后端的错误体翻成一句人话：FastAPI 的 422 是数组，直接 toString 只会显示 [object Object]。 */
-async function errorMessage(response: Response): Promise<string> {
+export async function errorMessage(response: Response): Promise<string> {
   try {
     const body: unknown = await response.json();
     const detail = (body as { detail?: unknown })?.detail;
@@ -73,4 +74,15 @@ export const api = {
     }),
 
   threads: () => request<ThreadSummary[]>("/api/v1/chat/threads"),
+
+  threadMessages: (threadId: string) =>
+    request<ThreadMessagesResponse>(
+      `/api/v1/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    ),
+
+  deleteThread: (threadId: string) =>
+    request<{ thread_id: string; deleted: boolean }>(
+      `/api/v1/chat/threads/${encodeURIComponent(threadId)}`,
+      { method: "DELETE" },
+    ),
 };

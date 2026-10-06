@@ -8,7 +8,7 @@
  *   ② `:` 开头的是注释帧（服务端每 15s 发的保活），要忽略而不是当事件。
  */
 
-import { API_BASE, ApiError } from "./api";
+import { API_BASE, ApiError, errorMessage } from "./api";
 
 export interface SseFrame {
   event: string;
@@ -71,7 +71,8 @@ export async function streamChat(options: ChatStreamOptions): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new ApiError(response.status, `对话请求被拒（HTTP ${response.status}）`);
+    // 后端的 detail 才是可行动的（如「Agent 未就绪」），裸状态码只会让用户干瞪眼
+    throw new ApiError(response.status, await errorMessage(response));
   }
   if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
 

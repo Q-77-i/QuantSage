@@ -49,6 +49,16 @@ def build_agent(
     )
 
 
+def preview_text(text: str, limit: int = TOOL_RESULT_PREVIEW) -> str:
+    """超长工具文本的截断口径。
+
+    SSE 预览与历史回看必须同口径，否则同一个工具步骤在两个入口下显示不同内容。
+    """
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…（已截断，原文 {len(text)} 字符）"
+
+
 def _tool_result_text(output: Any) -> str:
     """从 on_tool_end 的 output（ToolMessage）里取可读文本。
 
@@ -122,9 +132,7 @@ async def astream_chat(
 
         elif kind == "on_tool_end":
             output = event["data"].get("output")
-            text = _tool_result_text(output)
-            if len(text) > TOOL_RESULT_PREVIEW:
-                text = f"{text[:TOOL_RESULT_PREVIEW]}…（已截断，原文 {len(text)} 字符）"
+            text = preview_text(_tool_result_text(output))
             yield "tool_result", {
                 "id": event["run_id"],
                 "name": tool_names.get(event["run_id"]) or event.get("name") or "unknown",

@@ -97,7 +97,7 @@ app = FastAPI(title="QuantSage API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
     # 会话号在断连时靠响应头兜底回传（SPEC §6）；跨源下浏览器读不到未暴露的响应头
     expose_headers=["X-Thread-Id"],

@@ -1,92 +1,75 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
 import { AppHeader } from "@/components/app-header";
+import { Composer } from "@/components/chat/composer";
+import { MessageList } from "@/components/chat/message-list";
+import { ThreadList } from "@/components/chat/thread-list";
+import { useChat, useThreads } from "@/components/chat/use-chat";
 import { Button } from "@/components/ui/button";
-import { ApiError, api } from "@/lib/api";
-import type { ThreadSummary } from "@/lib/types";
 
 /**
- * 对话页骨架（T6a）。
+ * 对话页（T6b）。
  *
- * 本阶段只把「壳 + 数据通路」立起来：会话列表走真实接口，消息流与工具步骤留 T6b。
- * 未实现的交互一律 `disabled`，不做「看起来能用但点了没反应」的假按钮。
+ * 状态机在 `lib/chat-state.ts`，与后端的接线在 `components/chat/use-chat.ts`，
+ * 这里只负责排版与「哪些操作此刻不该可用」。
  */
 export default function ChatPage() {
-  const [threads, setThreads] = useState<ThreadSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .threads()
-      .then((rows) => alive && setThreads(rows))
-      .catch((cause: unknown) => {
-        if (!alive) return;
-        setError(cause instanceof ApiError ? cause.message : "会话列表加载失败");
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const { threads, error: threadsError, refresh } = useThreads();
+  const chat = useChat(refresh);
 
   return (
     <>
       <AppHeader />
       <div className="mx-auto flex h-[calc(100dvh-3.5rem)] max-w-[1400px]">
-        <aside className="hidden w-60 shrink-0 border-r border-border p-3 md:block">
-          <Button variant="outline" size="sm" className="w-full" disabled>
+        <aside className="hidden w-60 shrink-0 flex-col border-r border-border p-3 md:flex">
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            disabled={chat.isStreaming}
+            onClick={chat.reset}
+          >
             新会话
           </Button>
 
-          <div className="mt-3">
-            {error ? (
-              <p className="text-xs text-destructive">{error}</p>
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+            {threadsError ? (
+              <p className="px-1 text-xs text-destructive">{threadsError}</p>
             ) : threads === null ? (
               <ThreadListSkeleton />
-            ) : threads.length === 0 ? (
-              <p className="px-1 text-xs text-muted-foreground">还没有会话</p>
             ) : (
-              <ul className="space-y-0.5">
-                {threads.map((thread) => (
-                  <li key={thread.thread_id}>
-                    <button
-                      type="button"
-                      disabled
-                      title="历史会话回看待定，见 docs/private/待办与灵感.md"
-                      className="w-full truncate rounded-[var(--radius)] px-2 py-1.5 text-left text-sm text-muted-foreground"
-                    >
-                      {thread.title}
-                      <span className="num ml-2 text-xs text-ink-3">{thread.messages}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <ThreadList
+                threads={threads}
+                activeId={chat.threadId}
+                // 流式期间锁住切换与删除：点「停止」再操作是自然动作，
+                // 比处理「半途换／删掉正在写的会话」那一堆竞态简单得多
+                disabled={chat.isStreaming}
+                onOpen={chat.openThread}
+                onDelete={chat.removeThread}
+              />
             )}
           </div>
         </aside>
 
-        <main className="flex flex-1 flex-col">
-          <div className="flex flex-1 items-center justify-center p-6">
-            <div className="max-w-md text-center">
-              <h1 className="font-heading text-xl">问行情，查事件</h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                例如「贵州茅台最近行情怎么样」。回答的数据都带来源标注。
-              </p>
-            </div>
-          </div>
+        <main className="flex min-h-0 flex-1 flex-col">
+          <MessageList
+            messages={chat.messages}
+            loading={chat.loading}
+            error={chat.loadError}
+          />
 
-          <div className="border-t border-border p-3">
-            <div className="flex items-center gap-2">
-              <input
-                disabled
-                placeholder="对话功能开发中"
-                className="h-9 flex-1 rounded-[var(--radius)] border border-border bg-card px-3 text-sm outline-none focus-visible:border-ring"
-              />
-              <Button disabled>发送</Button>
-            </div>
-          </div>
+          {chat.transportError && (
+            <p className="border-t border-border px-4 py-2 text-xs text-destructive">
+              <span className="mx-auto block max-w-3xl">{chat.transportError}</span>
+            </p>
+          )}
+
+          <Composer
+            disabled={chat.isStreaming}
+            isStreaming={chat.isStreaming}
+            onSend={chat.send}
+            onStop={chat.stop}
+          />
         </main>
       </div>
     </>
