@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # ── 启动姿态：False 时连不上 Postgres 也降级启动（本地开发用）──
     startup_require_db: bool = False
 
+    # ── 前端（T6）──
+    # 前端跑 3001 而非 3000：3000 被 Langfuse 自托管 UI 占用
+    cors_origins: list[str] = [
+        "http://127.0.0.1:3001",
+        "http://localhost:3001",
+    ]
+
     @property
     def postgres_dsn(self) -> str:
         """后端连库用的 DSN。端口只在 .env 里写一次（POSTGRES_HOST_PORT）。"""

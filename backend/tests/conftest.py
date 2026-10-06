@@ -46,6 +46,11 @@ EVENTS_SCHEMA = pa.schema(
         ("available_at", pa.timestamp("us", tz=CN_TZ)),
         ("direction_norm", pa.string()),
         ("factor_scores", pa.string()),
+        # 来源三元组：生产数据本就有，T6 的 events 端点必须原样带出（PRD §5 硬性要求），
+        # 夹具缺这几列就没法在离线测试里验这条映射
+        ("source", pa.string()),
+        ("original_source", pa.string()),
+        ("content_hash", pa.string()),
     ]
 )
 
@@ -101,6 +106,9 @@ def write_events_parquet(
             "available_at": row.get("available_at", row["event_time"]),
             "direction_norm": row.get("direction_norm"),
             "factor_scores": row.get("factor_scores", encode_factor_scores(row.get("score"))),
+            "source": row.get("source"),
+            "original_source": row.get("original_source"),
+            "content_hash": row.get("content_hash"),
         }
         for row in rows
     ]

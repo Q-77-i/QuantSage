@@ -1,10 +1,12 @@
 """FastAPI 入口。
 
-健康探针 + 对话路由（T3 起）。业务路由按阶段挂载：T3 挂 chat，
-backtest / market 端点随 T6 前端一起补。
+健康探针 + 四组业务路由：chat / threads（T3）、backtest / market / events（T6）。
 
 lifespan 里按「能降级就降级」的姿态装配：checkpointer → 工具 → Agent，
 任一环不可用都不阻断服务启动，由具体的 API 返回 503。
+
+业务异常到 HTTP 状态的映射统一在这里注册（见文件末），端点里不写 try/except：
+数据类异常按「依赖未就绪 / 没数据 / 配置不对」三分，分别给 503 / 404 / 400。
 """
 
 from __future__ import annotations
@@ -13,16 +15,23 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.agent.graph import build_agent
 from app.agent.tools import load_xiaoshi_tools, query_market_bars
+from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
+from app.api.events import router as events_router
+from app.api.market import router as market_router
+from app.backtest.types import BacktestError, NoDataError
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
 from app.core.langfuse import build_langfuse_handler
 from app.core.llm import build_chat_model
 from app.core.logging import setup_logging
+from app.data.duckdb_client import DataNotReady
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +93,36 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="QuantSage API", version="0.1.0", lifespan=lifespan)
-app.include_router(chat_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+    # 会话号在断连时靠响应头兜底回传（SPEC §6）；跨源下浏览器读不到未暴露的响应头
+    expose_headers=["X-Thread-Id"],
+)
+
+for router in (chat_router, backtest_router, market_router, events_router):
+    app.include_router(router)
+
+
+@app.exception_handler(DataNotReady)
+async def _data_not_ready(_: Request, exc: DataNotReady) -> JSONResponse:
+    """样例数据未落盘：是依赖没就绪，不是请求写错了。"""
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)})
+
+
+@app.exception_handler(NoDataError)
+async def _no_data(_: Request, exc: NoDataError) -> JSONResponse:
+    """标的不存在或区间内无 bar。"""
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+
+@app.exception_handler(BacktestError)
+async def _backtest_error(_: Request, exc: BacktestError) -> JSONResponse:
+    """其余回测配置类错误。"""
+    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": str(exc)})
 
 
 @app.get("/health")

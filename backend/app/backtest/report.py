@@ -14,12 +14,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from app.backtest.metrics import SHORT_WINDOW_BARS, Metrics, benchmark_curve, compute_metrics
-from app.backtest.types import Mode, Position
+from app.backtest.strategies import EventDriven
+from app.backtest.types import Mode, NoDataError, Position
+from app.data import duckdb_client as dc
 
 
 def _iso(value: date | None) -> str | None:
@@ -144,6 +147,43 @@ def _benchmark_return(result: BacktestResult, config: BacktestConfig) -> float:
     """基准收益按「投入的初始资金 → 期末基准净值」计，含建仓时的一次性成本。"""
     curve = benchmark_curve(result.bars, config.initial_cash, config.costs)
     return curve[-1] / config.initial_cash - 1.0 if curve and config.initial_cash else 0.0
+
+
+def _first_event_date(symbol: str, data_dir: Path | None) -> date | None:
+    rows = dc.events(symbol, data_dir=data_dir)
+    return min(row["event_time"].date() for row in rows) if rows else None
+
+
+def resolve_window(
+    symbol: str,
+    strategy: str,
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    data_dir: Path | None = None,
+) -> tuple[date, date]:
+    """把「可缺省的请求区间」解析成确定区间。
+
+    `end` 缺省 = 该标的最后一根 bar；`start` 缺省 = `event_driven` 取事件窗口起点
+    （事件语料仅约 3 个月，从行情起点开跑等于大半程空转），其余策略取第一根 bar。
+
+    API 与 `scripts/run_report.py` **共用这一段**——两处各写一套默认值必然漂移。
+    解析结果若落不到任何 bar，抛 `NoDataError`（API 映射 404）。
+    """
+    rows = dc.bars(symbol, data_dir=data_dir)
+    if not rows:
+        raise NoDataError(f"{symbol} 无行情数据，先跑 scripts/download_bars.py")
+
+    if start is None and strategy == EventDriven.name:
+        start = _first_event_date(symbol, data_dir)
+        if start is None:
+            raise NoDataError(f"{symbol} 无事件数据，先跑 scripts/download_events.py")
+    start = start or rows[0]["trade_date"]
+    end = end or rows[-1]["trade_date"]
+
+    if not dc.bars(symbol, start=start.isoformat(), end=end.isoformat(), data_dir=data_dir):
+        raise NoDataError(f"{symbol} 在 {start} → {end} 无行情数据，放宽区间或换标的")
+    return start, end
 
 
 def build_report(config: BacktestConfig, *, compare_pit: bool = False) -> dict[str, Any]:

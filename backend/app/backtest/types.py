@@ -21,6 +21,14 @@ class BacktestError(RuntimeError):
     """回测配置或数据不满足前提（未知策略名、区间内无 bar、数据未落盘等）。"""
 
 
+class NoDataError(BacktestError):
+    """标的不存在，或指定区间内没有 bar。
+
+    单列一支是为了让 API 能把「没数据」映射成 404、把「配置不对」映射成 400，
+    不必去嗅探错误文案。
+    """
+
+
 class Side(StrEnum):
     BUY = "buy"
     SELL = "sell"

@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.6 ｜ 2026-10-06 ｜ 状态：已通过
+> 版本 v0.7 ｜ 2026-10-06 ｜ 状态：已通过
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
 
@@ -14,7 +14,7 @@ QuantSage/
 │   ├── pyproject.toml              # uv 管理，Python 3.12
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 入口与路由挂载
-│   │   ├── api/                    # chat.py / backtest.py / market.py
+│   │   ├── api/                    # chat.py / backtest.py / market.py / events.py
 │   │   ├── agent/                  # graph.py / tools.py / prompts.py
 │   │   ├── backtest/               # types.py / events.py / engine.py / portfolio.py / broker.py / costs.py / metrics.py / report.py / strategies/
 │   │   ├── data/                   # duckdb_client.py / xiaoshi.py（CLI 与 MCP 封装）
@@ -23,8 +23,8 @@ QuantSage/
 │   └── tests/
 ├── frontend/
 │   ├── app/                        # page.tsx（对话页）/ backtest/page.tsx（回测页）
-│   ├── components/
-│   └── lib/                        # api.ts（SSE 客户端）
+│   ├── components/                 # ui/（shadcn）+ chat/ + backtest/
+│   └── lib/                        # api.ts / sse.ts（帧解析）/ markers.ts / types.ts
 ├── data/                           # 行情 Parquet / 事件语料（gitignore）
 ├── docker-compose.yml
 └── .env
@@ -132,16 +132,31 @@ class Strategy(Protocol):
 
 ## 7. T6 极简前端
 
-- Next.js 15 + TS + Tailwind + shadcn/ui
+- Next.js 15 + TS + Tailwind + shadcn/ui，包管理 pnpm
+- 端口：前端 **3001**（3000 已被 Langfuse 自托管 UI 占用）；后端 8000
+- 跨域：后端挂 `CORSMiddleware`，允许来源由 `Settings.cors_origins` 配置（默认 `http://127.0.0.1:3001` 与 `http://localhost:3001`）
 - 前置：design brief 评审通过后才实现页面（视觉规范见 PRD §5）
 - 页面 ×2：
   - `/` 对话页：消息列表、SSE 流式渲染、工具调用步骤可视化、会话列表
   - `/backtest` 回测页：参数表单（策略/标的/区间/成本开关/模式）、指标卡、净值曲线（ECharts）、K 线（TradingView Lightweight Charts，标注买卖点）、交易明细表、PIT 对比表
+    - lightweight-charts **v5 的 markers 是独立图元**：`chart.addSeries(CandlestickSeries, …)` 建序列后，用 `createSeriesMarkers(series, [])` 取**常驻句柄**再 `handle.setMarkers(...)`；重复调用工厂会叠加图元而非替换。**marker 的 `time` 必须与某根 bar 的 `time` 精确相等且按时间升序，否则静默丢弃**——「买卖点与明细一致」这条验收就靠它成立，映射逻辑须是**可单测的纯函数**
+    - `meta.warnings`（`bars < 120` 的样本量提示：年化/夏普按 252 折算，本期事件窗仅约 54 个交易日，噪声放大 √(252/54)≈2.2 倍）必须在 UI 常驻展示，不能只留在 JSON 里
 - API 契约：
   - `POST /api/v1/chat`（SSE，见 §6）
-  - `POST /api/v1/backtest`，请求 `{strategy, symbol, start, end, costs, pit_mode}`，同步返回 §5 输出结构
-  - `GET /api/v1/market/{symbol}/bars?start&end`
-  - `GET /api/v1/events?symbol&start&end`
+    - 浏览器 `EventSource` 只支持 GET，前端须 `fetch` + `ReadableStream` 手解帧（按 `\n\n` 切帧，忽略 `: keepalive` 注释帧，不得假设「一个网络分片 = 一个事件」）
+  - `POST /api/v1/backtest`，请求 `{strategy, symbol, start?, end?, costs?, pit_mode?, params?}`，同步返回 §5 输出结构
+    - `costs` = `{fees: bool = true, slippage: bool = true, slippage_bps: number = 5.0}`；`fees=false` 关佣金与印花税，`slippage=false` 关滑点，两者皆 false 等价 `CostModel.disabled()`
+    - `pit_mode` ∈ `pit` / `non_pit` / `both`（默认 `pit`）；`both` 时返回的 `pit_comparison` 非空。只有 `event_driven` 消费事件语料，`ma_cross` 传 `both` 时 `pit_comparison` 仍为 `null`（两模式必然同结果，不做无意义的二次回测）
+    - `start` / `end` 缺省：`end` = 该标的最后一根 bar；`start` = `event_driven` 取该标的事件窗口起点、其余策略取第一根 bar（与 `scripts/run_report.py` 同口径，两处必须共用同一段解析逻辑）
+    - `params` 为策略参数（`ma_cross`: `fast` / `slow`；`event_driven`: `min_score` / `hold_days`）；**键必须落在该策略的已知字段内，未知键返回 422**——`from_params` 会静默忽略拼错的键，API 层不能跟着沉默
+    - 执行：`build_report` 是同步 CPU + DuckDB IO，须卸载到线程（`asyncio.to_thread`），不得阻塞事件循环
+    - 错误映射：`DataNotReady` → 503（样例数据未落盘）；标的不存在或区间内无 bar → 404；参数非法 → 422；其余 `BacktestError` → 400
+  - `GET /api/v1/market/{symbol}/bars?start&end&adjust=qfq` → `{symbol, adjust, count, bars: [{time, open, high, low, close, volume, is_suspended}]}`
+    - `time` 用 `YYYY-MM-DD`（Lightweight Charts 的 business day 口径），与回测取数同复权口径（默认 `qfq`）
+    - 缺省区间 = 全部可得数据；`symbol` 须为 6 位数字，否则 422；无数据 → 404
+  - `GET /api/v1/events?symbol&start&end` → 裁剪后的字段列表，**必须含来源三元组** `source` / `original_source` / `content_hash`（PRD §5 要求来源标注在 UI 可见），并同时给出 `event_time` 与 `available_at` 两列——两者并列是 PIT 语义最直观的展示位
+    - **不做 PIT 过滤**：与 `duckdb_client.events()` 一致，按可得时间设卡是消费方（回测 / 对话工具）的职责
+    - `factor_scores` 落盘是双重编码的 JSON 文本，出接口前解析出 `score` 数值，不把转义字符串丢给前端
 
 **验收**：浏览器内完成一次对话与一次回测查看，无手动改代码；K 线买卖点与交易明细一致。
 
@@ -154,7 +169,8 @@ class Strategy(Protocol):
 ## 9. 测试策略
 
 - 单元：引擎撮合/成本/PIT 过滤（T4/T5）、指标计算（T5）、DuckDB 查询层（T2）、SSE 帧编码与事件映射、工具白名单过滤（T3）
-- 集成：chat 端点 SSE、backtest 端点
+- 集成：chat 端点 SSE、backtest / market / events 端点（离线的端点用例同样写真实 Parquet，不 mock 查询层）
+- 前端：Vitest 只测纯函数（SSE 帧解析、`trades → markers` 的 time 对齐与升序），不引组件测试框架
 - T3 的离线流式测试需自备假模型：现成的 `FakeMessagesListChatModel` 没实现 `bind_tools`（`create_agent` 运行时会调用），`GenericFakeChatModel` 不产出 `tool_calls`——两者都不足以单独驱动「先调工具、再逐 token 作答」的两轮
 - Langfuse trace 断言：每次集成测试产生 trace
 
@@ -165,6 +181,7 @@ class Strategy(Protocol):
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
 | 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
 | 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |
+| 2026-10-06 | v0.7 | T6 契约补丁：钉死 §7 五处留白——`costs` 改结构化 `{fees, slippage, slippage_bps}`、`start`/`end` 缺省口径与 `run_report.py` 共用、请求补 `params` 且**未知键返回 422**、bars/events 响应结构（events 须含来源三元组，且不做 PIT 过滤）、CORS 与前端 **3001** 端口（3000 已被 Langfuse 占用）；写入 lightweight-charts v5 的 markers 图元与「`time` 必须精确匹配且升序，否则静默丢弃」踩坑预警；样本量 `warnings` 要求进 UI；测试策略补端点与前端纯函数两层 |
 | 2026-10-06 | v0.6 | T3 落地澄清：新增 `GET /api/v1/chat/threads` 会话列表与 `thread_id` 缺省规则（服务端生成 + 响应头/`done` 双通道回传）；SSE 事件补字段定义、`tool_result` 只发截断预览、补保活帧；小石工具改**白名单**暴露（动作型工具有昂贵副作用）；记录三条静默失败陷阱（litellm 裸模型名被拒、`.env` 不进 `os.environ` 致 trace 静默丢失、checkpointer 在 compile 期固化），并写明本轮不做的四项（并发串行化 / 幂等 / 历史裁剪 / 上下文超限） |
 | 2026-10-05 | v0.5 | T5 口径确认：基准改**份额化买入 + 扣一次成本**（整手取整会造成现金拖累、系统性压低基准）；`backtest/` 增设 `report.py`（metrics.py 保持纯函数）；明确指标口径（252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓）、`reason` 为出场原因、`pit_comparison` 可为 `null`、`delta` 以 `final_equity_pct` 为核心量化值；补 `meta` 与 `open_position` 两个可读性字段；`bars < 120` 时提示样本量 |
 | 2026-10-05 | v0.4 | T4 落地澄清：PIT 口径定为**收盘时刻级**（当天 15:00）；`backtest/` 增设 `types.py`（`BarContext` 独立成层避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列，护城河一眼可见）；撮合加 A 股实盘规则（100 股整手 + 佣金最低 5 元），费用与滑点拆成两个独立开关；`event_driven` 默认 `score >= 50`、持有 5 日；明确 **PIT 只作用于事件语料**，bars 不做逐 bar 设卡（`available_at` 为整表快照） |

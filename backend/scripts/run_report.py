@@ -27,9 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.backtest.costs import CostModel  # noqa: E402
 from app.backtest.engine import BacktestConfig  # noqa: E402
-from app.backtest.report import build_report  # noqa: E402
+from app.backtest.report import build_report, resolve_window  # noqa: E402
 from app.backtest.types import BacktestError, Mode  # noqa: E402
-from app.data import duckdb_client as dc  # noqa: E402
 
 DEFAULT_SYMBOL = "600519"
 DEFAULT_CASH = 1_000_000.0
@@ -116,26 +115,10 @@ class Plan:
         )
 
 
-def data_range(symbol: str) -> tuple[date, date]:
-    rows = dc.bars(symbol)
-    if not rows:
-        raise BacktestError(f"{symbol} 无行情数据，先跑 scripts/download_bars.py")
-    return rows[0]["trade_date"], rows[-1]["trade_date"]
-
-
-def first_event_date(symbol: str) -> date | None:
-    """事件语料仅约 3 个月，事件策略以事件窗口为起点才有意义（与 T4 验收同口径）。"""
-    rows = dc.events(symbol)
-    return min(row["event_time"].date() for row in rows) if rows else None
-
-
 def build_plan(args: argparse.Namespace) -> Plan:
-    full = data_range(args.symbol)
-    start = args.start
-    if start is None and args.strategy == "event_driven":
-        start = first_event_date(args.symbol)
-        if start is None:
-            raise BacktestError(f"{args.symbol} 无事件数据，先跑 scripts/download_events.py")
+    # 区间缺省口径与 POST /api/v1/backtest 共用同一段（report.resolve_window）：
+    # 两处各写一套默认值必然漂移
+    start, end = resolve_window(args.symbol, args.strategy, args.start, args.end)
     if args.no_costs:
         costs = CostModel.disabled()
     else:
@@ -152,7 +135,7 @@ def build_plan(args: argparse.Namespace) -> Plan:
         symbol=args.symbol,
         strategy=args.strategy,
         start=start,
-        end=args.end or full[1],
+        end=end,
         cash=args.cash,
         adjust=args.adjust,
         costs=costs,
