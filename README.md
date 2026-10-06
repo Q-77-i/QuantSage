@@ -66,9 +66,9 @@ flowchart LR
 
 ![回测页](docs/images/backtest.png)
 
-两个图都可缩放平移：捏合（触控板）缩放、拖拽平移，净值曲线另有常驻 slider；竖直滚动始终归还页面，不会把图表当滚轮吃掉。两图各自独立缩放，缩放后标题右侧出现「重置缩放」。
+两个图均可缩放平移（捏合缩放、拖拽平移，净值曲线另有常驻 slider），**各自独立**；竖直滚动始终归还页面。缩放后标题右侧出现「重置缩放」。
 
-> 截图由 `frontend/scripts/capture-screenshots.mjs` 用 Playwright 驱动真实交互生成（真的发一条提问、真的提交一次回测），改版后可重跑。
+> 截图由 `pnpm screenshots` 生成，可重跑。
 
 ---
 
