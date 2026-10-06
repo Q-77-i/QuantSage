@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { AppHeader } from "@/components/app-header";
 import { BacktestForm } from "@/components/backtest/backtest-form";
@@ -12,8 +12,10 @@ import { MetricsSummary } from "@/components/backtest/metrics-summary";
 import { PitComparisonSection } from "@/components/backtest/pit-comparison";
 import { TradesTable } from "@/components/backtest/trades-table";
 import { useBacktest } from "@/components/backtest/use-backtest";
+import { Button } from "@/components/ui/button";
 import { buildRequest, defaultForm, hasErrors, validateForm } from "@/lib/backtest-form";
 import type { FormState } from "@/lib/backtest-form";
+import type { ChartHandle } from "@/lib/chart-handle";
 
 /**
  * 回测页（T6c）。
@@ -21,11 +23,18 @@ import type { FormState } from "@/lib/backtest-form";
  * 分区按叙事顺序堆叠，不做页签：默认表单已经选了「双模式对比」，把最能讲故事的
  * PIT 对比藏在页签后面与这个默认自相矛盾。表单状态在 `lib/backtest-form.ts`（纯函数、
  * 有单测），取数在 `components/backtest/use-backtest.ts`，这里只负责排版与编排。
+ *
+ * 图表缩放（T6d）：两图**各自独立**，故各存一份缩放态，各自在标题右侧露出「重置缩放」。
+ * 图表内部只在布尔翻转时回调，所以这里的 setState 不会随拖动逐帧触发。
  */
 export default function BacktestPage() {
   const [form, setForm] = useState<FormState>(defaultForm);
   const { loading, report, bars, events, error, run } = useBacktest();
   const errors = validateForm(form);
+
+  const equityRef = useRef<ChartHandle>(null);
+  const klineRef = useRef<ChartHandle>(null);
+  const [zoomed, setZoomed] = useState({ equity: false, kline: false });
 
   function handleRun() {
     if (hasErrors(errors)) return;
@@ -69,18 +78,40 @@ export default function BacktestPage() {
           <div className="mt-6 space-y-6">
             <MetricsSummary report={report} running={loading} />
 
-            <ChartFrame title="净值曲线">
-              <EquityChart points={report.equity_curve} />
+            <ChartFrame
+              title="净值曲线"
+              hint={
+                zoomed.equity ? (
+                  <ResetZoom onClick={() => equityRef.current?.resetZoom()} />
+                ) : null
+              }
+            >
+              <EquityChart
+                ref={equityRef}
+                points={report.equity_curve}
+                onZoomChange={(next) =>
+                  setZoomed((prev) => (prev.equity === next ? prev : { ...prev, equity: next }))
+                }
+              />
             </ChartFrame>
 
             <ChartFrame
               title="K 线"
               empty={bars.length ? null : "该区间没有行情数据。"}
+              hint={
+                zoomed.kline ? (
+                  <ResetZoom onClick={() => klineRef.current?.resetZoom()} />
+                ) : null
+              }
             >
               <CandlestickChart
+                ref={klineRef}
                 bars={bars}
                 trades={report.trades}
                 openPosition={report.open_position}
+                onZoomChange={(next) =>
+                  setZoomed((prev) => (prev.kline === next ? prev : { ...prev, kline: next }))
+                }
               />
             </ChartFrame>
 
@@ -95,6 +126,15 @@ export default function BacktestPage() {
         )}
       </main>
     </>
+  );
+}
+
+/** 「重置缩放」只在对应图表已缩放时出现，所以不做成常驻控件。 */
+function ResetZoom({ onClick }: { onClick: () => void }) {
+  return (
+    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onClick}>
+      重置缩放
+    </Button>
   );
 }
 

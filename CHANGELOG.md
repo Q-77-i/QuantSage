@@ -6,6 +6,8 @@
 
 ### 新增
 
+- **T6d 图表交互**：净值曲线补 `DataZoomComponent`（常驻 slider + 拖拽平移 + 捏合缩放）；K 线关掉库默认的 `deltaY` 缩放改由捏合驱动、竖直滚动归还页面，并补「重置缩放」入口；缩放数学抽为纯函数 `lib/chart-gesture.ts`（附单测）。两图各自独立缩放（SPEC §7 新增「图表交互口径」，v0.12）
+- 两图手势统一到同一条路径：宿主元素捕获阶段分流，**竖直滚动一律归还页面**（ECharts 原会把落在画布上的滚轮一律 `preventDefault` 吞掉）、捏合缩放、横向滚轮平移
 - 根 `README.md`：项目门面（定位与护城河、架构图、界面截图、快速开始、API、已知边界）
 - `docs/images/`：对话页 / 回测页 / PIT 对比区三张截图，由 `frontend/scripts/capture-screenshots.mjs`（Playwright，`pnpm screenshots`）驱动真实交互生成，可重跑
 
