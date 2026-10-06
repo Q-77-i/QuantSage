@@ -6,12 +6,21 @@
  *     但值本身照单全收，`fast=20 / slow=5` 会静默跑出无意义的结果（`MaCross` 不做交叉校验）
  *   · 日期区间的先后由**后端**管——`BacktestRequest` 已有 `start > end` 的校验且文案清楚，
  *     前端不重复实现，这条路也正好验证「后端 422 → 内联显示」的通路
+ *   · 标的格式（六位数字）后端也只有 pydantic 的 pattern 报错、文案是英文的
+ *     `String should match pattern ...`，落到页面上是一句看不懂的话，故前端先挡一道
  */
 
 import type { BacktestRequest, PitMode, StoredBacktestRequest, Strategy } from "./types";
+import { validateSymbol } from "./watchlist";
 
-/** 与 `data/bars/*.parquet` 落盘的三个标的对应（T2）。 */
-export const SYMBOLS = [
+/**
+ * 示例标的：快捷键，**不是可用范围**。
+ *
+ * 本地行情库自 M2a 起覆盖全市场 A 股（约 5500 只，2020-01-02 起），标的是自由输入的
+ * 六位代码。这里留三只只是给一个点得动的起点；名称映射也只覆盖它们，其余标的
+ * `symbolName()` 回退成裸代码（数据源没有名称数据集，硬造一份等于引第二数据源）。
+ */
+export const SAMPLE_SYMBOLS = [
   { code: "600519", name: "贵州茅台" },
   { code: "300750", name: "宁德时代" },
   { code: "600036", name: "招商银行" },
@@ -76,7 +85,7 @@ export function defaultForm(): FormState {
   const strategy: Strategy = "event_driven";
   return {
     strategy,
-    symbol: SYMBOLS[0].code,
+    symbol: SAMPLE_SYMBOLS[0].code,
     start: "",
     end: "",
     fees: true,
@@ -96,6 +105,9 @@ export function switchStrategy(state: FormState, strategy: Strategy): FormState 
 export function validateForm(state: FormState): Record<string, string> {
   const errors: Record<string, string> = {};
   const values: Record<string, number> = {};
+
+  const symbolError = validateSymbol(state.symbol);
+  if (symbolError) errors.symbol = symbolError;
 
   for (const field of PARAMS[state.strategy]) {
     const raw = (state.params[field.key] ?? "").trim();
@@ -181,7 +193,7 @@ export function formFromRequest(request: StoredBacktestRequest): FormState {
 }
 
 export function symbolName(code: string): string {
-  return SYMBOLS.find((symbol) => symbol.code === code)?.name ?? code;
+  return SAMPLE_SYMBOLS.find((symbol) => symbol.code === code)?.name ?? code;
 }
 
 export function strategyLabel(strategy: Strategy): string {

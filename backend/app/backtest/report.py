@@ -177,7 +177,12 @@ def resolve_window(
     if start is None and strategy == EventDriven.name:
         start = _first_event_date(symbol, data_dir)
         if start is None:
-            raise NoDataError(f"{symbol} 无事件数据，先跑 scripts/download_events.py")
+            # M2a 后行情是全市场、事件仍只覆盖少数示例标的，故这句不能再说「先跑下载脚本」
+            # ——那对绝大多数标的永远无效。给出真正可执行的出路。
+            raise NoDataError(
+                f"{symbol} 没有事件数据：本地事件语料只覆盖少数示例标的（在线接口窗口约 3 个月）。"
+                "改用示例标的，或把策略换成 ma_cross（双均线不需要事件）。"
+            )
     start = start or rows[0]["trade_date"]
     end = end or rows[-1]["trade_date"]
 

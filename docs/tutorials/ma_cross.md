@@ -2,7 +2,10 @@
 
 > **读者**：已克隆本仓库、样例数据已落盘的读者（行情取数见 `backend/scripts/download_bars.py`，事件语料见 `backend/scripts/download_events.py`）。
 >
-> **本文数字来自一次真实回测**，照抄第 3 节的命令即可逐项对上。数据快照：`data/bars/600519.qfq.parquet`（424 根，2025-01-02 → 2026-09-30，sha256 前 12 位 `9654d7c55b63`，完整清单见 `data/_meta/bars.json`）。**换一份数据快照，数字会变，结构与读法不变。**
+> **本文数字来自一次真实回测**，照抄第 3 节的命令即可逐项对上。数据快照：`cn-daily` 的 qfq 分片
+> `year=2025`（sha256 前 12 位 `0fb4c3159257`）与 `year=2026`（`69eb9d54819947`），过滤式 `symbol = 600519`，
+> 得 424 根 bar（2025-01-02 → 2026-09-30）；完整分片清单见 `data/_meta/bars.json` 的 `fingerprint.shards`。
+> **换一份数据快照，数字会变，结构与读法不变。**
 
 ## 1. 策略逻辑
 
@@ -31,10 +34,13 @@
 
 ```bash
 cd backend
-uv run python scripts/run_report.py --symbol 600519 --strategy ma_cross
+uv run python scripts/run_report.py --symbol 600519 --strategy ma_cross \
+  --start 2025-01-02 --end 2026-09-30
 ```
 
-区间缺省：起点 = 该标的**第一根 bar**（2025-01-02），终点 = **最后一根 bar**（2026-09-30）。期望输出（节选）：
+区间缺省：起点 = 该标的**第一根 bar**，终点 = **最后一根 bar**。M2a 把行情扩到全市场七年历史后，
+缺省起点变成 **2020-01-02**，跑出来的数字与本文不同——本文锚定的是 2025-01-02 起的这段窗口，
+所以命令里显式给了区间。期望输出（节选）：
 
 ```
 策略 ma_cross · 模式 pit · 2025-01-02 → 2026-09-30 · 424 根 bar · 复权 qfq

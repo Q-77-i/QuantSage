@@ -33,7 +33,8 @@ export interface Bar {
   high: number;
   low: number;
   close: number;
-  volume: number;
+  /** 停牌日源数据不给成交量（**不等于 0**），故可为 null */
+  volume: number | null;
   is_suspended: boolean;
 }
 

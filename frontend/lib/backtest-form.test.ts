@@ -95,6 +95,13 @@ describe("validateForm —— 只补后端不校验的那部分", () => {
     const errors = validateForm(form({ start: "2026-09-01", end: "2026-07-01" }));
     expect(hasErrors(errors)).toBe(false);
   });
+
+  it("标的改成自由输入后，六位数字以外的值要挡下 —— 后端只有英文 pattern 报错", () => {
+    expect(validateForm(form({ symbol: "" })).symbol).toContain("请输入");
+    expect(validateForm(form({ symbol: "60051" })).symbol).toContain("6 位数字");
+    expect(validateForm(form({ symbol: "abcdef" })).symbol).toContain("6 位数字");
+    expect(hasErrors(validateForm(form({ symbol: "000001" })))).toBe(false);
+  });
 });
 
 describe("buildRequest", () => {

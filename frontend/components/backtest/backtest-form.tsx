@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import {
   PARAMS,
   PIT_MODES,
+  SAMPLE_SYMBOLS,
   STRATEGIES,
-  SYMBOLS,
   hasErrors,
   switchStrategy,
 } from "@/lib/backtest-form";
@@ -64,19 +64,30 @@ export function BacktestForm({
           </Select>
         </Field>
 
-        <Field label="标的" htmlFor="bt-symbol">
-          <Select
-            id="bt-symbol"
-            className="w-36"
-            value={value.symbol}
-            onChange={(event) => patch({ symbol: event.target.value })}
-          >
-            {SYMBOLS.map((symbol) => (
-              <option key={symbol.code} value={symbol.code}>
-                {symbol.code} {symbol.name}
-              </option>
+        <Field label="标的" htmlFor="bt-symbol" error={errors.symbol}>
+          <div className="flex h-8 items-center gap-1.5">
+            <Input
+              id="bt-symbol"
+              className="num w-24"
+              inputMode="numeric"
+              autoComplete="off"
+              value={value.symbol}
+              aria-invalid={Boolean(errors.symbol)}
+              aria-describedby={errors.symbol ? "bt-symbol-error" : undefined}
+              onChange={(event) => patch({ symbol: event.target.value })}
+            />
+            {SAMPLE_SYMBOLS.map((symbol) => (
+              <button
+                key={symbol.code}
+                type="button"
+                title={symbol.code}
+                onClick={() => patch({ symbol: symbol.code })}
+                className="rounded-[var(--radius)] px-1.5 py-1 text-xs text-ink-3 transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {symbol.name}
+              </button>
             ))}
-          </Select>
+          </div>
         </Field>
 
         <Field label="起始日" htmlFor="bt-start">

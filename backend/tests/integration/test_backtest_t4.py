@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 
 from app.backtest.costs import CostModel
@@ -20,7 +18,6 @@ from app.backtest.events import bar_cutoff
 from app.backtest.types import Mode, Side
 from app.core.config import get_settings
 from app.data import duckdb_client as dc
-from scripts.download_bars import SYMBOLS
 
 pytestmark = pytest.mark.integration
 
@@ -144,8 +141,13 @@ def test_ma_cross_never_holds_through_a_death_cross_window() -> None:
 
 
 def test_events_are_loaded_even_when_backtest_starts_before_them() -> None:
-    """事件窗口晚于行情窗口：从 2025-01 起跑也要能看到 2026-07 之后的事件。"""
+    """事件窗口晚于行情窗口：从行情首根 bar 起跑也要能看到 2026-07 之后的事件。
+
+    M2a 后行情是七年全历史（首根是 2020-01-02 而非 2025-01-02），故这里改成拿**数据自己的**
+    首根 bar 比对——写死日期会让这条用例在每次数据扩容时假失败，而它要证的其实是
+    「起点早于事件窗口也不会漏掉事件」。
+    """
     result = full_run(SYMBOL, "event_driven")
     assert result.events_seen > 0
     assert result.fills, "全窗起跑的事件策略也应成交"
-    assert result.bars[0].trade_date == date(2025, 1, 2)
+    assert result.bars[0].trade_date == dc.bars(SYMBOL, data_dir=DATA_DIR)[0]["trade_date"]

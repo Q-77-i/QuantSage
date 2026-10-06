@@ -67,10 +67,20 @@ def bars(
     adjust: str = "qfq",
     data_dir: Path | None = None,
 ) -> list[dict]:
-    """单标的日线，按 trade_date 升序。`start` / `end` 为 YYYY-MM-DD（含端点）。"""
+    """单标的日线，按 trade_date 升序。`start` / `end` 为 YYYY-MM-DD（含端点）。
+
+    **只返回四价齐全的 bar**。数据源里 `trading_status='no_turnover_observed'` 的日子
+    可能整行价量为空（全市场约 271 行/复权，全落在 2026-08-19 之后）——那是「当天没观测到
+    成交」的事实，不是 0 元。留它进来会被下游当成价格：`Bar.from_row` 把 None 读成 0.0，
+    持仓估值当日期末权益直接塌到现金，回测静默给出 -100%。**无价即无价，不是零价**，
+    故在这一层剔除（原始行仍在 Parquet 里，SQL 可查；体检脚本 M2c 会统计其数量）。
+    """
     con = connect(data_dir)
     try:
-        sql = f"SELECT * FROM {BARS_VIEW} WHERE symbol = ? AND adjustment = ?"
+        sql = (
+            f"SELECT * FROM {BARS_VIEW} WHERE symbol = ? AND adjustment = ?"
+            " AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL"
+        )
         params: list = [symbol, adjust]
         if start:
             sql += " AND trade_date >= ?"
@@ -86,10 +96,13 @@ def bars(
 def latest_closes(
     symbols: list[str], *, adjust: str = "qfq", data_dir: Path | None = None
 ) -> dict[str, dict]:
-    """一批标的各自最近一根 bar 的收盘价（自选股「加自选以来涨幅」用）。
+    """一批标的各自最近一根**有价** bar 的收盘价（自选股「加自选以来涨幅」用）。
 
     一次连接批量取，不做 N 次 connect/close。**未命中的 symbol 不进结果**——调用方按
     缺省处理（自选股要如实留空，不得编价）。空列表提前返回：`IN ()` 是语法错误。
+
+    与 `bars()` 同口径地排除无价 bar：否则「最新可得收盘价」会取到某天没成交的空行，
+    把「有价但那是几天前」显示成「取不到价」。
     """
     if not symbols:
         return {}
@@ -99,7 +112,7 @@ def latest_closes(
         rows = _fetch(
             con,
             f"SELECT symbol, trade_date, close FROM {BARS_VIEW} "
-            f"WHERE adjustment = ? AND symbol IN ({placeholders}) "
+            f"WHERE adjustment = ? AND symbol IN ({placeholders}) AND close IS NOT NULL "
             "QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1",
             [adjust, *symbols],
         )

@@ -2,7 +2,10 @@
 
 > **读者**：已克隆本仓库、样例数据已落盘的读者（行情取数见 `backend/scripts/download_bars.py`，事件语料见 `backend/scripts/download_events.py`）。
 >
-> **本文数字来自一次真实回测**，照抄第 4 节的命令即可逐项对上。数据快照：`data/bars/600519.qfq.parquet`（424 根，sha256 前 12 位 `9654d7c55b63`）与 `data/events/600519.parquet`（88 条，事件窗口 2026-07-05 → 2026-09-30，sha256 前 12 位 `b1cf196031f7`；清单见 `data/_meta/{bars,events}.json`）。**换一份数据快照，数字会变，结构与读法不变。**
+> **本文数字来自一次真实回测**，照抄第 4 节的命令即可逐项对上。数据快照：行情用 `cn-daily` 的 qfq 分片
+> `year=2025`（sha256 前 12 位 `0fb4c3159257`）与 `year=2026`（`69eb9d54819947`）；事件用
+> `data/events/600519.parquet`（88 条，窗口 2026-07-05 → 2026-09-30，sha256 前 12 位 `b1cf196031f7`）。
+> 清单见 `data/_meta/{bars,events}.json`。**换一份数据快照，数字会变，结构与读法不变。**
 
 ## 1. 策略逻辑
 

@@ -128,7 +128,7 @@ def test_ma_cross_reports_no_pit_comparison() -> None:
 
     assert report["pit_comparison"] is None
     assert report["meta"]["strategy"] == "ma_cross"
-    assert report["meta"]["warnings"] == []  # 全窗 424 根 bar，样本充足
+    assert report["meta"]["warnings"] == []  # 全窗七年约 1600 根 bar，样本充足
 
 
 def test_event_window_is_flagged_as_short_sample() -> None:
