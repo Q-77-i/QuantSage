@@ -38,12 +38,14 @@
 7. 回测自研最小事件驱动引擎；验收含前视偏差两口径差异量化（方向不预设，如实呈现）；退市股覆盖确认转 M2（数据层 ETL 一并做）
 8. Harness = LangGraph；自研补齐：工具执行器、上下文预算管理器、代码执行沙箱
 9. 记忆：设计期 CLAUDE.md → AutoMemory → docs/；运行期 Checkpointer → Store → Qdrant。合规风控规则只进 Git，LLM 不可动态改写
+10. 前视偏差从数据层延伸到策略代码层：M4 内置策略代码 AST 静态检查，拦截 shift(-n)/bfill 等未来函数——护城河的第二道闸门
 
 ## 四、数据源（小石）
 
 - PIT 语义：`event_time` 事发 / `available_at` 平台首次可用 / `observed_at` 观察
 - 对话查询与事件语料走 MCP；批量行情下载/文件校验/因子验证走 `xiaoshi-data` CLI（SPEC v0.3 已定：事件在线拉取只有 MCP 一条路）
 - 在线事件接口单次上限 92 天、历史窗口约 3 个月；来源标注（`source` / `original_source` / `content_hash`）做进 UI；进入决策的数据必须带来源标注
+- 基本面数据不引第二数据源：akshare 等无 PIT 语义，引入会污染护城河；M8 基本面角色改读 announcement 公告语料（财报/业绩预告等，自带 `available_at`），做「PIT 基本面事件」
 
 ## 五、安全红线
 
@@ -57,7 +59,7 @@
 | 阶段 | 目标 | 出口 DoD | 排期（冲刺/稳健，周） |
 |---|---|---|---|
 | P1-Tn Test | 跑通双闭环 demo | 浏览器内完成对话与回测；前视偏差两口径差异可量化 | 2 / 3 |
-| P2-Mn MVP | 独立完成「写策略→回测→模拟→复盘」 | 全流程走通；研报可分享；PIT 单测通过 | 4 / 6 |
+| P2-Mn MVP | 独立完成「写策略→回测→模拟→复盘」 | 全流程走通；研报可分享；PIT 单测通过 | 6 / 8 |
 | P3-En Enterprise | 企业级思维达标 | 故障注入通过；Claude Desktop 可调我们的 MCP | 2 / 4 |
 | P4-Sn Scale | 仅愿景，不排期 | — | — |
 
