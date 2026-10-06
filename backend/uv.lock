@@ -726,6 +726,22 @@ wheels = [
 ]
 
 [[package]]
+name = "langchain-litellm"
+version = "0.11.0"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "langchain-core" },
+    { name = "litellm" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/eb/a0/23f836ef82ea302798327d137afe234a7c39a8329435293d6e96510bcccb/langchain_litellm-0.11.0.tar.gz", hash = "sha256:0d2025c1159d10c45afa197c47c10cf1841794b53ebed0e33066affdefca3bc3", size = 418055, upload-time = "2026-09-30T22:49:33.064Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c2/ca/4eb6ac55611eaaec43859c16b55f735bf2eb10d115d9f20d395abf5ffdd6/langchain_litellm-0.11.0-py3-none-any.whl", hash = "sha256:9fc5566059d984960a65d9ac919a782e840a575a660b1704af0f0ed2d60c30d1", size = 48983, upload-time = "2026-09-30T22:49:31.877Z" },
+]
+
+[[package]]
 name = "langchain-mcp-adapters"
 version = "0.3.2"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -1461,6 +1477,7 @@ dependencies = [
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-core" },
+    { name = "langchain-litellm" },
     { name = "langchain-mcp-adapters" },
     { name = "langfuse" },
     { name = "langgraph" },
@@ -1489,6 +1506,7 @@ requires-dist = [
     { name = "httpx", specifier = "~=0.28" },
     { name = "langchain", specifier = "==1.4.3" },
     { name = "langchain-core", specifier = "==1.6.6" },
+    { name = "langchain-litellm", specifier = "==0.11.0" },
     { name = "langchain-mcp-adapters", specifier = "==0.3.2" },
     { name = "langfuse", specifier = "~=4.16.0" },
     { name = "langgraph", specifier = "==1.2.12" },

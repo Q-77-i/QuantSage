@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.5 ｜ 2026-10-05 ｜ 状态：已通过
+> 版本 v0.6 ｜ 2026-10-06 ｜ 状态：已通过
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
 
@@ -111,9 +111,22 @@ class Strategy(Protocol):
 ## 6. T3 Agent 对话
 
 - 图：START → agent（LLM + tools）→ END；Postgres checkpointer；模型 `deepseek-flash`（LiteLLM SDK 统一调用）
+  - 模型接入经 `langchain-litellm` 的 `ChatLiteLLM`，模型名必须带 provider 前缀（`deepseek/deepseek-flash`）——litellm 不接受裸模型名；密钥由 `Settings` **显式传入**，不依赖 `os.environ`
+  - 图在 lifespan 内构建：checkpointer 在 compile 期固化，导入期建图会永久拿不到真 saver。MCP 或数据库不可用时按既有降级姿态启动，不阻断服务
 - 工具：`query_market_bars`（DuckDB）、`query_events`（小石 MCP，经 langchain-mcp-adapters 注册，按 tools/list 实际结果绑定）
+  - 小石工具**按白名单暴露**：只放只读查询类，动作型（`plan_history_download` / `prepare_local_research` 一类）不进 LLM 工具集——误调用会触发昂贵下载；白名单以 tools/list 实际结果为准，缺项时启动告警
+  - 工具异常（含 MCP 传输错误）转成错误结果交模型自纠，不穿出图炸断整条流；MCP 单次调用设超时上限（适配器本身没有超时参数，须自行包裹）
+  - 本地 DuckDB 查询是同步 IO，须卸载到线程执行，避免阻塞事件循环
 - 流式：SSE 事件类型 `token` / `tool_call` / `tool_result` / `done` / `error`
-- API：`POST /api/v1/chat`，请求 `{thread_id, message}`；Langfuse 记录完整 trace
+  - `tool_call.data` = `{id, name, args}`；`tool_result.data` = `{id, name, content, is_error}`，其中 `content` 为**截断预览**——MCP 返回可达上百 KB，不整包塞进事件流
+  - `data` 一律单行 JSON（`ensure_ascii=False`）；客户端按 `\n\n` 切帧，不得假设「一个网络分片 = 一个事件」
+  - 图内异常转 `error` 帧（`{code, message, request_id}`）而非裸抛断连；静默期发注释帧保活
+- API：`POST /api/v1/chat`，请求 `{thread_id?, message}`；`thread_id` 缺省时由服务端生成 UUID，经响应头 `X-Thread-Id` 与 `done` 事件**双通道**回传（客户端中途断连也能拿到会话号）
+- API：`GET /api/v1/chat/threads` → 会话列表（T6 对话页需要；补齐 SPEC 原有的契约缺口）
+  - 取数：只读 SQL 从 `checkpoints` 表按 `thread_id` 聚合（限 `checkpoint_ns = ''`）；消息正文落在 `checkpoint_blobs`（msgpack），**不能手写 JSONB 路径取**，须经 checkpointer 官方读接口反序列化；标题由服务端从首条人类消息派生，不接受客户端传入
+  - 暂无归属校验：单用户 demo 可接受，**P2 引入登录后必须按用户过滤**（记为 M1 阻塞项）
+- Langfuse 记录完整 trace：须**显式构造客户端**后再取 `CallbackHandler`——`.env` 只进 pydantic Settings、不进 `os.environ`，零参构造会静默降级为 NoOpTracer（表现为「无报错但没有任何 trace」）
+- 本轮不做（记录待议）：同 thread 并发写入的串行化、请求幂等去重、历史消息裁剪与上下文超限策略
 
 **验收**：问「贵州茅台最近行情」Agent 自主调工具并流式作答；Langfuse 可查看完整 trace（含工具调用与成本）。
 
@@ -140,8 +153,9 @@ class Strategy(Protocol):
 
 ## 9. 测试策略
 
-- 单元：引擎撮合/成本/PIT 过滤（T4/T5）、指标计算（T5）、DuckDB 查询层（T2）
-- 集成：chat 端点 SSE（mock 模型）、backtest 端点
+- 单元：引擎撮合/成本/PIT 过滤（T4/T5）、指标计算（T5）、DuckDB 查询层（T2）、SSE 帧编码与事件映射、工具白名单过滤（T3）
+- 集成：chat 端点 SSE、backtest 端点
+- T3 的离线流式测试需自备假模型：现成的 `FakeMessagesListChatModel` 没实现 `bind_tools`（`create_agent` 运行时会调用），`GenericFakeChatModel` 不产出 `tool_calls`——两者都不足以单独驱动「先调工具、再逐 token 作答」的两轮
 - Langfuse trace 断言：每次集成测试产生 trace
 
 ## 10. 变更记录
@@ -151,5 +165,6 @@ class Strategy(Protocol):
 | 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
 | 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
 | 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |
+| 2026-10-06 | v0.6 | T3 落地澄清：新增 `GET /api/v1/chat/threads` 会话列表与 `thread_id` 缺省规则（服务端生成 + 响应头/`done` 双通道回传）；SSE 事件补字段定义、`tool_result` 只发截断预览、补保活帧；小石工具改**白名单**暴露（动作型工具有昂贵副作用）；记录三条静默失败陷阱（litellm 裸模型名被拒、`.env` 不进 `os.environ` 致 trace 静默丢失、checkpointer 在 compile 期固化），并写明本轮不做的四项（并发串行化 / 幂等 / 历史裁剪 / 上下文超限） |
 | 2026-10-05 | v0.5 | T5 口径确认：基准改**份额化买入 + 扣一次成本**（整手取整会造成现金拖累、系统性压低基准）；`backtest/` 增设 `report.py`（metrics.py 保持纯函数）；明确指标口径（252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓）、`reason` 为出场原因、`pit_comparison` 可为 `null`、`delta` 以 `final_equity_pct` 为核心量化值；补 `meta` 与 `open_position` 两个可读性字段；`bars < 120` 时提示样本量 |
 | 2026-10-05 | v0.4 | T4 落地澄清：PIT 口径定为**收盘时刻级**（当天 15:00）；`backtest/` 增设 `types.py`（`BarContext` 独立成层避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列，护城河一眼可见）；撮合加 A 股实盘规则（100 股整手 + 佣金最低 5 元），费用与滑点拆成两个独立开关；`event_driven` 默认 `score >= 50`、持有 5 日；明确 **PIT 只作用于事件语料**，bars 不做逐 bar 设卡（`available_at` 为整表快照） |

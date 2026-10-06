@@ -11,6 +11,8 @@ dependencies = [
     "langchain==1.4.3",
     "langchain-core==1.6.6",
     "langchain-mcp-adapters==0.3.2",
+    # langchain 1.x 不含 LiteLLM 集成，须显式装桥接包；T3 起 LLM 调用走它
+    "langchain-litellm==0.11.0",
     # 适配器要求 mcp>=1.24,<2；上游已到 2.x，必须钉住
     "mcp==1.30.0",
     # checkpoint-postgres 只声明裸 psycopg，binary extra 需自行添加（否则走源码编译）
