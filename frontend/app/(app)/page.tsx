@@ -1,6 +1,5 @@
 "use client";
 
-import { AppHeader } from "@/components/app-header";
 import { Composer } from "@/components/chat/composer";
 import { MessageList } from "@/components/chat/message-list";
 import { ThreadList } from "@/components/chat/thread-list";
@@ -11,7 +10,7 @@ import { Button } from "@/components/ui/button";
  * 对话页（T6b）。
  *
  * 状态机在 `lib/chat-state.ts`，与后端的接线在 `components/chat/use-chat.ts`，
- * 这里只负责排版与「哪些操作此刻不该可用」。
+ * 这里只负责排版与「哪些操作此刻不该可用」。页头与登录守卫在 `(app)/layout.tsx`。
  */
 export default function ChatPage() {
   const { threads, error: threadsError, refresh } = useThreads();
@@ -19,7 +18,6 @@ export default function ChatPage() {
 
   return (
     <>
-      <AppHeader />
       <div className="mx-auto flex h-[calc(100dvh-3.5rem)] max-w-[1400px]">
         <aside className="hidden w-60 shrink-0 flex-col border-r border-border p-3 md:flex">
           <Button

@@ -86,9 +86,15 @@ flowchart LR
 | 前端 | 对话页（流式渲染、工具步骤可视化、停止生成、历史回看）与回测页（指标卡、净值曲线、K 线买卖点、PIT 对比表、交易明细、事件表含来源标注） |
 | 教程 | [`ma_cross.md`](docs/tutorials/ma_cross.md)、[`event_driven.md`](docs/tutorials/event_driven.md)——策略逻辑、参数含义、复现命令与期望数字、易误读点 |
 
+**已落地（P2-Mn · M1 进行中）**
+
+| 功能 | 内容 |
+|---|---|
+| 用户系统（M1a / M1b） | 注册 / 登录 / 退出 / 当前用户（bcrypt 哈希 + HS256 JWT，httpOnly + SameSite=Lax cookie）；**用户数据隔离**：会话归属过滤，越权与不存在同返 404、未登录 401；前端受保护路由组与登录守卫 |
+
 **规划中**
 
-P2-Mn（用户系统 / 日增量 ETL / RAG 完整化 / 策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
+P2-Mn 其余功能（自选股与个人空间 · M1c / 日增量 ETL / RAG 完整化 / 策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
 
 ---
 
@@ -155,14 +161,18 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/health` · `/health/ready` | 存活 / 就绪探针（就绪含 Postgres 检查） |
-| POST | `/api/v1/chat` | SSE 流式问答（`token` / `tool_call` / `tool_result` / `done` / `error`） |
-| GET | `/api/v1/chat/threads` | 会话列表 |
-| GET · DELETE | `/api/v1/chat/threads/{id}` · `.../messages` | 会话历史（含工具步骤）与删除 |
-| POST | `/api/v1/backtest` | 跑回测，返回指标 / 净值 / 交易 / PIT 对比 |
+| POST | `/api/v1/auth/register` · `/login` · `/logout` | 注册（即登录态）/ 登录 / 退出，会话经 httpOnly cookie |
+| GET | `/api/v1/auth/me` | 当前登录用户（未登录 401） |
+| POST | `/api/v1/chat` 🔒 | SSE 流式问答（`token` / `tool_call` / `tool_result` / `done` / `error`） |
+| GET | `/api/v1/chat/threads` 🔒 | 会话列表（仅本人，按最近活动倒序） |
+| GET · DELETE | `/api/v1/chat/threads/{id}` · `.../messages` 🔒 | 会话历史（含工具步骤）与删除 |
+| POST | `/api/v1/backtest` | 跑回测，返回指标 / 净值 / 交易 / PIT 对比（落库属 M1c） |
 | GET | `/api/v1/market/{symbol}/bars` | 单标的日线（`adjust=qfq\|raw`） |
 | GET | `/api/v1/events` | 事件语料（`event_time` 与 `available_at` 并列，含来源三元组） |
 
 交互式文档：后端起来后访问 `/docs`。
+
+🔒 = 需登录（`auth/me`、`chat/*` 全部受保护；`market` 与 `events` 是非用户资产，保持公开）。会话 cookie 走 `httpOnly + SameSite=Lax`，因此**前端与 API 必须同用 `127.0.0.1`（或同用 `localhost`）**——混用会让 cookie 静默不发送。
 
 ---
 
@@ -203,9 +213,9 @@ QuantSage/
 
 ## 已知边界
 
-这是 P1 的诚实清单，避免读者误判完成度：
+这是当前进度的诚实清单，避免读者误判完成度：
 
-- **单用户 demo，无鉴权与归属校验**——会话与回测无用户隔离，P2-M1 的第一道门
+- **鉴权与归属校验已落地（M1a / M1b）**，但 M1 未收口：自选股、个人空间页与「我的回测」（`backtest_runs` 落库）属 M1c，**回测目前仍是无状态计算、不落库也不纳入鉴权**
 - **Redis 与 Qdrant 在 P1 未被后端调用**，只是 compose 里就位的服务（RAG 属 P2-M3）
 - **多 Agent 深路径尚未实现**，P1 是单 Agent ReAct
 - **回测引擎为最小实现**：无组合、无模拟盘、无常驻调度；`bars < 120` 时年化与夏普会被放大（UI 常驻提示）

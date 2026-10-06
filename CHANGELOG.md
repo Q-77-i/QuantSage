@@ -6,12 +6,18 @@
 
 ### 新增
 
+- **M1a 用户地基与归属校验**：注册 / 登录 / 退出 / 当前用户四端点（bcrypt + HS256 JWT，httpOnly + SameSite=Lax cookie）；自建业务表（`users` / `chat_threads` / `watchlist` / `backtest_runs`）与幂等建表机制；**会话归属真源改为自有表**——列表不再直读 langgraph 的 `checkpoints` 内部表，越权与不存在同返 404、未登录一律 401（P1 遗留阻塞项清零）
+- **M1b 前端认证闭环**：`app/(app)/` 受保护路由组（守卫 + 页头唯一落点）、登录 / 注册页（含开放重定向白名单）、`AuthProvider` 经 `/auth/me` 探测登录态、全部请求与 SSE 带 `credentials: "include"`；页头显示账号与退出
+- 后端 `app/core/{auth,db}.py`、`app/api/auth.py`；前端 `lib/auth-form.ts` 纯函数（密码按字节判长、`next` 回跳白名单）
 - **T6d 图表交互**：净值曲线与 K 线的手势统一为「捏合缩放 / 横向滚轮平移 / 拖拽平移 / 竖直滚动归还页面」，两图各自独立缩放并各带「重置缩放」；缩放数学抽为纯函数 `lib/chart-gesture.ts`（附单测）
 - 根 `README.md`：项目门面（定位与护城河、架构图、界面截图、快速开始、API、已知边界）
 - `docs/images/`：三张界面截图，配 Playwright 截图脚本（`pnpm screenshots`，可重跑）
 
 ### 调整
 
+- `POST /api/v1/chat` 与三个会话端点要求登录（会话列表口径改为自有表 `last_active_at`）；`/api/v1/market`、`/api/v1/events` 保持公开（非用户资产）；`/api/v1/backtest` 待 M1c 落库时一并纳入鉴权
+- CORS 开 `allow_credentials=True`（凭据模式要求显式 origin 列表，已是）
+- 依赖新增 `bcrypt==5.0.0`、`pyjwt==2.15.1`（与 checkpoint 链同等显式 pin）
 - 文档链同步：PRD 升 v0.5（状态行改「已通过」、§6 待确认①证伪②③转 M2）；SPEC 升 v0.12（样本量订正 55 / 2.1 倍、T1 依赖清单补齐、章节按功能 ID 重排、§7 补图表交互口径）；CLAUDE.md 技术栈表增「落地状态」列、数据源通道对齐 SPEC
 - 定下 SPEC 版本编号规则：主版本 = 阶段序号（P1 → `0`、P2 → `1`、P3 → `2`）
 - 后端前视偏差措辞中性化（注释与 docstring 7 处，无行为变更）

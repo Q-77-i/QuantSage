@@ -68,6 +68,8 @@ export async function streamChat(options: ChatStreamOptions): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message: options.message, thread_id: options.threadId ?? null }),
     signal: options.signal,
+    // 会话 cookie（M1）：与 lib/api.ts 同因——httpOnly，只能由浏览器自动带上
+    credentials: "include",
   });
 
   if (!response.ok) {

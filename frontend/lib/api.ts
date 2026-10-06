@@ -12,6 +12,7 @@ import type {
   EventsResponse,
   ThreadMessagesResponse,
   ThreadSummary,
+  User,
 } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
@@ -45,10 +46,18 @@ export async function errorMessage(response: Response): Promise<string> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  // credentials 必须带：会话是 httpOnly cookie，JS 读不到也放不进去，只能让浏览器带上。
+  // 前后端同 site（127.0.0.1 的 3001 ↔ 8000），SameSite=Lax 不影响这条请求。
+  const response = await fetch(`${API_BASE}${path}`, { credentials: "include", ...init });
   if (!response.ok) throw new ApiError(response.status, await errorMessage(response));
   return (await response.json()) as T;
 }
+
+const jsonInit = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
 
 function query(params: Record<string, string | number | undefined | null>): string {
   const search = new URLSearchParams();
@@ -60,6 +69,18 @@ function query(params: Record<string, string | number | undefined | null>): stri
 }
 
 export const api = {
+  // ── 认证（M1）─────────────────────────────────────────────────────────
+  me: () => request<User>("/api/v1/auth/me"),
+
+  login: (email: string, password: string) =>
+    request<User>("/api/v1/auth/login", jsonInit("POST", { email, password })),
+
+  register: (email: string, password: string) =>
+    request<User>("/api/v1/auth/register", jsonInit("POST", { email, password })),
+
+  logout: () => request<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
+
+  // ── 数据 ──────────────────────────────────────────────────────────────
   bars: (symbol: string, params: { start?: string; end?: string; adjust?: string } = {}) =>
     request<BarsResponse>(`/api/v1/market/${symbol}/bars${query(params)}`),
 

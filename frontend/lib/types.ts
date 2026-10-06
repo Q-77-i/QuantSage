@@ -9,6 +9,13 @@ export type Strategy = "ma_cross" | "event_driven";
 export type PitMode = "pit" | "non_pit" | "both";
 export type Adjust = "qfq" | "raw";
 
+// ── GET /api/v1/auth/me（M1）────────────────────────────────────────────────
+
+export interface User {
+  id: number;
+  email: string;
+}
+
 // ── GET /api/v1/market/{symbol}/bars ────────────────────────────────────────
 
 export interface Bar {

@@ -2,7 +2,6 @@
 
 import { useRef, useState } from "react";
 
-import { AppHeader } from "@/components/app-header";
 import { BacktestForm } from "@/components/backtest/backtest-form";
 import { CandlestickChart } from "@/components/backtest/candlestick-chart";
 import { ChartFrame, Section } from "@/components/backtest/chart-frame";
@@ -43,7 +42,6 @@ export default function BacktestPage() {
 
   return (
     <>
-      <AppHeader />
       <main className="mx-auto max-w-[1400px] px-4 py-6">
         <h1 className="font-heading text-xl">回测</h1>
 
