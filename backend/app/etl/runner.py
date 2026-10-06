@@ -204,6 +204,59 @@ def backfill(data_dir: Path | None = None, *, days: int = BACKFILL_DAYS, refresh
     return run("backfill", days=todo, data_dir=data_dir, refresh=refresh)
 
 
+def rematerialize(data_dir: Path | None = None) -> RunReport:
+    """用**本地已有分片**重物化全部日分区，**零网络会话**。
+
+    用途：改了口径（方向映射表、落盘列集）后让历史数据与新口径一致。分片是内容寻址的
+    本地对象（`data/raw/o/`），`archive.day_shards()` 只读回执状态文件——所以这条路与
+    `refresh=True`（要重新向平台发请求）是两件完全不同成本的事，别混用。
+    """
+    if not _LOCK.acquire(blocking=False):
+        raise EtlBusy("已有一次 ETL 在执行")
+    paths_ = paths(data_dir)
+    report = RunReport(scope="rematerialize", started_at=datetime.now(timezone.utc).isoformat())
+    try:
+        for entry in store.read_day_entries(paths_.events_dir, paths_.raw_dir):
+            day = date.fromisoformat(entry.date)
+            try:
+                shards = archive.day_shards(day, paths_.data_dir)
+                fresh = store.materialize_day(day, shards, paths_.events_dir, paths_.raw_dir)
+                report.days.append(
+                    DayOutcome(
+                        date=entry.date,
+                        status="ok",
+                        rows=fresh.rows,
+                        symbols=fresh.symbols,
+                        sha256=fresh.sha256,
+                    )
+                )
+            except archive.RateLimited:
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 单日失败记台账继续
+                report.days.append(
+                    DayOutcome(date=entry.date, status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
+                )
+        report.result = "failed" if any(d.status == "failed" for d in report.days) else "ok"
+    finally:
+        report.finished_at = datetime.now(timezone.utc).isoformat()
+        _LOCK.release()
+    _append_ledger(paths_, report)
+    store.write_manifest(
+        paths_.meta_dir,
+        store.read_day_entries(paths_.events_dir, paths_.raw_dir),
+        coverage_last=_archive_last_or_none(paths_),
+    )
+    return report
+
+
+def _archive_last_or_none(paths_: Paths) -> str | None:
+    """清单里的归档边界：查不到就留空，不让「归档不可达」把重物化整轮带崩。"""
+    try:
+        return archive.coverage(paths_.data_dir).last_day.isoformat()
+    except archive.ArchiveError:
+        return None
+
+
 def status(data_dir: Path | None = None) -> dict:
     """给 `/api/v1/etl/status` 的口径：本地覆盖、归档边界、缺口、最近一次运行。"""
     paths_ = paths(data_dir)

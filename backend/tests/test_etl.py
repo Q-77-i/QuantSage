@@ -152,6 +152,56 @@ def test_event_without_any_symbol_keeps_empty_array(tmp_path: Path) -> None:
     ] == 1
 
 
+def test_policy_stance_maps_to_direction(tmp_path: Path) -> None:
+    """政策的鸽/鹰立场是方向语义，不该被当「无方向」丢掉（实测 220 + 165 条曾被归 NULL）。
+
+    注意：政策事件**不带标的**，所以补这张映射不会改变任何个股回测的结果——
+    它修的是数据语义，让 M8 把市场级事件接进来时标签是现成的。
+    """
+    shard = write_shard(
+        tmp_path / "policy.parquet",
+        [
+            {"event_id": "p1", "payload": payload(direction="dovish")},
+            {"event_id": "p2", "payload": payload(direction="hawkish")},
+            {"event_id": "p3", "payload": payload(direction="中性")},
+        ],
+        event_type="policy",
+    )
+    entry = store.materialize_day(
+        date(2026, 9, 29), {"policy": shard_of(shard, "policy")}, tmp_path / "e", tmp_path / "r"
+    )
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            f"SELECT direction_norm FROM read_parquet('{tmp_path / 'e' / entry.file}') ORDER BY event_id"
+        ).to_arrow_table().to_pylist()
+    finally:
+        con.close()
+    assert [row["direction_norm"] for row in rows] == ["bullish", "bearish", "neutral"]
+
+
+def test_announcement_category_is_not_mapped_to_direction(tmp_path: Path) -> None:
+    """公告的 `direction` 是**类别**不是方向：「融资定增」既可能是扩张也可能是摊薄，
+    凭空映射等于发明业务规则——留给 M8 的类别→方向表。"""
+    shard = write_shard(
+        tmp_path / "a.parquet",
+        [{"event_id": "a1", "payload": payload(direction="融资定增")}],
+        event_type="announcement",
+    )
+    entry = store.materialize_day(
+        date(2026, 9, 29), {"announcement": shard_of(shard, "announcement")}, tmp_path / "e", tmp_path / "r"
+    )
+    con = duckdb.connect()
+    try:
+        row = con.execute(
+            f"SELECT direction, direction_norm FROM read_parquet('{tmp_path / 'e' / entry.file}')"
+        ).to_arrow_table().to_pylist()[0]
+    finally:
+        con.close()
+    assert row["direction"] == "融资定增"  # 原值照留
+    assert row["direction_norm"] is None  # 但不当方向用
+
+
 def test_direction_normalized_and_non_sentiment_left_null(tmp_path: Path) -> None:
     shard = write_shard(
         tmp_path / "news.parquet",

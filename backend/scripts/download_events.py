@@ -8,6 +8,7 @@ MCP 单次硬顶 500 行且不可翻页，装不下「全市场按日」（实�
     uv run python scripts/download_events.py                 # 日增量（最近 7 个自然日）
     uv run python scripts/download_events.py --trailing 30   # 自定义回落窗口
     uv run python scripts/download_events.py --backfill      # 一次性回填 92 天（≈ 归档保留期）
+    uv run python scripts/download_events.py --rematerialize # 改了口径后用本地分片重物化（零网络会话）
     uv run python scripts/download_events.py --status        # 看覆盖、缺口与最近一次运行
 """
 
@@ -28,7 +29,12 @@ def main() -> int:
     parser.add_argument("--backfill", action="store_true", help="一次性回填（默认 92 天）")
     parser.add_argument("--days", type=int, default=runner.BACKFILL_DAYS, help="回填天数（默认 92）")
     parser.add_argument("--trailing", type=int, default=runner.DEFAULT_TRAILING_DAYS, help="日增量回落窗口（自然日）")
-    parser.add_argument("--refresh", action="store_true", help="即使来源分片未变也重新物化")
+    parser.add_argument("--refresh", action="store_true", help="即使来源分片未变也重新下发请求并物化")
+    parser.add_argument(
+        "--rematerialize",
+        action="store_true",
+        help="用本地已有分片重物化（改了口径后用，零网络会话）",
+    )
     parser.add_argument("--status", action="store_true", help="只打印状态，不拉数据")
     args = parser.parse_args()
 
@@ -36,11 +42,12 @@ def main() -> int:
         print(json.dumps(runner.status(), ensure_ascii=False, indent=2))
         return 0
 
-    report = (
-        runner.backfill(days=args.days, refresh=args.refresh)
-        if args.backfill
-        else runner.run("manual", trailing=args.trailing, refresh=args.refresh)
-    )
+    if args.rematerialize:
+        report = runner.rematerialize()
+    elif args.backfill:
+        report = runner.backfill(days=args.days, refresh=args.refresh)
+    else:
+        report = runner.run("manual", trailing=args.trailing, refresh=args.refresh)
     print(report.summary())
     for day in report.days:
         detail = f"rows={day.rows} symbols={day.symbols}" if day.status == "ok" else day.error

@@ -33,11 +33,17 @@ KEPT_EVENT_TYPES: tuple[str, ...] = ("announcement", "news", "person", "policy",
 #: 明确排除并记录（不是「忘了收」）
 EXCLUDED_EVENT_TYPES: tuple[str, ...] = ("future_dynamic", "sector", "sector_constituent")
 
-#: 与 P1 同源的方向归一（`direction` 中英混用；「高管人事」这类非情绪标签归 NULL）
+#: 方向归一。三类取值各有语义，**不是**同一件事：
+#:   * 情绪（新闻/人物）：利多/看多/positive… → bullish
+#:   * 政策立场（`event_type=policy`）：dovish（鸽派/宽松）偏多、hawkish（鹰派/紧缩）偏空；
+#:     实测 220 + 165 条，原先不在表里被整批归成 NULL——那是**语义被丢掉**，不是「无方向」
+#:   * 公告类别（高管人事/融资定增/业绩预告…）**不映射**：类别不等于方向（「融资定增」既可能
+#:     是扩张也可能是摊薄），要映射得先有一张业务认可的表，属 M8 的 PIT 基本面事件
 DIRECTION_MAP: dict[str, str] = {
     "利多": "bullish", "bullish": "bullish", "positive": "bullish", "看多": "bullish",
     "利空": "bearish", "bearish": "bearish", "negative": "bearish", "看空": "bearish",
     "中性": "neutral", "neutral": "neutral",
+    "dovish": "bullish", "hawkish": "bearish",
 }
 
 DAY_PREFIX = "cn-events_"
