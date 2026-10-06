@@ -8,7 +8,7 @@
  *   ② `:` 开头的是注释帧（服务端每 15s 发的保活），要忽略而不是当事件。
  */
 
-import { API_BASE, ApiError, errorMessage } from "./api";
+import { ApiError, apiBase, errorMessage } from "./api";
 
 export interface SseFrame {
   event: string;
@@ -63,7 +63,7 @@ export interface ChatStreamOptions {
 
 /** 发起一次对话并逐帧回调，直到流结束。 */
 export async function streamChat(options: ChatStreamOptions): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/v1/chat`, {
+  const response = await fetch(`${apiBase()}/api/v1/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message: options.message, thread_id: options.threadId ?? null }),

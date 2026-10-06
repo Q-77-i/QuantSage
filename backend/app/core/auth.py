@@ -69,17 +69,21 @@ def decode_token(token: str) -> int | None:
         return None
 
 
-def set_session_cookie(response: Response, token: str) -> None:
+def set_session_cookie(response: Response, token: str, *, remember: bool = True) -> None:
     """写会话 cookie。
+
+    `remember` 决定它是**持久 cookie** 还是**会话 cookie**：前者带 `Max-Age`（关掉浏览器
+    仍在），后者不带（浏览器关掉即失效）。这是「记住我」的全部实现——没有服务端会话表，
+    token 本身的有效期仍由 JWT 的 `exp` 兜底。
 
     `secure=False` 只因为本地是 http；上线必须置 True（SPEC §2 已记）。
     `samesite="lax"`：跨站请求不带 cookie，顺带挡掉表单类 CSRF；
-    本项目前后端同 site（127.0.0.1 的 3001 ↔ 8000），Lax 不影响正常调用。
+    本项目前后端同 site（页面 host 与 API host 相同，只差端口），Lax 不影响正常调用。
     """
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
-        max_age=get_settings().jwt_ttl_seconds,
+        max_age=get_settings().jwt_ttl_seconds if remember else None,
         httponly=True,
         samesite="lax",
         secure=False,

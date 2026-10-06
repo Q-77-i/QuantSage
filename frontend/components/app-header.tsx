@@ -23,7 +23,7 @@ export function AppHeader() {
   return (
     <header className="border-b border-border">
       <div className="mx-auto flex h-14 max-w-[1400px] items-center gap-6 px-4">
-        <Link href="/" className="font-heading text-lg tracking-tight">
+        <Link href="/" className="font-heading text-lg font-semibold tracking-tight">
           知策 <span className="text-muted-foreground">QuantSage</span>
         </Link>
 

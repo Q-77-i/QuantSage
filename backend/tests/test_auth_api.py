@@ -99,6 +99,27 @@ def test_login_with_normalized_email(client: TestClient) -> None:
     assert COOKIE_NAME in response.cookies
 
 
+def test_remember_me_controls_cookie_persistence(client: TestClient) -> None:
+    """勾「记住我」→ 持久 cookie（带 Max-Age）；不勾 → 会话 cookie（关浏览器即失效）。"""
+    client.post("/api/v1/auth/register", json=CREDENTIALS)
+    client.post("/api/v1/auth/logout")
+
+    remembered = client.post(
+        "/api/v1/auth/login",
+        json={**CREDENTIALS, "remember": True},
+    )
+    forgotten = client.post(
+        "/api/v1/auth/login",
+        json={**CREDENTIALS, "remember": False},
+    )
+
+    assert "Max-Age=" in remembered.headers["set-cookie"]
+    assert "Max-Age=" not in forgotten.headers["set-cookie"]
+    assert "Expires=" not in forgotten.headers["set-cookie"]
+    # 两种都是有效登录，只是存活方式不同
+    assert remembered.status_code == forgotten.status_code == 200
+
+
 def test_login_failures_are_indistinguishable(client: TestClient) -> None:
     """邮箱不存在与密码错误：同一状态码、同一文案，不泄露邮箱是否注册过。"""
     client.post("/api/v1/auth/register", json=CREDENTIALS)

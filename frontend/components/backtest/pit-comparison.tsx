@@ -16,7 +16,7 @@ export function PitComparisonSection({ report }: { report: BacktestReport }) {
 
   return (
     <section className="border-t border-border pt-4">
-      <h2 className="font-heading text-base">PIT 与非 PIT 的差异</h2>
+      <h2 className="font-heading text-base font-semibold">PIT 与非 PIT 的差异</h2>
 
       {comparison ? (
         <Body report={report} comparison={comparison} />

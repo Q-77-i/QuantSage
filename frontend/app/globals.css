@@ -99,7 +99,10 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
     "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  --font-heading: "Songti SC", "SimSun", "Noto Serif CJK SC", Georgia, serif;
+  /* 标题字体：无衬线 + 字重（M1b 用户反馈后由宋体改来）。宋体在 macOS 上只有
+     Regular/Bold 两档，正文尺寸下发虚、观感旧；层级改由字重与字距拉开。
+     需要更强性格时可换自托管 Geist（npm，构建期不联网），或为研报正文另立衬线 token。 */
+  --font-heading: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
 
   --radius: 4px;
 
@@ -222,6 +225,56 @@
   .num {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* 登录卡片：半透明 + 背景模糊，让全幅装饰从底下透过来（左右两栏因此不再割裂），
+     顶部一道品牌色高光边做层次，外投影取品牌色而非中性黑。 */
+  .auth-card {
+    position: relative;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    background: color-mix(in oklab, var(--surface) 84%, transparent);
+    backdrop-filter: blur(16px) saturate(1.08);
+    padding: 30px 26px 26px;
+    box-shadow: 0 26px 70px -34px color-mix(in oklab, var(--brand) 42%, transparent);
+  }
+
+  .auth-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, var(--brand) 45%, transparent),
+      transparent
+    );
+  }
+
+  /* 登录 / 注册页的品牌侧装饰（M1b）。两层都取语义 token，深浅色自动跟随：
+     网格负责结构感，径向光晕负责层次——刻意不用图片素材，零下载、零构建期网络。 */
+  .auth-grid {
+    background-image:
+      linear-gradient(to right, var(--grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+    background-size: 56px 56px;
+    /* 径向淡出：整屏方格纸会像制图板，只在左上留出密度 */
+    mask-image: radial-gradient(120% 95% at 18% 0%, #000 26%, transparent 76%);
+  }
+
+  .auth-glow {
+    background:
+      radial-gradient(
+        58% 46% at 12% 4%,
+        color-mix(in oklab, var(--brand) 20%, transparent),
+        transparent 72%
+      ),
+      radial-gradient(
+        44% 40% at 88% 96%,
+        color-mix(in oklab, var(--series-2) 12%, transparent),
+        transparent 70%
+      );
   }
 
   /* 助手回答的 Markdown 排版。紧凑、不套卡片盒，颜色一律取语义 token，

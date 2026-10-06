@@ -1,7 +1,12 @@
 /**
  * 后端 HTTP 客户端。
  *
- * 基址走 `NEXT_PUBLIC_API_BASE`（见 `.env.local`），默认指向本地 8000。
+ * 基址**默认跟随页面的 host**（只换端口），因为会话 cookie 的 SameSite 按 site 算
+ * （忽略端口）：页面在 `localhost` 而 API 写死在 `127.0.0.1` 时，两者算跨站，
+ * httpOnly cookie 会被浏览器静默丢弃——表现为「注册/登录成功却立刻又回到登录页」。
+ * 跟随 host 后，从哪个 host 打开页面都不会踩这条。
+ *
+ * 需要指向别的后端（换机器/换端口）时才用 `NEXT_PUBLIC_API_BASE` 显式覆盖。
  * 前端跑 3001 而不是 3000：3000 被 Langfuse 自托管 UI 占用。
  */
 
@@ -15,7 +20,19 @@ import type {
   User,
 } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
+/** 后端端口。只在本机联调时改（见 .env.local 说明）。 */
+const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? "8000";
+
+/**
+ * 取 API 基址。**函数而非常量**：`window` 只在浏览器里存在，
+ * 而客户端组件在预渲染时也会在服务端跑一遍模块顶层（模块级引用 `window` 会直接炸）。
+ */
+export function apiBase(): string {
+  const override = process.env.NEXT_PUBLIC_API_BASE;
+  if (override) return override;
+  const { protocol, hostname } = window.location;
+  return `${protocol}//${hostname}:${API_PORT}`;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -48,7 +65,7 @@ export async function errorMessage(response: Response): Promise<string> {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // credentials 必须带：会话是 httpOnly cookie，JS 读不到也放不进去，只能让浏览器带上。
   // 前后端同 site（127.0.0.1 的 3001 ↔ 8000），SameSite=Lax 不影响这条请求。
-  const response = await fetch(`${API_BASE}${path}`, { credentials: "include", ...init });
+  const response = await fetch(`${apiBase()}${path}`, { credentials: "include", ...init });
   if (!response.ok) throw new ApiError(response.status, await errorMessage(response));
   return (await response.json()) as T;
 }
@@ -72,8 +89,9 @@ export const api = {
   // ── 认证（M1）─────────────────────────────────────────────────────────
   me: () => request<User>("/api/v1/auth/me"),
 
-  login: (email: string, password: string) =>
-    request<User>("/api/v1/auth/login", jsonInit("POST", { email, password })),
+  /** `remember` 只改 cookie 存活方式：true → 持久（关浏览器仍在），false → 会话 cookie */
+  login: (email: string, password: string, remember = true) =>
+    request<User>("/api/v1/auth/login", jsonInit("POST", { email, password, remember })),
 
   register: (email: string, password: string) =>
     request<User>("/api/v1/auth/register", jsonInit("POST", { email, password })),

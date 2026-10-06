@@ -1,42 +1,18 @@
 "use client";
 
 /**
- * 登录 / 注册两页共用的排版件。
+ * 登录 / 注册两页共用的表单件。
  *
  * 控件与 `components/backtest/backtest-form.tsx` 同口径：原生元素 + token 样式，
  * 不引新的 shadcn 组件（省掉 CLI 联网与 Base UI 弹层同本项目圆角/配色的对抗）。
+ * 与回测表单的唯一差别是行高（40px vs 32px）：登录页一屏只有两个字段，
+ * 不必按数据区的密度压。
  */
 
 import Link from "next/link";
 import type { ComponentProps } from "react";
 
 import { cn } from "@/lib/utils";
-
-/** 居中卡片：两页只有一张表单，不铺满屏宽（宽度上限与正文列宽一致）。 */
-export function AuthCard({
-  title,
-  subtitle,
-  children,
-  footer,
-}: {
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-  footer: React.ReactNode;
-}) {
-  return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center px-4 py-10">
-      <h1 className="font-heading text-2xl tracking-tight">{title}</h1>
-      <p className="mt-1 text-sm text-ink-2">{subtitle}</p>
-
-      <div className="mt-6 rounded-[var(--radius)] border border-border bg-card p-5">
-        {children}
-      </div>
-
-      <p className="mt-4 text-center text-xs text-ink-3">{footer}</p>
-    </main>
-  );
-}
 
 export function Field({
   label,
@@ -50,8 +26,8 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={htmlFor} className="text-xs text-ink-3">
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={htmlFor} className="text-xs text-ink-2">
         {label}
       </label>
       {children}
@@ -69,7 +45,8 @@ export function TextInput({ className, ...props }: ComponentProps<"input">) {
     <input
       {...props}
       className={cn(
-        "h-8 w-full rounded-[var(--radius)] border border-border bg-card px-2 text-sm text-foreground",
+        "h-10 w-full rounded-[var(--radius)] border border-border bg-background px-3 text-sm text-foreground",
+        "placeholder:text-ink-3",
         "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
         "aria-invalid:border-destructive",
         className,
@@ -82,7 +59,10 @@ export function TextInput({ className, ...props }: ComponentProps<"input">) {
 export function FormError({ message }: { message: string | null }) {
   if (!message) return null;
   return (
-    <p role="alert" className="rounded-[var(--radius)] bg-destructive/10 px-3 py-2 text-xs text-destructive">
+    <p
+      role="alert"
+      className="rounded-[var(--radius)] border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+    >
       {message}
     </p>
   );

@@ -83,7 +83,7 @@ function Empty() {
   return (
     <div className="flex flex-1 items-center justify-center">
       <div className="max-w-md text-center">
-        <h1 className="font-heading text-xl">问行情，查事件</h1>
+        <h1 className="font-heading text-xl font-semibold">问行情，查事件</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           例如「贵州茅台最近行情怎么样」。回答的数据都带来源标注。
         </p>

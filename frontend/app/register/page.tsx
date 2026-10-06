@@ -8,7 +8,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { AuthCard, AuthLink, Field, FormError, TextInput } from "@/components/auth/form-parts";
+import { AuthShell } from "@/components/auth/auth-shell";
+import { AuthLink, Field, FormError, TextInput } from "@/components/auth/form-parts";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { ApiError, api } from "@/lib/api";
@@ -24,8 +25,7 @@ export default function RegisterPage() {
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
+  async function submit() {
     const found = validate(form, true);
     setErrors(found);
     if (hasErrors(found) || busy) return;
@@ -44,21 +44,23 @@ export default function RegisterPage() {
   }
 
   return (
-    <AuthCard
-      title="注册"
-      subtitle="邮箱 + 密码即可，密码 8–72 字节。"
-      footer={
-        <>
-          已有账号？<AuthLink href="/login">登录</AuthLink>
-        </>
-      }
-    >
-      <form className="flex flex-col gap-3" onSubmit={handleSubmit}>
+    <AuthShell>
+      <h2 className="font-heading text-2xl font-semibold tracking-tight">注册</h2>
+      <p className="mt-1.5 text-sm text-ink-2">创建账号后即可开始研究与回测。</p>
+
+      <form
+        className="mt-7 flex flex-col gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
         <Field label="邮箱" htmlFor="register-email" error={errors.email}>
           <TextInput
             id="register-email"
             type="email"
             autoComplete="email"
+            placeholder="you@example.com"
             autoFocus
             value={form.email}
             aria-invalid={Boolean(errors.email)}
@@ -71,6 +73,7 @@ export default function RegisterPage() {
             id="register-password"
             type="password"
             autoComplete="new-password"
+            placeholder="至少 8 位"
             value={form.password}
             aria-invalid={Boolean(errors.password)}
             onChange={(event) => setForm({ ...form, password: event.target.value })}
@@ -82,6 +85,7 @@ export default function RegisterPage() {
             id="register-confirm"
             type="password"
             autoComplete="new-password"
+            placeholder="再输一次"
             value={form.confirm}
             aria-invalid={Boolean(errors.confirm)}
             onChange={(event) => setForm({ ...form, confirm: event.target.value })}
@@ -90,10 +94,14 @@ export default function RegisterPage() {
 
         <FormError message={serverError} />
 
-        <Button type="submit" className="mt-1 w-full" disabled={busy}>
+        <Button type="submit" size="lg" className="mt-1 w-full" disabled={busy}>
           {busy ? "注册中…" : "注册并登录"}
         </Button>
       </form>
-    </AuthCard>
+
+      <p className="mt-5 text-center text-xs text-ink-3">
+        已有账号？<AuthLink href="/login">登录</AuthLink>
+      </p>
+    </AuthShell>
   );
 }

@@ -63,7 +63,7 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 | 端点 | 行为 |
 |---|---|
 | `POST /api/v1/auth/register` | `{email, password}` → 201；邮箱唯一冲突 → 409；成功即签发会话（与登录共用签发函数，少一次往返） |
-| `POST /api/v1/auth/login` | 成功 → 200 + `Set-Cookie`；失败（邮箱不存在或密码错）→ 401，**同一响应、近似耗时**，不区分原因 |
+| `POST /api/v1/auth/login` | 成功 → 200 + `Set-Cookie`；失败（邮箱不存在或密码错）→ 401，**同一响应、近似耗时**，不区分原因；请求可带 `remember`（默认 true）：true → 持久 cookie（带 `Max-Age`），false → 会话 cookie（关浏览器即失效）。这只改 cookie 存活方式，不改 JWT 有效期，也不建服务端会话表 |
 | `POST /api/v1/auth/logout` | 清除 cookie |
 | `GET /api/v1/auth/me` | 已登录 → `{id, email}`；未登录 → 401 |
 
@@ -72,7 +72,8 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 - 会话：HS256 单 access token，7 天，claims = `sub`(user id) + `iat` + `exp`；不做 refresh token
 - Cookie：`httpOnly` + `SameSite=Lax` + `path=/`（`secure=False` 仅因本地 http，生产必须置 True）；Lax 同时挡掉跨站表单类 CSRF
 - `JWT_SECRET` 只读环境变量（`SecretStr`，不回显、不入库）；缺失时启动打 warning 且 `/api/v1/auth/*` 返回 503——**不得静默降级为无鉴权**
-- 前端 `127.0.0.1:3001` ↔ API `127.0.0.1:8000`：同 site 跨 origin，SameSite 按 site（忽略端口）计算 → Lax 可行；**两端 host 必须一致（同用 `127.0.0.1` 或同用 `localhost`），混用会静默掉 cookie**
+- 前端与 API 同 site 跨 origin：SameSite 按 site（忽略端口）计算 → Lax 可行
+- **API 基址跟随页面 host**（`apiBase()` 取 `window.location.hostname` + 端口），不在 `.env.local` 里写死 host：页面在 `localhost` 而 API 写死 `127.0.0.1` 时两者算跨站，httpOnly cookie 会被浏览器静默丢弃（表现为「注册/登录成功却立刻回到登录页」）。需要指向别的后端时才用 `NEXT_PUBLIC_API_BASE` 显式覆盖
 
 **归属校验（P1 遗留阻塞项，本功能第一优先级）**
 
@@ -86,7 +87,8 @@ frontend/components/        # + auth-provider.tsx dashboard/ evidence/ agent-run
 
 - 受保护页迁入路由组 `app/(app)/`（对话页 / 回测页），`AuthGate` 与 `AppHeader` 上提到组布局——**守卫只有一个落点**
 - `AuthProvider`：挂载时 `GET /api/v1/auth/me` 探测登录态（httpOnly cookie 在 JS 侧读不到，这是唯一可行路径）；未定态渲染骨架，避免先闪内容再跳登录；未登录重定向登录页
-- `app/login`、`app/register`：表单 + `next` 回跳；注册成功即登录态
+- `app/login`、`app/register`：表单 + `next` 回跳（只认站内路径，挡开放重定向）；注册成功即登录态；登录页带「记住我」（默认勾选）
+- 两页共用 `AuthShell`：整屏连续画布（网格 / 光晕 / 双曲线装饰铺满，CSS+SVG 无图片素材）+ 浮起的半透明表单卡，主题切换器放登录页且与登录后同源
 - `lib/api.ts` 与 `lib/sse.ts` 的**全部**请求带 `credentials: "include"`；后端 CORS 开 `allow_credentials=True`（`allow_origins` 已是显式列表，符合凭据模式要求）
 - 页头显示用户邮箱与「退出」
 

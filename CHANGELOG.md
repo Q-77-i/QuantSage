@@ -15,10 +15,17 @@
 
 ### 调整
 
+- **登录 / 注册页改版**：整屏连续画布（网格／光晕／双净值曲线装饰铺满全屏，CSS+SVG，零图片素材）+ 浮起的半透明表单卡，左右不再割裂；左栏为字标、定位标语、三条能力点与一句钩子（Point-in-time：不让未来的信息，参与过去的决策）；主题切换移到登录页，深浅与登录后同源（`ThemeProvider` 共用）；登录页外壳提到 Suspense 边界之外，生产构建下品牌面直接 SSR
+- **标题字体由宋体改为无衬线**（`--font-heading`：PingFang SC 栈 + 字重），全站标题层级改由字重与字距拉开——宋体在 macOS 上只有 Regular/Bold 两档，正文尺寸下发虚观感旧
+- **「记住我」**：登录页默认勾选，勾选=持久 cookie（7 天），取消=会话 cookie（关浏览器失效）；只改 cookie 存活方式，不动 JWT 有效期、不建服务端会话表
 - `POST /api/v1/chat` 与三个会话端点要求登录（会话列表口径改为自有表 `last_active_at`）；`/api/v1/market`、`/api/v1/events` 保持公开（非用户资产）；`/api/v1/backtest` 待 M1c 落库时一并纳入鉴权
 - CORS 开 `allow_credentials=True`（凭据模式要求显式 origin 列表，已是）
 - 依赖新增 `bcrypt==5.0.0`、`pyjwt==2.15.1`（与 checkpoint 链同等显式 pin）
 - 文档链同步：PRD 升 v0.5（状态行改「已通过」、§6 待确认①证伪②③转 M2）；SPEC 升 v0.12（样本量订正 55 / 2.1 倍、T1 依赖清单补齐、章节按功能 ID 重排、§7 补图表交互口径）；CLAUDE.md 技术栈表增「落地状态」列、数据源通道对齐 SPEC
+
+### 修复
+
+- **从 `localhost` 打开时登录/注册看似失败**：API 基址原写死 `127.0.0.1:8000`，页面在 `localhost` 时两者跨站，`SameSite=Lax` 的会话 cookie 被浏览器静默丢弃（后端其实已注册成功）。改为 `apiBase()` 跟随页面 host，两个 hostname 下都跑通端到端
 - 定下 SPEC 版本编号规则：主版本 = 阶段序号（P1 → `0`、P2 → `1`、P3 → `2`）
 - 后端前视偏差措辞中性化（注释与 docstring 7 处，无行为变更）
 - `frontend/README.md` 脚手架原文改为指向根 README 的短说明（原端口指引为 3000，实际为 3001）

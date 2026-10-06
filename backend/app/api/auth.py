@@ -61,6 +61,12 @@ class Credentials(BaseModel):
         return value
 
 
+class LoginRequest(Credentials):
+    """登录请求。`remember` 只改 cookie 的存活方式（持久 / 会话），不改 token 有效期。"""
+
+    remember: bool = True
+
+
 class UserOut(BaseModel):
     id: int
     email: str
@@ -79,7 +85,7 @@ async def register(
 
 
 @router.post("/login")
-async def login(request: Request, response: Response, body: Credentials) -> UserOut:
+async def login(request: Request, response: Response, body: LoginRequest) -> UserOut:
     db = require_db(request)
     user = await db.find_user_by_email(body.email)
 
@@ -89,7 +95,7 @@ async def login(request: Request, response: Response, body: Credentials) -> User
     if user is None or not matched:
         raise HTTPException(status_code=401, detail="邮箱或密码不正确")
 
-    set_session_cookie(response, issue_token(int(user["id"])))
+    set_session_cookie(response, issue_token(int(user["id"])), remember=body.remember)
     return UserOut(id=int(user["id"]), email=user["email"])
 
 

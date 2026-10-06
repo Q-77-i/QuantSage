@@ -43,7 +43,7 @@ export default function BacktestPage() {
   return (
     <>
       <main className="mx-auto max-w-[1400px] px-4 py-6">
-        <h1 className="font-heading text-xl">回测</h1>
+        <h1 className="font-heading text-xl font-semibold">回测</h1>
 
         <div className="mt-4">
           <BacktestForm

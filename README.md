@@ -172,7 +172,7 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 
 交互式文档：后端起来后访问 `/docs`。
 
-🔒 = 需登录（`auth/me`、`chat/*` 全部受保护；`market` 与 `events` 是非用户资产，保持公开）。会话 cookie 走 `httpOnly + SameSite=Lax`，因此**前端与 API 必须同用 `127.0.0.1`（或同用 `localhost`）**——混用会让 cookie 静默不发送。
+🔒 = 需登录（`auth/me`、`chat/*` 全部受保护；`market` 与 `events` 是非用户资产，保持公开）。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API（`localhost` 打开就连 `localhost:8000`）——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
 
 ---
 
