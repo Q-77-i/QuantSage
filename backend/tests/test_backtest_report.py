@@ -245,7 +245,7 @@ def test_pit_comparison_quantifies_the_gap(tmp_path: Path, monkeypatch: pytest.M
     assert set(comparison) == {"pit_metrics", "non_pit_metrics", "delta", "entry_dates"}
     assert comparison["entry_dates"]["pit"] != comparison["entry_dates"]["non_pit"]
     assert comparison["delta"]["final_equity_abs"] != 0
-    # 核心量化值：期末权益虚高比例，分母恒为正
+    # 核心量化值：期末权益差异比例，分母恒为正
     assert comparison["delta"]["final_equity_pct"] == pytest.approx(
         comparison["non_pit_metrics"]["final_equity"] / comparison["pit_metrics"]["final_equity"] - 1
     )

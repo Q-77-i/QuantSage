@@ -13,19 +13,19 @@
 
 ## 二、技术栈（定稿，勿擅自更换）
 
-| 层 | 选型 |
-|---|---|
-| 编排 | LangGraph（StateGraph） |
-| 流水线 | LangChain LCEL（活在 LangGraph 节点内部） |
-| 前端 | Next.js 15 (App Router) + TS + Tailwind + shadcn/ui；K 线用 TradingView Lightweight Charts，其余 ECharts |
-| 后端 | FastAPI + Pydantic v2 + Uvicorn |
-| 行情数据 | Parquet + DuckDB（直读分片，零 ETL） |
-| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） |
-| 缓存/限流 | Redis |
-| 向量库 | Qdrant |
-| 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） |
-| LLM 网关 | LiteLLM |
-| 观测 | 自托管 Langfuse + OTel |
+| 层 | 选型 | 落地状态（P1 收尾时点） |
+|---|---|---|
+| 编排 | LangGraph（StateGraph） | ✅ 已用（预置 `create_agent` ReAct 图） |
+| 流水线 | LangChain LCEL（活在 LangGraph 节点内部） | ⬜ P2 起（P1 无 LCEL 构件） |
+| 前端 | Next.js 15 (App Router) + TS + Tailwind + shadcn/ui；K 线用 TradingView Lightweight Charts，其余 ECharts | ✅ 已用 |
+| 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
+| 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用 |
+| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | 🚧 checkpointer 已用；Store 待用 |
+| 缓存/限流 | Redis | ⬜ P2–P3（P1 仅 compose 服务） |
+| 向量库 | Qdrant | ⬜ P2–P3（P1 仅 compose 服务） |
+| 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | 🚧 快档已用；深度档 P2 起 |
+| LLM 网关 | LiteLLM | ✅ 已用 |
+| 观测 | 自托管 Langfuse + OTel | 🚧 Langfuse 已用；OTel P3 补全 |
 
 ## 三、关键设计决策
 
@@ -35,14 +35,14 @@
 4. MCP：消费小石 stdio MCP；内部工具用 function calling；对外暴露「新闻 PIT 检索」MCP Server（P3）
 5. RAG：文档级 + 元数据 header 分块（短摘要不切）；BGE-M3；bge-reranker-v2-m3；Qdrant 服务端 RRF，PIT 过滤写进查询
 6. GraphRAG 不做；Agentic RAG 只做自适应路由 + 一轮纠错
-7. 回测自研最小事件驱动引擎；验收含前视偏差两口径差异量化（方向不预设，如实呈现）+ 退市股覆盖确认
+7. 回测自研最小事件驱动引擎；验收含前视偏差两口径差异量化（方向不预设，如实呈现）；退市股覆盖确认转 M2（数据层 ETL 一并做）
 8. Harness = LangGraph；自研补齐：工具执行器、上下文预算管理器、代码执行沙箱
 9. 记忆：设计期 CLAUDE.md → AutoMemory → docs/；运行期 Checkpointer → Store → Qdrant。合规风控规则只进 Git，LLM 不可动态改写
 
 ## 四、数据源（小石）
 
 - PIT 语义：`event_time` 事发 / `available_at` 平台首次可用 / `observed_at` 观察
-- 对话查询走 MCP；批量历史/文件校验/因子验证/回测走 `xiaoshi-data` CLI
+- 对话查询与事件语料走 MCP；批量行情下载/文件校验/因子验证走 `xiaoshi-data` CLI（SPEC v0.3 已定：事件在线拉取只有 MCP 一条路）
 - 在线事件接口单次上限 92 天、历史窗口约 3 个月；来源标注（`source` / `original_source` / `content_hash`）做进 UI；进入决策的数据必须带来源标注
 
 ## 五、安全红线

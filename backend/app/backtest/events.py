@@ -3,7 +3,7 @@
 事件对某根 bar 是否可见，取决于拿哪个时间戳与该 bar 的**收盘时刻**比较：
 
 - PIT 模式按 `available_at`（平台首次可用）设卡 → 15:00 之后才可得的消息顺延到下一交易日；
-- 非 PIT 模式按 `event_time`（事发）设卡 → 等同假设「事发即知」，用于量化前视偏差虚高。
+- 非 PIT 模式按 `event_time`（事发）设卡 → 等同假设「事发即知」，用于量化前视偏差两口径差异（方向不预设）。
 
 两者的全部差别压缩在 `EventView.stamp()` 一行里，下游 engine / strategy / result 零感知。
 `duckdb_client.events()` 明确不做 PIT 过滤，设卡是消费方职责，故在此实现。

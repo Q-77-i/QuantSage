@@ -6,8 +6,15 @@
 
 ### 新增
 
-- 文档链定稿：PRD v0.3（已过审）、SPEC P1-Tn v0.1（已过审）、CLAUDE.md（协作规则）
-- ROADMAP.md 与本文件（借鉴 ai-hedge-fund / vnpy 的仓库记录惯例）
+- 根 `README.md`：项目门面（定位与护城河、架构图、界面截图、快速开始、API、已知边界）
+- `docs/images/`：对话页 / 回测页 / PIT 对比区三张截图，由 `frontend/scripts/capture-screenshots.mjs`（Playwright，`pnpm screenshots`）驱动真实交互生成，可重跑
+
+### 调整
+
+- P1 收尾的全链同步：PRD 升 v0.5（状态行改「已通过」；§6 待确认①证伪、②③转 M2）；SPEC 升 v0.10（样本量订正 55 / 2.1 倍、T1 依赖清单补齐 6 项）；CLAUDE.md 技术栈表增「落地状态」列、数据源通道措辞对齐 SPEC v0.3
+- SPEC 升 v0.11：正文章节改为**按功能 ID 排序**（§2–§8 对应 T1–T7，此前按实现顺序、§4 曾是 T4、§6 曾是 T3）；§1 仓库结构补齐实际模块；变更记录由三列表格改为分版本条目；新增目录。同步修正正文与 `ROADMAP.md` 的交叉引用
+- 后端注释与 docstring 的前视偏差措辞中性化（7 处，与 SPEC v0.9 的既有校正对齐，无行为变更）
+- `frontend/README.md` 脚手架原文改为指向根 README 的短说明（原文档端口指引为 3000，实际为 3001）
 
 ## [m-p1] — 2026-10-06
 

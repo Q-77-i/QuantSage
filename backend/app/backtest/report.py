@@ -6,7 +6,7 @@
 
 PIT 对比是 T5 的核心产出——`compare_pit=True` 时同一区间跑两遍，唯一变量是
 `Mode`（即 `EventView.stamp()` 取 `available_at` 还是 `event_time`），
-差值即「前视偏差虚高幅度」。策略不消费事件时（ma_cross）两遍结果必然相同，
+差值即「前视偏差两口径差异」（方向不预设，可正可负）。策略不消费事件时（ma_cross）两遍结果必然相同，
 故由调用方显式请求，不自动开跑。
 """
 
@@ -92,9 +92,9 @@ def _warnings(result: BacktestResult) -> list[str]:
 
 
 def _delta(pit: Metrics, non_pit: Metrics) -> dict[str, Any]:
-    """非 PIT 相对 PIT 的虚高幅度。
+    """非 PIT 相对 PIT 的差异（方向不预设，可正可负）。
 
-    主量化值取 `final_equity_pct`（期末权益虚高比例）——分母是期末权益，恒为正，
+    主量化值取 `final_equity_pct`（期末权益差异比例）——分母是期末权益，恒为正，
     不存在总收益接近 0 时相对差爆炸的问题；其余指标用**百分点差**，直观且不会误导。
     夏普/胜率可能为 None（样本退化），差值一并置 None 而非硬凑 0。
     """

@@ -1,36 +1,24 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# QuantSage 前端
 
-## Getting Started
-
-First, run the development server:
+Next.js 15（App Router）+ TypeScript + Tailwind + shadcn/ui。项目总览、架构与完整启动步骤见[根 README](../README.md)。
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+pnpm dev          # http://127.0.0.1:3001（3000 被 Langfuse 自托管 UI 占用）
+pnpm test         # Vitest，只测纯函数
+pnpm typecheck    # tsc --noEmit
+pnpm lint         # eslint
+pnpm build        # 构建验证前请先停掉 dev server，两者共用 .next 目录
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+后端地址由 `NEXT_PUBLIC_API_BASE` 指定，默认 `http://127.0.0.1:8000`。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 抓取 README 截图
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`pnpm screenshots` 用 Playwright 驱动真实交互，产出 `docs/images/` 下三张图（对话页 / 回测页 / PIT 对比区）。首次需要下载浏览器：
 
-## Learn More
+```bash
+pnpm exec playwright install chromium
+```
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+前置：后端 8000 与前端 3001 已启动。**用生产模式截**（`pnpm build && pnpm start`）——`next dev` 会在页面上浮一个开发模式角标。脚本会自己清理它在对话页新建的那条会话，可反复重跑。

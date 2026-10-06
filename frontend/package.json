@@ -8,7 +8,8 @@
     "start": "next start -p 3001",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "screenshots": "node scripts/capture-screenshots.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -34,6 +35,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.5.27",
+    "playwright": "^1.63.0",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^5.0.3"

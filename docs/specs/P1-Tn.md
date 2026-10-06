@@ -2,37 +2,56 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.9 ｜ 2026-10-06 ｜ 状态：已通过
+> 版本 v0.11 ｜ 2026-10-06 ｜ 状态：已通过
 >
-> 本 SPEC 覆盖 PRD §2.1 的 T1–T7。实现顺序：T1 → T2 → T4 → T5 → T3 → T6 → T7。
+> 本 SPEC 覆盖 PRD §2.1 的 T1–T7。**正文章节按功能 ID 排序**（§2–§8 对应 T1–T7）。
+> 注：实际实现顺序为 T1 → T2 → T4 → T5 → T3 → T6 → T7（先打通数据与回测，再做对话与前端），故变更记录的版本号先后与功能 ID 不同序。
+
+## 目录
+
+| 节 | 内容 |
+|---|---|
+| [§1](#1-仓库结构) | 仓库结构 |
+| [§2](#2-t1-地基) · [§3](#3-t2-样例数据) · [§4](#4-t3-agent-对话) · [§5](#5-t4-最小回测引擎) · [§6](#6-t5-分析输出) · [§7](#7-t6-极简前端) · [§8](#8-t7-示例策略教程) | T1–T7 规格 |
+| [§9](#9-测试策略) | 测试策略 |
+| [§10](#10-变更记录) | 变更记录 |
 
 ## 1. 仓库结构
 
 ```
 QuantSage/
 ├── backend/
-│   ├── pyproject.toml              # uv 管理，Python 3.12
+│   ├── pyproject.toml              # uv 管理，Python 3.12；依赖显式 pin（防 uv lock --upgrade 静默漂移）
 │   ├── app/
-│   │   ├── main.py                 # FastAPI 入口与路由挂载
+│   │   ├── main.py                 # FastAPI 入口、lifespan 装配、异常映射
 │   │   ├── api/                    # chat.py / backtest.py / market.py / events.py
-│   │   ├── agent/                  # graph.py / tools.py / prompts.py
-│   │   ├── backtest/               # types.py / events.py / engine.py / portfolio.py / broker.py / costs.py / metrics.py / report.py / strategies/
+│   │   ├── agent/                  # graph.py / tools.py / prompts.py / history.py
+│   │   ├── backtest/               # types.py / events.py（PIT 闸门）/ engine.py / portfolio.py
+│   │   │                           #   / broker.py / costs.py / metrics.py / report.py / strategies/
 │   │   ├── data/                   # duckdb_client.py / xiaoshi.py（CLI 与 MCP 封装）
-│   │   └── core/                   # config.py / llm.py / langfuse.py
-│   ├── scripts/                    # download_bars.py / download_events.py
-│   └── tests/
+│   │   └── core/                   # config.py / checkpoint.py / llm.py / langfuse.py / logging.py
+│   ├── scripts/                    # download_bars.py / download_events.py / init_checkpoint_db.py
+│   │                               #   / run_backtest.py / run_report.py / run_chat.py
+│   │                               #   / verify_xiaoshi_mcp.py
+│   └── tests/                      # 离线用例 + tests/integration/
 ├── frontend/
 │   ├── app/                        # page.tsx（对话页）/ backtest/page.tsx（回测页）
 │   ├── components/                 # ui/（shadcn）+ chat/ + backtest/
-│   └── lib/                        # api.ts / sse.ts（帧解析）/ markers.ts / types.ts
+│   ├── lib/                        # api.ts / sse.ts / markers.ts / chat-state.ts / backtest-form.ts
+│   │                               #   / chart-theme.ts / format.ts / types.ts（纯函数，附单测）
+│   └── scripts/                    # capture-screenshots.mjs（README 截图，Playwright）
+├── docker/postgres/init/           # 01-create-langfuse-db.sql
+├── docs/                           # PRD / specs / tutorials / images
 ├── data/                           # 行情 Parquet / 事件语料（gitignore）
+├── logs/                           # 验收证据（gitignore）
+├── .tools/xiaoshi/                 # 小石工具包托管安装（gitignore）
 ├── docker-compose.yml
 └── .env
 ```
 
 ## 2. T1 地基
 
-- Python 3.12 + uv。依赖：fastapi / uvicorn[standard] / pydantic / pydantic-settings / langgraph / langgraph-checkpoint-postgres / langchain / langchain-core / langchain-mcp-adapters / litellm / duckdb / pyarrow / langfuse / pytest / pytest-asyncio
+- Python 3.12 + uv。依赖：fastapi / uvicorn[standard] / pydantic / pydantic-settings / langgraph / langgraph-checkpoint / langgraph-checkpoint-postgres / langchain / langchain-core / langchain-mcp-adapters / langchain-litellm / mcp / litellm / duckdb / pyarrow / psycopg[binary,pool] / psycopg-pool / httpx / langfuse / pytest / pytest-asyncio
 - Docker Compose 服务：postgres:18 / redis / qdrant（默认启动；postgres 宿主端口 5433，本机 5432 已被占用）
 - Langfuse 自托管全套（web/worker + clickhouse + minio + 独立 redis）挂 `profiles: [observability]`，默认不启动，T3 接入 trace 时开启；v4 起必须 ClickHouse + 对象存储，无法只在 postgres 上跑
 - 小石 CLI 装入独立 venv（不动系统环境）；MCP 以本地 stdio 接入；密钥只读 `.env`
@@ -54,61 +73,7 @@ QuantSage/
 
 **验收**：SQL 可查任意标的日线；事件 `available_at` 无空值且 `available_at >= event_time`；单标的 1 年日线查询 < 1s。
 
-## 4. T4 最小回测引擎
-
-- 事件循环：按 bar 时间排序驱动；信号在 bar 收盘生成，成交在下一 bar 开盘（防日内前视）
-- 撮合：市价单。成本模型：佣金双边万 2.5（单笔最低 5 元）+ 印花税卖出 0.05% + 滑点（bps）；买入按 100 股整手向下取整。费用与滑点各为独立开关，便于分别验证影响
-- PIT 与行情的关系：**PIT 闸门只作用于事件语料**；`bars.available_at` 是整表下载快照而非逐 bar 可得时间，对 bars 做逐 bar 设卡会把历史全滤空，故日线 OHLC 按「当日收盘已知」处理
-- 策略接口：
-
-```python
-class Strategy(Protocol):
-    name: str
-    def on_bar(self, ctx: BarContext) -> list[Signal]: ...
-```
-
-- 内置策略 ×2：
-  - `ma_cross` 双均线：MA5/MA20 金叉全仓买入、死叉全仓卖出
-  - `event_driven` 事件驱动：利多事件（`direction_norm == 'bullish'` 且 `factor_scores.score >= 50`）触发买入，持有 5 个交易日卖出。信号过滤两种模式——**收盘时刻级**口径：PIT 模式按 `available_at <= 当日 15:00（Asia/Shanghai）` 过滤，非 PIT 模式按 `event_time <= 当日 15:00` 过滤（模拟穿越未来）；两者唯一差别是拿哪个时间戳设卡
-
-**验收**：两策略均可跑通；手续费/滑点开关对结果有可见影响；PIT 与非 PIT 结果存在差异。
-
-## 5. T5 分析输出
-
-- 指标：总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数；基准 = 同标的买入持有
-- 指标口径：年化按 252 交易日折算；夏普 rf=0，用日净值收益的样本标准差（ddof=1）年化，样本不足或标准差为 0 时为 `null`；最大回撤取**正值**幅度；胜率与交易次数只统计**已平仓**交易
-- 基准口径：首根 bar 收盘价**份额化**全额买入（不受 100 股整手限制，避免整手取整造成的现金拖累压低基准），按同一 `CostModel` 扣一次买入成本，持有到期末按收盘价估值（不卖出故不计印花税）；成本全关时退化为纯价格曲线
-- 输出结构：
-
-```json
-{
-  "meta": {"symbol": "", "strategy": "", "mode": "", "start": "", "end": "", "bars": 0,
-           "initial_cash": 0, "adjust": "", "costs": "", "cutoff_field": "", "warnings": []},
-  "metrics": {"total_return": 0, "annual_return": 0, "max_drawdown": 0, "sharpe": 0,
-              "win_rate": 0, "trade_count": 0, "final_equity": 0,
-              "benchmark_return": 0, "excess_return": 0},
-  "equity_curve": [{"date": "", "equity": 0, "benchmark": 0}],
-  "trades": [{"entry_date": "", "exit_date": "", "pnl": 0, "reason": "",
-              "entry_reason": "", "return_pct": 0, "hold_bars": 0, "qty": 0}],
-  "open_position": null,
-  "pit_comparison": {
-    "pit_metrics": {}, "non_pit_metrics": {},
-    "delta": {"final_equity_abs": 0, "final_equity_pct": 0, "total_return_pp": 0,
-              "annual_return_pp": 0, "max_drawdown_pp": 0, "sharpe_abs": 0,
-              "win_rate_pp": 0, "trade_count": 0},
-    "entry_dates": {"pit": [], "non_pit": []}
-  }
-}
-```
-
-- `trades.reason` 是**出场**原因（入场原因另列 `entry_reason`）
-- `pit_comparison` 为 `null` 表示本次未做对比：未请求，或该策略不消费事件（`ma_cross` 不读事件语料，两模式必然同结果，不做无意义的二次回测）。`delta` 的核心量化值是 `final_equity_pct`（期末权益**差异**比例：非 PIT 相对 PIT，分母恒为正，不会除零，**方向不预设、可正可负**）；`entry_dates` 给出两模式入场日序列，是差异的最直接证据
-- `open_position` 非空时给出期末持仓的浮动盈亏（`unrealized_pnl` / `unrealized_return`）。它不进 `trades`，故不影响胜率——报告必须单列，否则「胜率」会失真
-- 样本量提示：`bars < 120` 时在 `meta.warnings` 标注。本期事件窗口仅约 54 个交易日，年化与夏普按 252 折算会放大噪声约 √(252/54)≈2.2 倍，报告与 UI 需如实标注
-
-**验收**：对比报告能量化两口径差异（方向不预设，如实呈现）；指标与手工计算样例一致（pytest 硬编码期望值，不引第三方快照库）。
-
-## 6. T3 Agent 对话
+## 4. T3 Agent 对话
 
 - 图：START → agent（LLM + tools）→ END；Postgres checkpointer；模型 `deepseek-flash`（LiteLLM SDK 统一调用）
   - 模型接入经 `langchain-litellm` 的 `ChatLiteLLM`，模型名必须带 provider 前缀（`deepseek/deepseek-flash`）——litellm 不接受裸模型名；密钥由 `Settings` **显式传入**，不依赖 `os.environ`
@@ -141,6 +106,60 @@ class Strategy(Protocol):
 
 **验收**：问「贵州茅台最近行情」Agent 自主调工具并流式作答；Langfuse 可查看完整 trace（含工具调用与成本）。
 
+## 5. T4 最小回测引擎
+
+- 事件循环：按 bar 时间排序驱动；信号在 bar 收盘生成，成交在下一 bar 开盘（防日内前视）
+- 撮合：市价单。成本模型：佣金双边万 2.5（单笔最低 5 元）+ 印花税卖出 0.05% + 滑点（bps）；买入按 100 股整手向下取整。费用与滑点各为独立开关，便于分别验证影响
+- PIT 与行情的关系：**PIT 闸门只作用于事件语料**；`bars.available_at` 是整表下载快照而非逐 bar 可得时间，对 bars 做逐 bar 设卡会把历史全滤空，故日线 OHLC 按「当日收盘已知」处理
+- 策略接口：
+
+```python
+class Strategy(Protocol):
+    name: str
+    def on_bar(self, ctx: BarContext) -> list[Signal]: ...
+```
+
+- 内置策略 ×2：
+  - `ma_cross` 双均线：MA5/MA20 金叉全仓买入、死叉全仓卖出
+  - `event_driven` 事件驱动：利多事件（`direction_norm == 'bullish'` 且 `factor_scores.score >= 50`）触发买入，持有 5 个交易日卖出。信号过滤两种模式——**收盘时刻级**口径：PIT 模式按 `available_at <= 当日 15:00（Asia/Shanghai）` 过滤，非 PIT 模式按 `event_time <= 当日 15:00` 过滤（模拟穿越未来）；两者唯一差别是拿哪个时间戳设卡
+
+**验收**：两策略均可跑通；手续费/滑点开关对结果有可见影响；PIT 与非 PIT 结果存在差异。
+
+## 6. T5 分析输出
+
+- 指标：总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数；基准 = 同标的买入持有
+- 指标口径：年化按 252 交易日折算；夏普 rf=0，用日净值收益的样本标准差（ddof=1）年化，样本不足或标准差为 0 时为 `null`；最大回撤取**正值**幅度；胜率与交易次数只统计**已平仓**交易
+- 基准口径：首根 bar 收盘价**份额化**全额买入（不受 100 股整手限制，避免整手取整造成的现金拖累压低基准），按同一 `CostModel` 扣一次买入成本，持有到期末按收盘价估值（不卖出故不计印花税）；成本全关时退化为纯价格曲线
+- 输出结构：
+
+```json
+{
+  "meta": {"symbol": "", "strategy": "", "mode": "", "start": "", "end": "", "bars": 0,
+           "initial_cash": 0, "adjust": "", "costs": "", "cutoff_field": "", "warnings": []},
+  "metrics": {"total_return": 0, "annual_return": 0, "max_drawdown": 0, "sharpe": 0,
+              "win_rate": 0, "trade_count": 0, "final_equity": 0,
+              "benchmark_return": 0, "excess_return": 0},
+  "equity_curve": [{"date": "", "equity": 0, "benchmark": 0}],
+  "trades": [{"entry_date": "", "exit_date": "", "pnl": 0, "reason": "",
+              "entry_reason": "", "return_pct": 0, "hold_bars": 0, "qty": 0}],
+  "open_position": null,
+  "pit_comparison": {
+    "pit_metrics": {}, "non_pit_metrics": {},
+    "delta": {"final_equity_abs": 0, "final_equity_pct": 0, "total_return_pp": 0,
+              "annual_return_pp": 0, "max_drawdown_pp": 0, "sharpe_abs": 0,
+              "win_rate_pp": 0, "trade_count": 0},
+    "entry_dates": {"pit": [], "non_pit": []}
+  }
+}
+```
+
+- `trades.reason` 是**出场**原因（入场原因另列 `entry_reason`）
+- `pit_comparison` 为 `null` 表示本次未做对比：未请求，或该策略不消费事件（`ma_cross` 不读事件语料，两模式必然同结果，不做无意义的二次回测）。`delta` 的核心量化值是 `final_equity_pct`（期末权益**差异**比例：非 PIT 相对 PIT，分母恒为正，不会除零，**方向不预设、可正可负**）；`entry_dates` 给出两模式入场日序列，是差异的最直接证据
+- `open_position` 非空时给出期末持仓的浮动盈亏（`unrealized_pnl` / `unrealized_return`）。它不进 `trades`，故不影响胜率——报告必须单列，否则「胜率」会失真
+- 样本量提示：`bars < 120` 时在 `meta.warnings` 标注。本期事件窗口仅约 55 个交易日，年化与夏普按 252 折算会放大噪声约 √(252/55)≈2.1 倍，报告与 UI 需如实标注
+
+**验收**：对比报告能量化两口径差异（方向不预设，如实呈现）；指标与手工计算样例一致（pytest 硬编码期望值，不引第三方快照库）。
+
 ## 7. T6 极简前端
 
 - Next.js 15 + TS + Tailwind + shadcn/ui，包管理 pnpm
@@ -151,14 +170,14 @@ class Strategy(Protocol):
   - `/` 对话页：消息列表、SSE 流式渲染（含停止生成）、工具调用步骤可视化、会话列表（含删除，二次确认）、历史会话回看（含工具步骤）
   - `/backtest` 回测页：参数表单（策略/标的/区间/成本开关/模式）、指标卡、净值曲线（ECharts）、K 线（TradingView Lightweight Charts，标注买卖点）、交易明细表、PIT 对比表
     - lightweight-charts **v5 的 markers 是独立图元**：`chart.addSeries(CandlestickSeries, …)` 建序列后，用 `createSeriesMarkers(series, [])` 取**常驻句柄**再 `handle.setMarkers(...)`；重复调用工厂会叠加图元而非替换。**marker 的 `time` 必须与某根 bar 的 `time` 精确相等且按时间升序，否则静默丢弃**——「买卖点与明细一致」这条验收就靠它成立，映射逻辑须是**可单测的纯函数**
-    - `meta.warnings`（`bars < 120` 的样本量提示：年化/夏普按 252 折算，本期事件窗仅约 54 个交易日，噪声放大 √(252/54)≈2.2 倍）必须在 UI 常驻展示，不能只留在 JSON 里
+    - `meta.warnings`（`bars < 120` 的样本量提示：年化/夏普按 252 折算，本期事件窗仅约 55 个交易日，噪声放大 √(252/55)≈2.1 倍）必须在 UI 常驻展示，不能只留在 JSON 里
     - 第 6 块**事件表**：该标的在回测窗口（`meta.start` → `meta.end`）内的全部事件，`event_time` 与 `available_at` **并列成列**（两者之差即 PIT 语义最直观的展示位），行尾「来源」单元格显示 `original_source`，展开见 `source` 与 `content_hash` 前 12 位——PRD §5「来源标注必须可见」在回测页的落点
     - 主指标区的口径标签**必须以响应体为准**：`pit_mode=both` 时 `meta.mode` 恒为 `"pit"`（主指标跑的就是 PIT），不得回显表单值；`pit_comparison` 为 `null` 时（策略不消费事件语料）须给「两模式必然同结果，不做无意义的二次回测」的解释，不得留空表
     - K 线的取数窗口与复权口径一律取自响应：`meta.start` / `meta.end` + `adjust=qfq`（缺省区间由 `resolve_window` 代决策，用表单值或全量取数会让 K 线范围与净值曲线不一致）
 - API 契约：
-  - `POST /api/v1/chat`（SSE，见 §6）
+  - `POST /api/v1/chat`（SSE，见 §4）
     - 浏览器 `EventSource` 只支持 GET，前端须 `fetch` + `ReadableStream` 手解帧（按 `\n\n` 切帧，忽略 `: keepalive` 注释帧，不得假设「一个网络分片 = 一个事件」）
-  - `POST /api/v1/backtest`，请求 `{strategy, symbol, start?, end?, costs?, pit_mode?, params?}`，同步返回 §5 输出结构
+  - `POST /api/v1/backtest`，请求 `{strategy, symbol, start?, end?, costs?, pit_mode?, params?}`，同步返回 §6 输出结构
     - `costs` = `{fees: bool = true, slippage: bool = true, slippage_bps: number = 5.0}`；`fees=false` 关佣金与印花税，`slippage=false` 关滑点，两者皆 false 等价 `CostModel.disabled()`
     - `pit_mode` ∈ `pit` / `non_pit` / `both`（默认 `pit`）；`both` 时返回的 `pit_comparison` 非空。只有 `event_driven` 消费事件语料，`ma_cross` 传 `both` 时 `pit_comparison` 仍为 `null`（两模式必然同结果，不做无意义的二次回测）
     - `start` / `end` 缺省：`end` = 该标的最后一根 bar；`start` = `event_driven` 取该标的事件窗口起点、其余策略取第一根 bar（与 `scripts/run_report.py` 同口径，两处必须共用同一段解析逻辑）
@@ -190,14 +209,80 @@ class Strategy(Protocol):
 
 ## 10. 变更记录
 
-| 日期 | 版本 | 变更 |
-|---|---|---|
-| 2026-10-04 | v0.1 | 初版：T1–T7 技术规格 |
-| 2026-10-05 | v0.2 | T1 落地澄清：compose 默认三服务、postgres 宿主端口 5433；langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
-| 2026-10-05 | v0.3 | T2 落地澄清：cn-daily 无按标的维度，改整市场年度分片 + 本地过滤；事件走 MCP，在线 PIT 窗口上限约 3 个月；`source_verified` 字段不存在，改用真实溯源字段组；`direction` 中英混用，增派生列 `direction_norm` |
-| 2026-10-06 | v0.9 | T6c 契约补丁：§7 回测页补第 6 块**事件表**（`event_time` / `available_at` 并列成列 + 来源三元组，PRD §5 的落点），补「口径标签以响应体为准」（`pit_mode=both` 时 `meta.mode` 恒为 `pit`）与「K 线窗口与复权口径取自响应」两条；§5 措辞校正——`final_equity_pct` 由「虚高比例」改「差异比例（可正可负）」，验收句同步（T5 实测非 PIT 均未高于 PIT，旧措辞与事实相反）；§9 前端纯函数清单补指标格式化与表单↔请求映射 |
-| 2026-10-06 | v0.8 | T6b 契约补丁：新增会话历史端点 `GET /api/v1/chat/threads/{id}/messages`（含「按回合合并、与实时 SSE 同构」的合并语义与复用 `TOOL_RESULT_PREVIEW` 的截断口径）与会话删除端点 `DELETE /api/v1/chat/threads/{id}`（CORS 相应放行 `DELETE`）；§7 对话页补停止生成、历史会话回看与会话删除；前端 Vitest 覆盖对话状态机纯函数 |
-| 2026-10-06 | v0.7 | T6 契约补丁：钉死 §7 五处留白——`costs` 改结构化 `{fees, slippage, slippage_bps}`、`start`/`end` 缺省口径与 `run_report.py` 共用、请求补 `params` 且**未知键返回 422**、bars/events 响应结构（events 须含来源三元组，且不做 PIT 过滤）、CORS 与前端 **3001** 端口（3000 已被 Langfuse 占用）；写入 lightweight-charts v5 的 markers 图元与「`time` 必须精确匹配且升序，否则静默丢弃」踩坑预警；样本量 `warnings` 要求进 UI；测试策略补端点与前端纯函数两层 |
-| 2026-10-06 | v0.6 | T3 落地澄清：新增 `GET /api/v1/chat/threads` 会话列表与 `thread_id` 缺省规则（服务端生成 + 响应头/`done` 双通道回传）；SSE 事件补字段定义、`tool_result` 只发截断预览、补保活帧；小石工具改**白名单**暴露（动作型工具有昂贵副作用）；记录三条静默失败陷阱（litellm 裸模型名被拒、`.env` 不进 `os.environ` 致 trace 静默丢失、checkpointer 在 compile 期固化），并写明本轮不做的四项（并发串行化 / 幂等 / 历史裁剪 / 上下文超限） |
-| 2026-10-05 | v0.5 | T5 口径确认：基准改**份额化买入 + 扣一次成本**（整手取整会造成现金拖累、系统性压低基准）；`backtest/` 增设 `report.py`（metrics.py 保持纯函数）；明确指标口径（252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓）、`reason` 为出场原因、`pit_comparison` 可为 `null`、`delta` 以 `final_equity_pct` 为核心量化值；补 `meta` 与 `open_position` 两个可读性字段；`bars < 120` 时提示样本量 |
-| 2026-10-05 | v0.4 | T4 落地澄清：PIT 口径定为**收盘时刻级**（当天 15:00）；`backtest/` 增设 `types.py`（`BarContext` 独立成层避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列，护城河一眼可见）；撮合加 A 股实盘规则（100 股整手 + 佣金最低 5 元），费用与滑点拆成两个独立开关；`event_driven` 默认 `score >= 50`、持有 5 日；明确 **PIT 只作用于事件语料**，bars 不做逐 bar 设卡（`available_at` 为整表快照） |
+> 倒序（最新在上）。版本号按变更先后递增，**与功能 ID 不同序**——实际实现顺序见文首说明。
+> 下方条目的 `§` 引用一律按当前编号（§2–§8 = T1–T7）。
+
+### v0.11 · 2026-10-06 · 结构调整（P1-Tn 全阶段）
+
+- 正文章节改为**按功能 ID 排序**（§2–§8 对应 T1–T7）；此前按实现顺序，§4 曾是 T4、§6 曾是 T3
+- 同步全部交叉引用（正文 2 处、变更记录 2 处），外部引用 `ROADMAP.md` 一并更新
+- §1 仓库结构补齐实际存在的模块（`agent/history.py`、`core/{checkpoint,logging}.py`、`scripts/` 全量、前端 `lib/` 与 `scripts/`、`docker/`、`docs/`、`logs/`）
+- 本表由三列表格改为分版本条目，长句拆成可扫的短条
+- 新增目录
+
+### v0.10 · 2026-10-06 · 收尾订正（P1-Tn 全阶段）
+
+- §6 与 §7 的样本量订正：约 54 个交易日 / √(252/54)≈2.2 倍 → **约 55 / √(252/55)≈2.1 倍**（实际由 bars 数动态计算；与 `logs/` 及教程一致）
+- §2 T1 依赖清单补齐 6 项实际依赖：`langgraph-checkpoint` / `langchain-litellm` / `mcp` / `psycopg[binary,pool]` / `psycopg-pool` / `httpx`
+- 本表改为统一降序
+
+### v0.9 · 2026-10-06 · T6c 契约补丁
+
+- §7 回测页补第 6 块**事件表**：`event_time` / `available_at` 并列成列 + 来源三元组（PRD §5 的落点）
+- §7 补两条：口径标签以响应体为准（`pit_mode=both` 时 `meta.mode` 恒为 `pit`）、K 线窗口与复权口径取自响应
+- §6 措辞校正：`final_equity_pct` 由「虚高比例」改「**差异比例（可正可负）**」，验收句同步——T5 实测非 PIT 均未高于 PIT，旧措辞与事实相反
+- §9 前端纯函数清单补指标格式化与表单↔请求映射
+
+### v0.8 · 2026-10-06 · T6b 契约补丁
+
+- 新增会话历史端点 `GET /api/v1/chat/threads/{id}/messages`：含「按回合合并、与实时 SSE 同构」的合并语义与复用 `TOOL_RESULT_PREVIEW` 的截断口径
+- 新增会话删除端点 `DELETE /api/v1/chat/threads/{id}`，CORS 相应放行 `DELETE`
+- §7 对话页补停止生成、历史会话回看与会话删除
+- 前端 Vitest 覆盖对话状态机纯函数
+
+### v0.7 · 2026-10-06 · T6 契约补丁
+
+- 钉死 §7 五处留白：`costs` 改结构化 `{fees, slippage, slippage_bps}`；`start`/`end` 缺省口径与 `run_report.py` 共用；请求补 `params` 且**未知键返回 422**；bars / events 响应结构（events 须含来源三元组且不做 PIT 过滤）；CORS 与前端 **3001** 端口
+- 写入 lightweight-charts v5 的 markers 图元与「`time` 必须精确匹配且升序，否则静默丢弃」踩坑预警
+- 样本量 `warnings` 要求进 UI
+- 测试策略补端点与前端纯函数两层
+
+### v0.6 · 2026-10-06 · T3 落地澄清
+
+- 新增 `GET /api/v1/chat/threads` 会话列表与 `thread_id` 缺省规则（服务端生成 + 响应头 / `done` 双通道回传）
+- SSE 事件补字段定义；`tool_result` 只发截断预览；补保活帧
+- 小石工具改**白名单**暴露（动作型工具有昂贵副作用）
+- 记录三条静默失败陷阱：litellm 裸模型名被拒、`.env` 不进 `os.environ` 致 trace 静默丢失、checkpointer 在 compile 期固化
+- 写明本轮不做的四项：并发串行化 / 幂等 / 历史裁剪 / 上下文超限
+
+### v0.5 · 2026-10-05 · T5 口径确认
+
+- 基准改**份额化买入 + 扣一次成本**（整手取整会造成现金拖累、系统性压低基准）
+- `backtest/` 增设 `report.py`（`metrics.py` 保持纯函数）
+- 明确指标口径：252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓
+- 明确 `reason` 为出场原因、`pit_comparison` 可为 `null`、`delta` 以 `final_equity_pct` 为核心量化值
+- 补 `meta` 与 `open_position` 两个可读性字段；`bars < 120` 时提示样本量
+
+### v0.4 · 2026-10-05 · T4 落地澄清
+
+- PIT 口径定为**收盘时刻级**（当天 15:00）
+- `backtest/` 增设 `types.py`（`BarContext` 独立成层，避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列，护城河一眼可见）
+- 撮合加 A 股实盘规则（100 股整手 + 佣金最低 5 元）；费用与滑点拆成两个独立开关
+- `event_driven` 默认 `score >= 50`、持有 5 日
+- 明确 **PIT 只作用于事件语料**，bars 不做逐 bar 设卡（`available_at` 为整表快照）
+
+### v0.3 · 2026-10-05 · T2 落地澄清
+
+- `cn-daily` 无按标的维度 → 改整市场年度分片 + 本地过滤
+- 事件走 MCP；在线 PIT 窗口上限约 3 个月
+- `source_verified` 字段不存在 → 改用真实溯源字段组
+- `direction` 中英混用 → 增派生列 `direction_norm`
+
+### v0.2 · 2026-10-05 · T1 落地澄清
+
+- compose 默认三服务；postgres 宿主端口 5433
+- langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储）
+
+### v0.1 · 2026-10-04 · 初版
+
+- T1–T7 技术规格
