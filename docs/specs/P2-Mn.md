@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.3 ｜ 2026-10-07 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a 已落地（全市场行情扩容）；M3–M10 随各功能开工滚动过审
+> 版本 v1.5 ｜ 2026-10-07 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；**M2c 规格已细化（实施中）**；M3–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -25,7 +25,8 @@ backend/app/
 ├── api/                    # + auth.py / watchlist.py / etl.py / paper.py / dashboard.py / calendar.py
 ├── agent/                  # 深路径 fan-out 角色 A 股化（PIT 基本面 / 政策面）
 ├── backtest/               # + a_share_rules.py / overfit.py / factor_analysis.py
-├── data/                   # + calendar.py（冻结交易日历）/ trading_calendar.json（冻结文件）/ data_health.py
+├── data/                   # + calendar.py（冻结交易日历）/ trading_calendar.json（冻结文件）
+│                           #   data_health.py（体检检查器，M2c）/ delisting.py（退市覆盖核实，M2c）
 ├── etl/                    # 事件语料接入（M2b）：archive.py（归档通道）/ store.py（日分区落盘）
 │                           #   runner.py（回填与日增量编排）/ scheduler.py（APScheduler 定时）
 ├── paper/                  # 模拟盘：account.py / broker.py / settlement.py / decisions.py
@@ -170,7 +171,7 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 - **事件驱动策略的时间收口**：请求的 `start` 若**显式**早于本地语料覆盖起点 → 拒绝（400）并给可执行出路（把起点改到覆盖起点之后，或改用不消费事件的 `ma_cross`）；`start` 缺省口径不变（仍取语料窗口起点）。报告 `meta` 增 `event_coverage`（语料覆盖起止日）与窗口内事件数，前端在事件表处展示——**任何一次事件驱动回测都自证「我看的是哪一段语料」**，不留静默空转
 - **平台限流是停止信号，不是单日失败**：实测连续申请约 50 次（一天一次会话）会被平台 429，返回 `rate_limited_no_retry` + `Retry-After` ≈ 44 分钟。ETL 收到即**中止整轮**（换下一天接着撞只会把窗口越推越远，也是平台明确要求停下的语义），把 `retry_after_seconds` 与未处理天数写进台账，重跑同命令即续；同时**回填只补缺**——已有本地日分区的日子不再重复申请，「近期是否被平台修订」交给日增量的回落窗口负责
 - 日增量 ETL：进程内 APScheduler 定时 + 手动触发端点（登录必需 + 并发锁）；**拉最近 N 个自然日**（回落窗口吸收迟到与修订，实测 `available_at` 相对 `event_time` 中位滞后 2.2h、p90 达 3.4 天）而非只拉昨天；**归档按自然日发布，不是交易日**（实测中秋 09-25、周末 09-26/27 都有分片，新闻不停市）——采集窗口一律按自然日枚举，日历只用于**分类缺口**（落在交易日上的缺口更严重）与回测撮合；按平台 `dedup_key` 去重（`(event_id, content_hash)` 降为兜底）；幂等（同日重跑逐字节一致）；**92 天全量回填一次性执行**（2026-07-07 → 最新可用日），逐日可续跑
-- **落盘 schema 按 `quant-event-v2` 重定**：P1 的 21 列不够——新增 `dedup_key` / `revision_id` / `record_version` / `revision_time` / `is_corrected` / `correction_count` / `original_url` / `person` / `lineage`。落列前先读一次 `xiaoshi-data schema --dataset event-timeline` 定稿，不靠推测
+- **落盘 schema 按 `quant-event-v2` 重定**：P1 的 21 列不够——实际落盘共 **30 列**，相对 P1 新增 `dedup_key` / `revision_id` / `record_version` / `revision_time` / `is_corrected` / `correction_count` / `reported_available_at` / `quality_status` / `source_time_quality` / `person` 等（**原文此处写的 `original_url` / `lineage` 并不存在**：url 列是 `source_url`，且无 `lineage`，M2c 按实测回填更正）。落列前先读一次 `xiaoshi-data schema --dataset event-timeline` 定稿，不靠推测
 - **方向映射分三类，不能混为一谈**：① 情绪（news/person）`利多/看多/positive` → bullish；② **政策立场**（policy）`dovish`（鸽派/宽松）→ bullish、`hawkish`（鹰派/紧缩）→ bearish——这两词原先不在表里被整批归 NULL（实测 220 + 165 条），那是**语义被丢掉**而不是「无方向」；③ **公告类别不映射**（中性 83% 之外是高管人事/融资定增/业绩预告等 ~20 种，「融资定增」既可能是扩张也可能是摊薄）——类别→方向是业务判断，须有业务认可的表，属 M8 的 PIT 基本面事件
 - **改口径后用本地分片重物化**（`download_events.py --rematerialize`）：分片是内容寻址的本地对象，`day_shards()` 只读回执，**零网络会话**——与 `--refresh`（要重新下发请求）成本完全不同，别混用。改映射表后实测：84 天全量重物化约 90 秒、只改动内容受影响的日子（63 天含 dovish/hawkish ↔ 63 片字节变化，完全对应）
 - **幂等的准确表述**：来源分片未变 → **不重写**（跳过）；被迫重写时**内容与字节都一致**（已用「强制重物化同一天两次」验证，不靠「跳过所以没变」自证）
@@ -179,10 +180,50 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 
 ### M2c 数据体检 + 退市股覆盖核实
 
-- **数据质量体检（脚本级）**：缺失值比例、异常步长（单日涨跌超阈值）、`available_at` 空值 / 倒挂（< `event_time`）、重复行检测、无价 bar 计数、跨年边界连续性对账；输出报告 + 非零退出码（可挂定时告警）。完整版（快照/看板/告警推送）留 P3-E3，本处不建看板
-- **退市股覆盖确认**（生存者偏差核实）：对照全市场清单核验已退市标的是否在分片中
+> 本片是 M2 数据层的**护栏与自证**：日增量 ETL 已按日自动跑，没有体检则缺口只能靠人肉发现；而「生存者偏差」是护城河「前视偏差为零」的镜像——若行情分片只有活下来的公司，回测收益天然偏高。
+> 四条边界（用户 2026-10-07 拍板）：**分两段收口**（真实三天连跑证据 10-09/10 回填）、退市核实走**数据内双证据链**、**只报告不修**、体检**只给脚本 + 退出码**（不挂调度器、不进 API、不建看板，完整版留 P3-E3）。
 
-**验收**：ETL 连续运行 3 天无重复、无漏拉（**会话内以「按日推演 + 幂等重跑」等价验证，真实三天连跑留 M2c 回填证据**）；全市场日线 DuckDB 秒级查询；注入脏数据时体检脚本报警；**交易日历与全市场行情 `trade_date` 全期双向对账一致**（例外逐条解释）；全市场语料对 P1 三标的的 **353 条 `(event_id, content_hash)` 包含性回归**通过；**事件驱动回测在语料覆盖区间外显式报错，不空转**。
+**落点与接口**
+
+- `app/data/data_health.py`：检查器。`Check{id, level ∈ error|warn|info, title, detail, data}`；`run_all(*, data_dir=None, only=None)` / `summarize()` / `exit_code(checks, *, strict)`；每项一个函数、签名统一
+- `app/data/delisting.py`：退市覆盖核实（独立模块——它是一次性验收证据，不是日复一日跑项，且 226 只清单会撑爆人读报告）
+- `scripts/run_health_check.py`：薄壳，逻辑全在 app 层；`--json PATH` / `--data-dir PATH` / `--strict`；有 error 退 1，`--strict` 时 warn 也退 1
+
+三条硬规则：① **每个检查自带 try/except**，异常转成 error 级 Check——一条 SQL 炸掉不该吞掉整份报告；② 全部检查**共用一条 `duckdb_client.connect(data_dir)`**，抛 `DataNotReady` 时生成一条 error Check 并短路（不打 traceback）；③ **集合式 SQL、一条连接**，禁止 `bars()` / `latest_closes()` 这类逐标的 API、禁止对全量结果 `to_pylist()`，读 TIMESTAMPTZ 必须走 arrow（缺 pytz 时裸 `fetchall()` 直接报错）。
+
+**检查项**（`级别`列为命中该条件时的级别；括号内为规划期实测基线）
+
+| ID | 检查 | 级别与判据 |
+|---|---|---|
+| B1 | 分片对账 | **error**：`_meta/bars.json` 的 `outputs[].rows/sha256` 与实际 Parquet 不符、缺片或多片（sha 逐片重算，不采信清单——清单是记录不是测量） |
+| B2 | 重复行 `(symbol, trade_date, adjustment)` | **error**：非 0 即报（实测 0） |
+| B3 | 缺失值比例 | **info**：逐列 null 率只打印（`adj_factor` 99.31% 仅 raw 有值、`turnover_pct` 2.33%、`is_suspended` 0.29% 皆为设计）。**仅** `close` / `volume` / `available_at` 零容忍 → error |
+| B4 | 无价 bar 计数 | **info**：`trading_status='no_turnover_observed' AND close IS NULL`（基线 271 行/复权、49 只，全在 2026-08-19 后）；与 `bars()` 的剔除口径显式对齐 |
+| B5 | 异常步长（两条分列） | **warn**：`abs(change_pct) > 31%`（超北交所 30% 上限）且不在该标的前 5 个交易日内（排除新股无涨跌幅限制），实测 **106 条**（复牌首日/重新上市的参考价重置，如 `000670@2022-08-22 +488%`），列条数与样本；**warn + 基线**：close 环比 vs `change_pct` 自洽性——**容差写死 0.011pp**（基线 hfq 40 / qfq 448 / raw 28,686；容差取 0 时为 762 万条，判据不可复现），并单列「偏差 >1pp」计数（qfq 448 中 314 条，除权/上市首日类，属正常） |
+| B6 | `trading_status` 取值 | **warn**：白名单外取值（现会报出 qfq 独有的 `unknown` 5,099 行，价格齐全、无消费方） |
+| B7 | 每日 bar 数包络 | **error**：逐交易日标的数，相邻日跌幅 >10% 或 >50% 即报（基线 3,761 → 5,572 单调上升，实测命中 0）。抓的是**分片截断**——日期级连续性已被 B2 + B8 覆盖，原「跨年边界」判据冗余，且「每标的少几天」会命中 500 只停牌股 |
+| B8 | 日历双向对账 | **error**：复用 `cal.audit()`；`audit_calendar.py` 内嵌的 `trade_dates()` **下沉到 app 层**，脚本反过来调它，避免两份实现漂移 |
+| E1 | 日分区完整性 | **error**：`_meta/events.json` 的 `days` 与磁盘实际文件比对，尊重「归档当天真没内容」的 `empty` 语义；`read_day_entries` 对缺旁注文件返回 `rows=-1` 必须当 error |
+| E2 | 重复行 | **error**：日内 `dedup_key` / `(event_id, content_hash)`（实测 0） |
+| E3 | `available_at` | **error**：空值 / 倒挂（< `event_time`），实测 0 / 0 |
+| E4 | `direction` 合法性 | **error**：白名单针对 `direction_norm`（实测 4 值、0 违规）；`direction` 是 45 个公告类别词表，**另设**一条长串脏值检查（基线恰 1 条：`融资 from theellsellsellsellsell`） |
+| E5 | `symbols` 形态 | **info**：空数组比例（基线 35.3%，设计如此）、非六位码（实测 0）、与 bars 的差集（多为 ETF / B 股 / 基金代码，分类说明非退市） |
+| E6 | `event_id` 跨日复用 | **info，永不 error**：平台行为（基线 18 例、最多跨 6 天，M2b 已记录） |
+| E7 | 覆盖缺口 | **error / warn，必须本地算**：**不得复用 `runner.status()`**——它会调 `archive.coverage()`（子进程调 xiaoshi CLI，需网络与密钥、300s 超时），失败时 `archive_last=None` 使 `missing` 静默为空，把「查不到归档」打印成「缺口 0」。改为**本地实现**（日历 × 本地日分区）：落在交易日上的缺口 error、自然日缺口 warn；平台侧口径仅 `--online` 时取 |
+| X1 | 日历余量 | **warn**：余量 < 90 天（实测 85 天，**出生即告警**）。`detail` 写明出路是升级 `exchange_calendars` 后重新生成，不是「再等等」 |
+| X2 | 遗留文件 | **warn**：`data/raw/events/*.jsonl` 三个 P1 残留；另查陈旧锁 `.xiaoshi-execution.lock`（既有用例只查 `bars/` 与 `events/`，`raw/` 无人管） |
+| X3 | 台账可读 | **error**：`_meta/etl_runs.jsonl` 逐行可解析——**宽松解析、缺键容忍**（schema 已演进：实测 6 行中前 3 行 6 键、后 3 行 9 键） |
+
+**只报告不修的两条挂账**（各出一条 info Check 明示，否则「只报」没有落地）：`DataNotReady` 判据仍是「目录里有没有 parquet」；`backtest_runs.request` 不含数据版本指纹与快照版本（M2a 遗留①，留 M5）。
+
+**退市股覆盖确认（生存者偏差核实）**
+
+口径必须是**本地可得清单**，不是「全市场清单」——本地无标的清单文件，小石 10 个数据集里没有证券主数据 / 退市清单，归档是 `(date, event_type)` 分区、**无 symbol 维度**。故走数据内双证据链：
+
+1. **全期结构证据**：按 `max(trade_date)` 早于数据末端的标的清单与年度分布（基线 226 只 = 16 / 20 / 43 / 45 / 52 / 30 / 20）。完整清单只进 `--json`，人读只出一行
+2. **窗口内逐只实证**：事件语料覆盖区间内，末日落在区间内的标的中，有退市类事件（`direction ∈ {退市风险, 停复牌}` 或标题含「退市」）者**确证**，无公告者列为**待解释**（长期停牌与退市在纯行情数据里不可辨）。基线：**5 只候选 / 2 只确证 / 3 只待解释**（`002898`、`920305` 均有「进入退市整理期」公告；`000004`/`002808`/`300029` 窗口内无公告）——**如实写，不得表述为「逐只实证通过」**。候选的判据是「末日落在**语料窗口内**」：早于窗口起点结束的标的，语料里本来就不可能有它的事件，拿它当候选是把「无从取证」混进「取了证」
+
+**验收**（§3 共享，M2c 结束后整段可签）：全市场日线 DuckDB 秒级查询；**注入脏数据时体检脚本报警**（三步证据：离线单测逐项断言 → 脚本级用例 `main([...])` 退 1 且 JSON 里能定位到对应 error → 一次真实 CLI 调用留终端输出）；**交易日历与全市场行情 `trade_date` 全期双向对账一致**（例外逐条解释）；全市场语料对 P1 三标的的 **353 条锚点包含性回归通过——锚 `event_id`，不锚 `content_hash`**（平台一天内修订过 255/353 条，锚 hash 会把「平台改内容」误判成「我们丢数据」；既有用例在 `tests/integration/test_data_t2.py`）；**事件驱动回测在语料覆盖区间外显式报错，不空转**（`app/backtest/report.py` 已实现，本轮补一条断言该 400 的用例）；**ETL 连续运行 3 天无重复、无漏拉**——本片**分两段收口**：第一段交付脚本与核实，第二段（10-09/10）核对 `_meta/etl_runs.jsonl` 出现 3 个自然日的运行记录并逐日核验无重复、无漏拉。触发方式须写进交付文档：调度器是**进程内** APScheduler，只在 uvicorn 存活时 21:10 才跑；进程不在则该日补跑一次日增量并在文档里如实标注是调度还是手动；不足 3 天如实记录并顺延。
 
 ## 4. M3 RAG 完整化
 
@@ -278,6 +319,7 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.5 | 2026-10-07 | M2c | §3 M2c 细化为可执行规格：落点 `data_health.py` / `delisting.py` / `run_health_check.py` 与 `Check` 接口 + 三条硬规则（每检查自带 try/except、共用一条连接、集合式 SQL 禁逐标的 API）；检查项 B1–B8 / E1–E7 / X1–X3 逐条定级并写死基线；**E7 明确不得复用 `runner.status()`**（其 `archive.coverage()` 走子进程 CLI，不可达时会把「查不到归档」静默显示成「缺口 0」）；**B7 由「跨年边界」改为每日 bar 数包络**（原判据被 B2+B8 覆盖且会命中 500 只停牌股）；**B5 自洽性容差写死 0.011pp**（容差取 0 时命中 762 万条，判据不可复现）；**退市股核实口径由「对照全市场清单」改成数据内双证据链**（本地无标的清单、小石无证券主数据、归档无 symbol 维度），按 8 候选 / 2 确证 / 6 待解释如实呈现；「真实三天连跑」改为**分两段收口**；顺带修三处漂移——头部版本号、M2c 验收的 353 条回归锚点由 `(event_id, content_hash)` 改锚 `event_id`（与 M2b 口径自相矛盾）、events 列名 `original_url` / `lineage` 实测不存在 |
 | v1.4 | 2026-10-07 | M2b | §3 M2b 细化为可执行规格：**事件语料通道改归档按日整片**（实测 MCP 单次 500 硬顶 + `cursor` 被 FastMCP 拒收 ⇒ 结构上不可翻页，单日任一主要类型即触顶；归档为 `date × event_type` 整市场分片，逐片 sha256，保留期为滚动窗口）——MCP 退回只服务对话实时查询；**日历只落冻结文件 + DuckDB 视图**（PG 表延后，无消费方）；日历验证由「抽查 1 年」升级为**与 21 片行情 `trade_date` 全期双向对账**；**落盘 schema 按 `quant-event-v2` 重定**（新增 `dedup_key`/`revision_id`/`is_corrected` 等 9 列，去重键以平台 `dedup_key` 为准）；**新增事件驱动策略的时间收口**——判据为本地语料覆盖区间（起点固化、终点随日增前移，不写死「最近 3 个月」），显式越界 400、报告带 `event_coverage`；日任务改「拉最近 N 个交易日」的回落窗口 |
 | v1.3 | 2026-10-07 | M2a | §3 拆成 M2a / M2b / M2c 三段并把 M2a 细化为可执行规格：全市场 21 片与扁平命名（glob 不变）、**P1 按标的文件必须清掉**（唯一静默错误点）、物化先暂存后换入、数据版本指纹锚定逐片 `object_key` + sha256（顶层 manifest_version 不可用作锚点）、**无价 bar 不进定价路径**（`no_turnover_observed` 整行价量为空，全市场 271 行/复权）、满规模查询实测；**关闭两项待验证**（小石不覆盖指数、`cn-daily` 不含行业字段）并写明对 M5 基准与 M10 热力图的影响；事件长历史口径复核（归档 2026-07 起才有量，P1 结论成立）；M2b 记入交易日历来源的已拍板方案与事件语料归一化要求 |
 | v1.0 | 2026-10-06 | M1–M10 | 初版：P2-Mn 技术规格（含竞品调研后扩容的 15 项新功能与 M10 研究首页） |

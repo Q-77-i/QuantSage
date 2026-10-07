@@ -273,7 +273,7 @@ def status(data_dir: Path | None = None) -> dict:
     # 缺口 = 「归档已覆盖的窗口内、本地却没有」的自然日。**只看「本地末日 vs 归档边界」会漏掉
     # 中间的洞**（首次回填被限流打断时就踩到：末日追平了归档，中间却空了 33 天）。
     # 台账里记为 `empty` 的日子不算缺口——那是归档当天真的没有可收内容。
-    empty_days = _empty_day_set(paths_)
+    empty_days = empty_day_set(paths_)
     missing: list[dict] = []
     if archive_last:
         window_start = (
@@ -327,8 +327,12 @@ def _append_ledger(paths_: Paths, report: RunReport) -> None:
         handle.write(line + "\n")
 
 
-def _empty_day_set(paths_: Paths) -> set[str]:
-    """历史台账里所有记为「该日无分片」的日期（404 或只有被排除的类型）。"""
+def empty_day_set(paths_: Paths) -> set[str]:
+    """历史台账里所有记为「该日无分片」的日期（404 或只有被排除的类型）。
+
+    `status()` 与 M2c 体检脚本共用这一份语义：**「归档当天真没内容」不算缺口**，
+    各自实现一份迟早会漂移。
+    """
     empty: set[str] = set()
     ledger = paths_.meta_dir / LEDGER_NAME
     if not ledger.exists():
@@ -337,7 +341,13 @@ def _empty_day_set(paths_: Paths) -> set[str]:
         for line in handle:
             if not line.strip():
                 continue
-            for item in (json.loads(line).get("days") or []):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                # 坏行跳过而不是抛出去：本函数的职责是「哪些天被记成了 empty」，
+                # 台账损坏由体检的 X3 报出——一次半截写入不该让缺口判定整个失效
+                continue
+            for item in (payload.get("days") or []):
                 if item.get("status") == "empty":
                     empty.add(str(item.get("date")))
     return empty

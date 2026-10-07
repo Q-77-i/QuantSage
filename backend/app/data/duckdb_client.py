@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -99,6 +100,25 @@ def bars(
         return _fetch(con, sql + " ORDER BY trade_date", params)
     finally:
         con.close()
+
+
+def trade_dates(adjust: str | None = None, data_dir: Path | None = None) -> list[date]:
+    """行情里出现过的全部交易日（去重、升序）。`adjust=None` 取全部复权口径的并集。
+
+    日历对账专用：`bars()` 是逐标的的，对账要的是「全市场有哪些交易日」。**走视图而非
+    逐片 glob**——分片命名或布局变了，这里跟着视图一起变，不会留下第二份会漂移的实现。
+    """
+    con = connect(data_dir)
+    try:
+        sql = f"SELECT DISTINCT trade_date FROM {BARS_VIEW}"
+        params: list = []
+        if adjust is not None:
+            sql += " WHERE adjustment = ?"
+            params.append(adjust)
+        rows = _fetch(con, sql + " ORDER BY 1", params)
+    finally:
+        con.close()
+    return [row["trade_date"] for row in rows]
 
 
 def latest_closes(

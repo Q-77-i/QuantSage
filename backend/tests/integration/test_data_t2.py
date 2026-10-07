@@ -18,6 +18,8 @@ import duckdb
 import pytest
 
 from app.core.config import REPO_ROOT, get_settings
+from app.data import data_health as dh
+from app.data import delisting
 from app.data import duckdb_client as dc
 from scripts.download_bars import ADJUSTS, BARS_NAME, LEGACY_PATTERN, PARTITIONS, YEARS
 
@@ -353,3 +355,33 @@ def test_meta_dir_is_not_tracked_by_git() -> None:
     """数据与清单都在 .gitignore 覆盖范围内。"""
     tracked = Path(REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "data/" in tracked
+
+
+# ── P2-M2c：数据体检 + 退市股覆盖核实 ──────────────────────────
+
+
+def test_data_health_reports_no_error_on_real_data() -> None:
+    """M2c 验收：真实全量数据上 error 级检查全绿。
+
+    **只断 error 级**——warn / info 的基线（B5 的不一致率、U1 的停止交易只数）会随日增量
+    与平台修订漂移，把它们写进 assert 是给自己埋雷。
+    """
+    checks = dh.run_all()
+
+    errors = [(check.id, check.title, check.detail) for check in checks if check.level == "error"]
+    assert errors == [], errors
+    assert len(checks) == len(dh.CHECKS), "有检查没跑成（`run_all` 会把异常折成 error，这里再兜一次）"
+
+
+def test_delisting_coverage_is_not_survivor_biased() -> None:
+    """生存者偏差核实的不变量：分片里**确实**有行情早于数据末端结束的标的。
+
+    不断言具体只数——它会随退市与新增数据变化；要守的性质是「不为空」：只有活下来的
+    公司才会让这个集合为空，而那正是生存者偏差的定义。
+    """
+    report = delisting.run()
+
+    assert report.stopped, "分片里没有任何停止交易的标的——疑似生存者偏差"
+    assert sum(report.by_year.values()) == len(report.stopped)
+    # 口径声明必须在报告里——「本地可得清单」不是「全市场清单」
+    assert "本地可得清单" in report.method_note

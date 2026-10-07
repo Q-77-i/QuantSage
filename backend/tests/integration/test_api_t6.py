@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -85,6 +86,31 @@ def test_event_driven_backtest_quantifies_pit_gap(member_client: TestClient) -> 
     # 事件窗口只有约 3 个月，必须触发样本量提示——前端要把它显示出来
     assert body["meta"]["warnings"]
     assert "交易明细" not in body["meta"]["warnings"][0]  # 提示的是样本量，不是别的
+
+
+def test_event_driven_start_before_coverage_is_rejected(member_client: TestClient) -> None:
+    """SPEC §3 验收：事件驱动在语料覆盖区间外**显式报错，不空转**。
+
+    没有这条守卫时，起点落在语料之前会跑出一份「前几年空转、最后三个月才交易」的报告——
+    指标看着正常，其实什么都没发生。
+    """
+    coverage_start = dc.event_coverage()["start"]
+    assert coverage_start, "本地没有事件语料，先跑 scripts/download_events.py"
+    earlier = date.fromisoformat(coverage_start) - timedelta(days=30)
+
+    response = member_client.post(
+        "/api/v1/backtest",
+        json={
+            "strategy": "event_driven",
+            "symbol": "300750",
+            "start": earlier.isoformat(),
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert coverage_start in detail  # 报出真实覆盖起点
+    assert "ma_cross" in detail  # 给可执行的出路，不是只说「不行」
 
 
 def test_ma_cross_backtest_covers_full_history(member_client: TestClient) -> None:

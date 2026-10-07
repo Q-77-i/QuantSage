@@ -14,9 +14,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import etl as etl_api
+from app.core.config import get_settings
 from app.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def etl_off(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """把 ETL 开关钉成默认值。
+
+    本机 `.env` 可能开着（真实日增量要跑），用例验的是**端点对开关的直通**，
+    不该随开发机的配置变——同 `jwt_secret` 夹具对 JWT_SECRET 的处理。
+    """
+    monkeypatch.setenv("ETL_ENABLED", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 STATUS_STUB: dict[str, Any] = {
     "local": {"start": "2026-07-07", "end": "2026-09-29", "days": 85, "rows": 420000, "symbols": 5400},
@@ -32,6 +46,7 @@ def test_endpoints_require_login() -> None:
     assert client.post("/api/v1/etl/run").status_code == 401
 
 
+@pytest.mark.usefixtures("etl_off")
 def test_status_merges_runner_and_scheduler(signed_in: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(etl_api.runner, "status", lambda data_dir=None: dict(STATUS_STUB))
     monkeypatch.setattr(etl_api.runner, "is_running", lambda: False)

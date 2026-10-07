@@ -11,36 +11,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import duckdb  # noqa: E402
-
-from app.core.config import REPO_ROOT  # noqa: E402
 from app.data import calendar as cal  # noqa: E402
-
-
-def trade_dates(adjust: str = "qfq", data_dir: Path | None = None) -> list[date]:
-    """行情分片里出现过的全部交易日（去重、升序）。
-
-    只取一根分片年份的表不够——跨年边界正是要验的地方，故对全部年份分片取并集。
-    """
-    base = Path(data_dir) if data_dir is not None else REPO_ROOT / "data"
-    pattern = base / "bars" / f"cn-daily_CN_{adjust}_*.parquet"
-    files = sorted(pattern.parent.glob(pattern.name))
-    if not files:
-        raise SystemExit(f"没有行情分片：{pattern}")
-    con = duckdb.connect()
-    try:
-        sql = " UNION ".join(
-            f"SELECT DISTINCT trade_date FROM read_parquet('{path}')" for path in files
-        )
-        rows = con.execute(f"SELECT trade_date FROM ({sql}) ORDER BY 1").to_arrow_table().to_pylist()
-    finally:
-        con.close()
-    return [row["trade_date"] for row in rows]
+from app.data import duckdb_client as dc  # noqa: E402
 
 
 def main() -> int:
@@ -48,7 +24,12 @@ def main() -> int:
     parser.add_argument("--adjust", default="qfq")
     args = parser.parse_args()
 
-    days = trade_dates(args.adjust)
+    # 取数走查询层（视图是 glob，全部分片自动纳入，跨年边界也在内）——不在这里另写一份
+    try:
+        days = dc.trade_dates(args.adjust)
+    except dc.DataNotReady as exc:
+        print(f"❌ {exc}")
+        return 1
     result = cal.audit(days)
     first, last = result.window
     print(f"日历：{cal.describe()}")
