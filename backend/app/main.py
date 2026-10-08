@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, Request, Response, status
@@ -43,6 +44,22 @@ log = logging.getLogger(__name__)
 
 # 小石 MCP 首次握手要拉起子进程（实测约 2.8s）；给足余量但不无限等
 MCP_BOOT_TIMEOUT = 30.0
+
+
+def _start_rag_warmup() -> None:
+    """后台线程预热 RAG 模型。**不阻塞启动、失败只记日志**。"""
+
+    def run() -> None:
+        from app.rag.encoder import configure_hf_env, warmup
+
+        configure_hf_env()
+        ok, detail = warmup()
+        if ok:
+            log.info("RAG 模型预热完成：%s", detail)
+        else:
+            log.warning("RAG 模型预热失败（%s），首次检索会现场载入", detail)
+
+    threading.Thread(target=run, name="rag-warmup", daemon=True).start()
 
 
 @asynccontextmanager
@@ -119,6 +136,11 @@ async def lifespan(app: FastAPI):
             app.state.scheduler = start_scheduler()
         except Exception as exc:  # noqa: BLE001
             log.warning("ETL 调度器未启动（%s），/api/v1/etl/run 仍可手动触发", type(exc).__name__)
+
+        if settings.rag_warmup_on_start:
+            # 后台线程预热 RAG 模型：把首次提问要付的 7–15s 载入挪到启动期。
+            # 默认关——集成测试也跑 lifespan，默认开会白等十余秒并占 4GB。
+            _start_rag_warmup()
 
         try:
             yield

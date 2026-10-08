@@ -55,12 +55,21 @@ class Settings(BaseSettings):
     # ── RAG（M3）：本地嵌入与检索 ──
     # 权重目录放仓库内 .tools/（已 gitignore），不散落到 ~/.cache；模型各约 2.3GB
     rag_model_dir: Path = REPO_ROOT / ".tools" / "models"
-    # cpu / mps：Mac 上 MPS 更快但有长跑内存泄漏（按日分区重启规避，见 SPEC §4 M3a）
-    rag_device: str = "cpu"
+    # 设备**分成两处**：嵌入在 CPU 上只需 0.15s（问答路径），没必要让它占 MPS 内存；
+    # 精排是唯一的服务端瓶颈（50 篇 3–5s），实测 MPS + fp16 快 2.2–3.7 倍且 120 次调用内存不涨
+    # （见 SPEC §4 M3b 的设备选择与依据）。批量嵌入任务用 RAG_EMBED_DEVICE。
+    rag_embed_device: str = "cpu"  # 钉死：批量嵌入在 MPS 上只快 1.57 倍却有长跑泄漏记录
+    rag_rerank_device: str = "auto"  # auto = 有 MPS 就用（精排是唯一瓶颈，见 encoder.resolve_device）
+    # 启动时后台预热两个模型（默认关：集成测试跑 lifespan，默认开会白等十余秒 + 占 4GB；
+    # 本地演示前设 RAG_WARMUP_ON_START=true，可把首次提问的 7–15s 载入挪到启动期）
+    rag_warmup_on_start: bool = False
     # 批量小反而快：实测 batch=4 22.8 条/s、8 → 18.5、32 → 13.6（CPU，padding 到批内最长样本）
     rag_embed_batch_size: int = 4
     rag_rerank_batch_size: int = 8
-    rag_max_length: int = 512  # 语料最长 2,065 字，512 token 足够；截断短一点省显存/内存
+    rag_max_length: int = 512  # 嵌入用（建索引时的截断口径，改了要重建索引）
+    # 精排用的截断单独一档：候选文本中位 80 字，长公告会把尾延迟拉高
+    # （实测同样 50 篇：512 → 165ms/篇、256 → 73、128 → 36）。默认 256，质量由评测守。
+    rag_rerank_max_length: int = 256
     rag_rerank_candidates: int = 50  # 进精排的候选数，由延迟实测定档（M3c）
     rag_top_k: int = 5
     # collection 名可配：集成用例必须能指向测试库，**绝不能拿生产索引当试验场**

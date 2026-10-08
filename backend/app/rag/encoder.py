@@ -54,6 +54,23 @@ class Reranker(Protocol):
     def rerank(self, query: str, docs: Sequence[str]) -> list[float]: ...
 
 
+def resolve_device(name: str | None) -> str:
+    """`auto` → 有 MPS 就用 MPS，否则 CPU。
+
+    **只给精排用 auto**：它是服务端唯一瓶颈（CPU 上 50 篇 3–5s），换 MPS 实测中位延迟
+    从 5.2s 降到 3.0s 且质量逐位不变。嵌入仍钉 CPU——它在问答路径只要 0.15s，
+    而批量嵌入走 MPS 只快 1.57 倍、内存翻倍且有长跑泄漏记录，不划算。
+    """
+    if name and name != "auto":
+        return name
+    try:
+        import torch
+
+        return "mps" if torch.backends.mps.is_available() else "cpu"
+    except Exception:  # noqa: BLE001 —— torch 不在就退回 CPU，不因此报错
+        return "cpu"
+
+
 def _cache_dir() -> str:
     """HF 的**仓库缓存根**：`<rag_model_dir>/hub`。
 
@@ -87,7 +104,7 @@ class FlagEmbeddingEmbedder:
     ) -> None:
         settings = get_settings()
         self._model_name = model_name
-        self._device = device or settings.rag_device
+        self._device = device or settings.rag_embed_device
         self._batch_size = batch_size or settings.rag_embed_batch_size
         self._max_length = max_length or settings.rag_max_length
         self._model: Any | None = None
@@ -156,9 +173,10 @@ class FlagReranker:
     ) -> None:
         settings = get_settings()
         self._model_name = model_name
-        self._device = device or settings.rag_device
+        self._device = resolve_device(device or settings.rag_rerank_device)
         self._batch_size = batch_size or settings.rag_rerank_batch_size
-        self._max_length = max_length or settings.rag_max_length
+        # 精排用自己那一档截断：候选文本中位 80 字，长尾才是延迟来源（见 config 注释）
+        self._max_length = max_length or settings.rag_rerank_max_length
         self._model: Any | None = None
 
     def _load(self) -> Any:
@@ -201,6 +219,20 @@ def get_embedder() -> Embedder:
 @lru_cache(maxsize=1)
 def get_reranker() -> Reranker:
     return FlagReranker()
+
+
+def warmup() -> tuple[bool, str]:
+    """把两个模型载入并各跑一次（供启动期后台线程调用）。
+
+    返回 `(是否成功, 说明)`，**不抛异常**——预热失败只是首次提问慢一点，
+    不该让服务起不来（与「能降级就降级」同姿态）。
+    """
+    try:
+        get_embedder().encode_query("预热")
+        get_reranker().rerank("预热", ["预热"])
+        return True, "嵌入与重排模型已就绪"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 def configure_hf_env() -> None:

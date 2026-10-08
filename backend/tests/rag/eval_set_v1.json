@@ -16,7 +16,16 @@
   "generator": "deepseek-flash（经 LiteLLM）",
   "grader": "deepseek-flash（经 LiteLLM）",
   "guide": "2=正解 / 1=沾边 / 0=不相关；池化口径：池外一律视为不相关",
-  "human_review": []
+  "human_review": [
+   {
+    "reviewed_by": "用户（本人）",
+    "date": "2026-10-08",
+    "scope": "25 条（五类各 5 条，按 id 哈希稳定取样，见 logs/m3/eval_review.md）",
+    "criteria": "① 问题能否由真值事件回答 ② 是否泄漏（六位代码/具体日期/标题片段）③ 问法是否自然",
+    "verdict": "全部通过；未提出修正",
+    "assistant_note": "复阅一致。已知特征（非缺陷）：q024/q031 这类「哪家公司 + 常见事件类型」的问题指向偏泛，同一天可能有别家发生同类事件——判定锚定真值事件，故三档管线在该类问题上同时受压，属难度特征而非样本缺陷"
+   }
+  ]
  },
  "queries": [
   {

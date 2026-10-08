@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.device:
         from app.core.config import get_settings
 
-        get_settings().rag_device = args.device  # 本次进程内生效
+        get_settings().rag_embed_device = args.device  # 本次进程内生效（批量嵌入用）
 
     def progress(task: embed.DayTask, count: int) -> None:
         print(f"  {task.day}  {task.action}  {count} 点  （{task.reason}）", flush=True)
