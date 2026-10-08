@@ -3,6 +3,7 @@
 import { useTheme } from "next-themes";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 
+import { defineQuantsageThemes, themeName } from "@/lib/monaco-theme";
 import { findingsToMarkers } from "@/lib/strategy-form";
 import type { Finding } from "@/lib/types";
 
@@ -70,6 +71,8 @@ function loadMonaco(): Promise<Monaco> {
           reject(new Error("vs/editor/editor.main 加载完成但没有挂上 window.monaco"));
           return;
         }
+        // 主题与全站 token 同源（见 lib/monaco-theme.ts）：加载完成即注册，只做一次
+        defineQuantsageThemes(monaco);
         resolve(monaco);
       });
     };
@@ -103,7 +106,7 @@ export function CodeEditor({ value, onChange, findings, readOnly = false, ref }:
         const editor = monaco.editor.create(containerRef.current, {
           value: emittedRef.current,
           language: "python",
-          theme: document.documentElement.classList.contains("dark") ? "vs-dark" : "vs",
+          theme: themeName(document.documentElement.classList.contains("dark")),
           automaticLayout: true, // 左右分栏拖动时容器会变宽，交给它自己量
           minimap: { enabled: false },
           fontSize: 13,
@@ -116,6 +119,9 @@ export function CodeEditor({ value, onChange, findings, readOnly = false, ref }:
         editorRef.current = editor;
         editor.onDidChangeModelContent(() => {
           const next = editor.getValue();
+          // 程序性 `setValue`（切换策略 / 载入模板）也会触发这个事件：它与「我们最后
+          // 发出/推入的那份」相同，直接放行会让载入立刻变成「未保存」。相同即回声，跳过
+          if (next === emittedRef.current) return;
           emittedRef.current = next;
           onChangeRef.current(next);
         });
@@ -145,7 +151,7 @@ export function CodeEditor({ value, onChange, findings, readOnly = false, ref }:
   }, [readOnly]);
 
   useEffect(() => {
-    monacoRef.current?.editor.setTheme(resolvedTheme === "dark" ? "vs-dark" : "vs");
+    monacoRef.current?.editor.setTheme(themeName(resolvedTheme === "dark"));
   }, [resolvedTheme]);
 
   useEffect(() => {

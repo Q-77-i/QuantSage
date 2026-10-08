@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import type { DataFreshness } from "@/lib/types";
 
 /**
- * 全站页头：品牌 + 三页导航 + 当前用户 + 主题切换。导航在桌面必须单行（设计规范）。
+ * 全站页头：品牌 + 四项导航 + 当前用户 + 主题切换。导航在桌面必须单行（设计规范）。
  *
  * 只在受保护路由组内渲染，所以 `user` 必然非空（守卫已挡在前面）。
  */
@@ -31,7 +31,7 @@ export function AppHeader() {
           知策 <span className="text-muted-foreground">QuantSage</span>
         </Link>
 
-        <nav className="flex items-center gap-1 text-sm">
+        <nav className="flex items-center gap-1 text-sm whitespace-nowrap">
           <Link
             href="/"
             className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -43,6 +43,12 @@ export function AppHeader() {
             className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             回测
+          </Link>
+          <Link
+            href="/strategies"
+            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            策略
           </Link>
           <Link
             href="/space"

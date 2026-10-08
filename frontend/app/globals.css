@@ -43,6 +43,7 @@
   /* 本项目自己的语义色，供图表与涨跌文字直接取用 */
   --color-up: var(--up);
   --color-down: var(--down);
+  --color-warn: var(--warn);
   --color-brand: var(--brand);
   --color-chart-surface: var(--chart-surface);
   --color-grid: var(--grid);
@@ -95,6 +96,11 @@
   /* 图表序列：已过 dataviz 六项校验（CVD ΔE 24.7） */
   --series-1: #2a78d6;
   --series-2: #eb6834;
+
+  /* 警告档（M4c 的检查结果面板）：对比度 5.02（面板底）/ 4.68（页面底），过 AA。
+     在此之前没有 warning 色，「样本量提示」是借 --destructive 写的——检查面板若照抄，
+     用户分不出一屏同色里哪几条会**拦住运行**（error 才拦），而那正是工作台的核心交互 */
+  --warn: #b45309;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
     "Segoe UI", system-ui, sans-serif;
@@ -165,6 +171,9 @@
 
   --series-1: #3987e5;
   --series-2: #d95926;
+
+  /* 深色底上重选过：对比度 7.88（面板底 #131722），过 AA */
+  --warn: #e0a030;
 
   --background: var(--plane);
   --foreground: var(--ink-1);

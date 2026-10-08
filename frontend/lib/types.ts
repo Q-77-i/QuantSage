@@ -5,7 +5,10 @@
  * 只镜像前端真正消费到的字段，不做「全字段照抄」——那只会让改动时两处一起漂。
  */
 
-export type Strategy = "ma_cross" | "event_driven";
+/** 内置策略名（注册表里那两个） */
+export type BuiltinStrategy = "ma_cross" | "event_driven";
+/** 提交给 `POST /backtest` 的策略名：内置的，或用户策略（M4c，此时必带 `strategy_id`） */
+export type Strategy = BuiltinStrategy | "user";
 export type PitMode = "pit" | "non_pit" | "both";
 export type Adjust = "qfq" | "raw";
 
@@ -162,6 +165,10 @@ export interface BacktestMeta {
   event_coverage: EventCoverage;
   /** 窗口内该标的的事件条数；不消费事件的策略为 null（不是 0——含义不同） */
   events_in_window: number | null;
+  /** 内置还是用户策略（M4a 起；M4c 的「我的回测」靠它区分显示） */
+  strategy_kind: "builtin" | "user";
+  /** 用户策略的名字；内置策略为 null */
+  strategy_name: string | null;
 }
 
 export interface BacktestReport {
@@ -210,6 +217,8 @@ export interface BacktestRunSummary {
   end: string | null;
   pit_mode: PitMode;
   metrics: Metrics;
+  /** 用户策略的名字（M4c）；内置策略为 null */
+  strategy_name: string | null;
 }
 
 export interface BacktestRunDetail {
@@ -217,6 +226,10 @@ export interface BacktestRunDetail {
   created_at: string;
   request: StoredBacktestRequest;
   report: BacktestReport;
+  /** 当次运行的用户策略 id（内置策略为 null）：与策略**当前**的 hash 比对得出「已非当次代码」 */
+  strategy_id: string | null;
+  /** 当次运行的源码 sha256（内置策略为 null） */
+  code_sha256: string | null;
 }
 
 // ── 自选股（M1c）───────────────────────────────────────────────────────────
@@ -240,12 +253,14 @@ export interface WatchlistGroup {
 
 export interface BacktestRequest {
   strategy: Strategy;
+  /** `strategy: "user"` 时必带（M4c：跑的是**库里那条**源码，不是请求里现传的） */
+  strategy_id?: string;
   symbol: string;
   start?: string;
   end?: string;
   costs?: Partial<CostOptions>;
   pit_mode?: PitMode;
-  params?: Record<string, number>;
+  params?: Record<string, number | boolean>;
 }
 
 // ── 策略静态检查（M4b 产出，M4c 消费）─────────────────────────────────────
@@ -261,6 +276,66 @@ export interface Finding {
   message: string;
   /** 命中那一行的原文，面板里跟在话术后面显示 */
   snippet: string;
+}
+
+// ── 策略工作台（M4c）───────────────────────────────────────────────────────
+
+/** `PARAMS` 里一条参数的 schema（后端 `ParamSpec` 的 JSON 形态） */
+export interface ParamSpec {
+  type: "int" | "float" | "bool";
+  default: number | boolean;
+  min: number | null;
+  max: number | null;
+  label: string;
+}
+
+/** 静态解析出的元信息：参数表单与「是否消费事件」都从它来 */
+export interface StrategyMeta {
+  /** 键即参数名，顺序即声明顺序（参数名必是标识符，不会是纯数字键） */
+  params: Record<string, ParamSpec>;
+  uses_events: boolean;
+}
+
+/** `POST /strategies/check`：标注与表单**出自同一次解析** */
+export interface StrategyCheck {
+  findings: Finding[];
+  /** `PARAMS` 解析失败时为 null（问题由 R4 finding 承载） */
+  meta: StrategyMeta | null;
+}
+
+/** 列表摘要：**不带 code**（列表不为每行拖一份源码） */
+export interface StrategySummary {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategyDetail extends StrategySummary {
+  code: string;
+  params: Record<string, number | boolean>;
+  /** **当前**代码的 sha256（与回测记录里那次运行的 hash 比对，得出「已非当次代码」） */
+  code_sha256: string;
+}
+
+/** 建 / 改的响应：策略本体 + 那次检查的 findings（**草稿也存得下**） */
+export interface StrategySaved extends StrategyDetail {
+  findings: Finding[];
+}
+
+/** 模板（服务端为唯一真源）：`builtin` 非空即「有内置等价物」 */
+export interface StrategyTemplate {
+  key: string;
+  title: string;
+  summary: string;
+  builtin: string | null;
+  source: string;
+}
+
+export interface StrategyWriteBody {
+  name?: string;
+  code?: string;
+  params?: Record<string, number | boolean>;
 }
 
 // ── 对话（SPEC §6）──────────────────────────────────────────────────────────

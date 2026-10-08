@@ -165,7 +165,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
     # PATCH 是自选股改分组用的：漏了它浏览器直接拦掉且报错难懂（T6b 漏 DELETE 同款）
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    # 每加一个跨源方法都要同步这里：漏掉时浏览器直接拦掉、报错难懂，而后端用例全绿也发现不了
+    # （T6b 漏过 DELETE，M4c 漏过 PUT——策略更新走 PUT）
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
     # 会话 cookie 要跨源发送（前端 3001 ↔ API 8000，同 site 不同 origin）。
     # 凭据模式下 allow_origins 不能是 "*"，上面已是显式列表。

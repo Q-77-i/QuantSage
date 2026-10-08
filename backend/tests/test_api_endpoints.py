@@ -351,6 +351,17 @@ def test_cors_allows_frontend_origin_and_exposes_thread_header() -> None:
     )
     assert "PATCH" in patch_preflight.headers["access-control-allow-methods"]
 
+    # 策略更新走 PUT（M4c）——同一个坑第二次：这次连浏览器实测都拦下了才发现，
+    # 后端用例（TestClient 不走 CORS）与 HTTP 矩阵（只发 POST）都看不见
+    put_preflight = client.options(
+        "/api/v1/strategies/00000000-0000-0000-0000-000000000000",
+        headers={
+            "Origin": "http://127.0.0.1:3001",
+            "Access-Control-Request-Method": "PUT",
+        },
+    )
+    assert "PUT" in put_preflight.headers["access-control-allow-methods"]
+
 
 # ── M1：数据时点（页头「数据截至 X」的数据源）────────────────
 

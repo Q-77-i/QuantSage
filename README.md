@@ -68,7 +68,16 @@ flowchart LR
 
 两个图均可缩放平移（捏合缩放、拖拽平移，净值曲线另有常驻 slider），**各自独立**；竖直滚动始终归还页面。缩放后标题右侧出现「重置缩放」。
 
-> 截图由 `pnpm screenshots` 生成，可重跑。
+**策略工作台**——在线写策略、调参数、跑回测；左侧是「我的策略 + 模板」，编辑器（Monaco，**本地资源、零 CDN**）下方是检查结果与运行条：
+
+![策略工作台](docs/images/strategies.png)
+
+护城河在这里延伸到**用户代码层**：一份注入未来函数的策略会在**运行前**被拦下——`ctx.history[ctx.index + 1]`
+这类越界索引与 `import duckdb` 这类数据绕行各给一条带行号的 error，编辑器同处出现波浪线：
+
+![前视检查](docs/images/strategy-markers.png)
+
+> 前两张截图由 `pnpm screenshots` 生成；工作台两张由 `node scripts/capture-strategies.mjs` 生成（脚本同时断言标注与拦截确实发生）。两者都可重跑。
 
 ---
 
@@ -93,12 +102,20 @@ flowchart LR
 |---|---|
 | 用户系统（M1a / M1b） | 注册 / 登录 / 退出 / 当前用户（bcrypt 哈希 + HS256 JWT，httpOnly + SameSite=Lax cookie）；**用户数据隔离**：会话归属过滤，越权与不存在同返 404、未登录 401；前端受保护路由组与登录守卫 |
 | 自选股（M1c） | 加自选 / 分组增删改 / **加自选以来涨幅**（加入时记最近可得收盘价，取不到即留空显示「—」） |
-| 个人空间（M1c） | 「我的自选 / 我的回测 / 会话历史 / 我的策略（M4 前占位）」四页签（`/space?tab=`） |
+| 个人空间（M1c） | 「我的自选 / 我的回测 / 会话历史 / 我的策略」四页签（`/space?tab=`） |
 | 我的回测（M1c） | 每次回测落库；摘要列表 + **重开**（`/backtest?run=<id>` 载入完整报告并回填表单） |
+
+**已落地（P2-Mn · M4 完成）**
+
+| 功能 | 内容 |
+|---|---|
+| 用户策略沙箱（M4a） | `on_bar(ctx[, p])` 契约 + 受限命名空间（**故意不给 pandas**——`shift` / `bfill` 正是前视泄漏的常见来源）；子进程三层配额（CPU `RLIMIT_CPU` / 内存 `ru_maxrss` 看门狗 / 墙钟兜底），故障矩阵逐条验证「坏代码不拖垮服务」 |
+| 前视静态检查（M4b） | 只读 AST 的规则表 **R0–R5**（数据绕行 / 未来函数 `shift(-n)`·`bfill` / 显式未来索引 / 声明一致性 / 结构），findings 带行号与中文话术，**error 命中即拒绝执行**；5 个策略模板（双均线与事件驱动是内置策略的源码等价版，逐点等价有测试） |
+| 策略工作台（M4c） | `/strategies` 在线编辑器 + 参数表单 + 检查面板 + 「保存并运行」；**先保存才能跑**（回测记录存 `strategy_id` + 源码 sha256，改码后如实标注「已非当次运行的代码」）；「我的策略」与「我的回测」同步接入 |
 
 **规划中**
 
-P2-Mn 其余功能（策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学 / 研究首页）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
+P2-Mn 其余功能（回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学 / 研究首页）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
 
 ---
 
@@ -155,8 +172,8 @@ uv run python scripts/run_report.py --symbol 600519 --strategy event_driven --pi
 ### 测试
 
 ```bash
-cd backend && uv run pytest                    # 离线 201 项
-cd backend && uv run pytest -m integration     # 集成 51 项（需容器与真实密钥）
+cd backend && uv run pytest                    # 离线 652 项
+cd backend && uv run pytest -m integration     # 集成 80 项（需容器与真实密钥）
 cd frontend && pnpm test && pnpm typecheck && pnpm lint
 ```
 
@@ -172,8 +189,12 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 | POST | `/api/v1/chat` 🔒 | SSE 流式问答（`token` / `tool_call` / `tool_result` / `done` / `error`） |
 | GET | `/api/v1/chat/threads` 🔒 | 会话列表（仅本人，按最近活动倒序） |
 | GET · DELETE | `/api/v1/chat/threads/{id}` · `.../messages` 🔒 | 会话历史（含工具步骤）与删除 |
-| POST | `/api/v1/backtest` 🔒 | 跑回测并落库，返回信封 `{run_id, report}`（报告含指标 / 净值 / 交易 / PIT 对比） |
+| POST | `/api/v1/backtest` 🔒 | 跑回测并落库，返回信封 `{run_id, report}`（报告含指标 / 净值 / 交易 / PIT 对比）；`strategy="user"` 时带 `strategy_id` 走沙箱 |
 | GET | `/api/v1/backtest/runs` · `/runs/{id}` 🔒 | 我的回测摘要列表 / 按 id 取回完整报告（越权 404） |
+| GET · POST | `/api/v1/strategies` 🔒 | 我的策略摘要列表 / 建（**草稿也存得下**，findings 随响应返回；撞名 409） |
+| GET · PUT · DELETE | `/api/v1/strategies/{id}` 🔒 | 单条（含源码与当前 `code_sha256`）/ 改 / 删（回测记录不级联删） |
+| POST | `/api/v1/strategies/check` 🔒 | 源码 → `{findings, meta}`：编辑器标注与参数表单**同一次 AST 解析**（纯函数，不执行代码） |
+| GET | `/api/v1/strategies/templates` 🔒 | 5 个策略模板源码 |
 | GET · POST | `/api/v1/watchlist` 🔒 | 自选股列表（含最新价与加自选以来涨幅）/ 加自选（重复 409） |
 | PATCH · DELETE | `/api/v1/watchlist/{symbol}` 🔒 | 改分组 / 移出自选 |
 | PATCH · DELETE | `/api/v1/watchlist/groups/{name}` 🔒 | 重命名分组（撞名即合并）/ 删除分组（组内标的回落默认分组） |

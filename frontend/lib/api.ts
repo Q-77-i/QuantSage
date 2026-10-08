@@ -18,6 +18,12 @@ import type {
   BarsResponse,
   DataFreshness,
   EventsResponse,
+  StrategyCheck,
+  StrategyDetail,
+  StrategySaved,
+  StrategySummary,
+  StrategyTemplate,
+  StrategyWriteBody,
   ThreadMessagesResponse,
   ThreadSummary,
   User,
@@ -42,6 +48,13 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * 解析后的错误体（拿不到就是 null）。
+     *
+     * 带上它是因为**有些错误带结构化信息**：策略工作台的 422 里除了 `detail` 还有
+     * `findings`（编辑器标注直接吃），只留一句人话会把它们丢掉。
+     */
+    readonly payload: unknown = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -49,21 +62,26 @@ export class ApiError extends Error {
 }
 
 /** 把后端的错误体翻成一句人话：FastAPI 的 422 是数组，直接 toString 只会显示 [object Object]。 */
+export function messageFromBody(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => (item as { msg?: string })?.msg)
+      .filter((msg): msg is string => Boolean(msg));
+    if (messages.length) return messages.join("；");
+  }
+  return `请求失败（HTTP ${status}）`;
+}
+
+/** SSE 那条路已经自己读完流了，只需要文案——保留这个入口不破坏既有调用方。 */
 export async function errorMessage(response: Response): Promise<string> {
   try {
-    const body: unknown = await response.json();
-    const detail = (body as { detail?: unknown })?.detail;
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail)) {
-      const messages = detail
-        .map((item) => (item as { msg?: string })?.msg)
-        .filter((msg): msg is string => Boolean(msg));
-      if (messages.length) return messages.join("；");
-    }
+    return messageFromBody(await response.json(), response.status);
   } catch {
-    // 非 JSON 响应（网关错误页一类）走下面的兜底
+    // 非 JSON 响应（网关错误页一类）走兜底
+    return `请求失败（HTTP ${response.status}）`;
   }
-  return `请求失败（HTTP ${response.status}）`;
 }
 
 /**
@@ -78,7 +96,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // credentials 必须带：会话是 httpOnly cookie，JS 读不到也放不进去，只能让浏览器带上。
   // 前后端同 site（127.0.0.1 的 3001 ↔ 8000），SameSite=Lax 不影响这条请求。
   const response = await fetch(`${apiBase()}${path}`, { credentials: "include", ...init });
-  if (!response.ok) throw new ApiError(response.status, await errorMessage(response));
+  if (!response.ok) {
+    // 体只读一次：文案与 payload 从同一份解析结果出，别两次 json()（流只能读一次）
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      // 非 JSON（网关错误页一类）：留给兜底文案
+    }
+    throw new ApiError(response.status, messageFromBody(body, response.status), body);
+  }
   return (await response.json()) as T;
 }
 
@@ -164,6 +191,35 @@ export const api = {
       `/api/v1/watchlist/groups/${encodeURIComponent(name)}`,
       { method: "DELETE" },
     ),
+
+  // ── 策略工作台（M4c）──────────────────────────────────────────────────
+  /** 本人全部策略（摘要，不带 code） */
+  strategies: () => request<StrategySummary[]>("/api/v1/strategies"),
+
+  strategy: (id: string) =>
+    request<StrategyDetail>(`/api/v1/strategies/${encodeURIComponent(id)}`),
+
+  /** 建策略。**草稿也存得下**（findings 随响应返回，闸门在运行前） */
+  createStrategy: (body: { name: string; code: string; params?: Record<string, number | boolean> }) =>
+    request<StrategySaved>("/api/v1/strategies", jsonInit("POST", body)),
+
+  updateStrategy: (id: string, body: StrategyWriteBody) =>
+    request<StrategySaved>(
+      `/api/v1/strategies/${encodeURIComponent(id)}`,
+      jsonInit("PUT", body),
+    ),
+
+  deleteStrategy: (id: string) =>
+    request<{ id: string; deleted: boolean }>(
+      `/api/v1/strategies/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+
+  /** 源码 → `{findings, meta}`：标注与参数表单同源（纯函数，不落库） */
+  checkStrategy: (code: string) =>
+    request<StrategyCheck>("/api/v1/strategies/check", jsonInit("POST", { code })),
+
+  strategyTemplates: () => request<StrategyTemplate[]>("/api/v1/strategies/templates"),
 
   threads: () => request<ThreadSummary[]>("/api/v1/chat/threads"),
 

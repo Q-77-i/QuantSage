@@ -60,7 +60,12 @@ export function RunsPanel() {
           <Cell numeric className="text-ink-3">
             {dayStamp(run.created_at)}
           </Cell>
-          <Cell>{strategyLabel(run.strategy)}</Cell>
+          {/* 用户策略显示自己的名字（内置策略没有名字，回落成「双均线」这类标签） */}
+          <Cell>
+            {run.strategy === "user"
+              ? `用户策略 · ${run.strategy_name ?? "已删除"}`
+              : strategyLabel(run.strategy)}
+          </Cell>
           <Cell numeric>
             {run.symbol}
             <span className="ml-1.5 text-xs text-ink-3">{symbolName(run.symbol)}</span>

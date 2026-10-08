@@ -157,7 +157,7 @@ describe("formFromRequest —— 重开历史回测时把表单填回当时的�
   };
 
   it("区间、成本开关、参数原样回填（不回填的话表单与报告对不上）", () => {
-    expect(formFromRequest(stored)).toEqual({
+    expect(formFromRequest(stored, defaultForm())).toEqual({
       strategy: "ma_cross",
       symbol: "300750",
       start: "2026-07-05",
@@ -171,7 +171,7 @@ describe("formFromRequest —— 重开历史回测时把表单填回当时的�
   });
 
   it("回填后再构造请求，跑的是当时那段区间", () => {
-    const body = buildRequest(formFromRequest(stored));
+    const body = buildRequest(formFromRequest(stored, defaultForm()));
     expect(body.start).toBe("2026-07-05");
     expect(body.end).toBe("2026-09-30");
     expect(body.params).toEqual({ fast: 3, slow: 15 });
@@ -179,7 +179,29 @@ describe("formFromRequest —— 重开历史回测时把表单填回当时的�
 
   it("参数缺项回落到默认值（老记录里可能没有该键）", () => {
     const partial = { ...stored, params: { fast: 3 } as Record<string, number> };
-    expect(formFromRequest(partial).params).toEqual({ fast: "3", slow: "20" });
+    expect(formFromRequest(partial, defaultForm()).params).toEqual({ fast: "3", slow: "20" });
+  });
+
+  it("用户策略的记录不回填策略位，也不炸（M4c）", () => {
+    // `strategy: "user"` 不在 `PARAMS` 表里，查表再 .map 会 TypeError —— 这条把它钉住
+    const userRun = {
+      ...stored,
+      strategy: "user" as const,
+      params: { window: 30 },
+    };
+    const base = { ...defaultForm(), symbol: "600036" };
+    const filled = formFromRequest(userRun, base);
+
+    expect(filled.strategy).toBe(base.strategy); // 策略位沿用当前选择
+    expect(filled.params).toEqual(base.params);
+    // 与策略无关的那几项照常回填，报告与表单至少在这几项上对得上
+    expect([filled.symbol, filled.start, filled.end]).toEqual([
+      "300750",
+      "2026-07-05",
+      "2026-09-30",
+    ]);
+    expect(filled.fees).toBe(false);
+    expect(filled.slippageBps).toBe("8");
   });
 });
 

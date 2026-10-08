@@ -10,7 +10,13 @@
  *     `String should match pattern ...`，落到页面上是一句看不懂的话，故前端先挡一道
  */
 
-import type { BacktestRequest, PitMode, StoredBacktestRequest, Strategy } from "./types";
+import type {
+  BacktestRequest,
+  BuiltinStrategy,
+  PitMode,
+  StoredBacktestRequest,
+  Strategy,
+} from "./types";
 import { validateSymbol } from "./watchlist";
 
 /**
@@ -26,7 +32,7 @@ export const SAMPLE_SYMBOLS = [
   { code: "600036", name: "招商银行" },
 ] as const;
 
-export const STRATEGIES: { value: Strategy; label: string }[] = [
+export const STRATEGIES: { value: BuiltinStrategy; label: string }[] = [
   { value: "event_driven", label: "事件驱动" },
   { value: "ma_cross", label: "双均线" },
 ];
@@ -51,7 +57,7 @@ export interface ParamField {
  * 策略参数表。默认值在页面打开时就填进输入框并**总是随请求发出**——
  * 用户看得见将要跑的是什么，不依赖后端缺省（缺省值两处漂移时，写死的那份至少是可见的）。
  */
-export const PARAMS: Record<Strategy, ParamField[]> = {
+export const PARAMS: Record<BuiltinStrategy, ParamField[]> = {
   ma_cross: [
     { key: "fast", label: "快线", fallback: 5, min: 1, step: 1 },
     { key: "slow", label: "慢线", fallback: 20, min: 2, step: 1 },
@@ -63,7 +69,7 @@ export const PARAMS: Record<Strategy, ParamField[]> = {
 };
 
 export interface FormState {
-  strategy: Strategy;
+  strategy: BuiltinStrategy;
   symbol: string;
   /** 空串 = 交给后端缺省（事件驱动从事件窗口起点，其余从首根 bar 起） */
   start: string;
@@ -76,13 +82,13 @@ export interface FormState {
   params: Record<string, string>;
 }
 
-export function defaultParams(strategy: Strategy): Record<string, string> {
+export function defaultParams(strategy: BuiltinStrategy): Record<string, string> {
   return Object.fromEntries(PARAMS[strategy].map((field) => [field.key, String(field.fallback)]));
 }
 
 /** 首次打开页面的初始值：事件驱动 + 双模式对比（一次点击直达 PIT 对比表）。 */
 export function defaultForm(): FormState {
-  const strategy: Strategy = "event_driven";
+  const strategy: BuiltinStrategy = "event_driven";
   return {
     strategy,
     symbol: SAMPLE_SYMBOLS[0].code,
@@ -97,7 +103,7 @@ export function defaultForm(): FormState {
 }
 
 /** 换策略时参数整组换成该策略的默认值——两套参数没有可复用的语义。 */
-export function switchStrategy(state: FormState, strategy: Strategy): FormState {
+export function switchStrategy(state: FormState, strategy: BuiltinStrategy): FormState {
   if (strategy === state.strategy) return state;
   return { ...state, strategy, params: defaultParams(strategy) };
 }
@@ -173,7 +179,23 @@ export function buildRequest(state: FormState): BacktestRequest {
  * 参数没生效。区间存的是**解析后的结果**（不是空串），所以填回去之后再点「运行」=
  * 「按当时那段区间重跑」——这正是「重开」该有的语义。
  */
-export function formFromRequest(request: StoredBacktestRequest): FormState {
+export function formFromRequest(request: StoredBacktestRequest, base: FormState): FormState {
+  // **用户策略的记录不能回填到这张表**（M4c）：`strategy === "user"` 不在内置注册表里，
+  // 直接 `PARAMS[request.strategy]` 查表会拿到 undefined 再 `.map` → TypeError（页面白屏）。
+  // 这类记录的报告照常渲染，表单只回填**与策略无关**的那几项，策略位沿用当前选择
+  // （回测页只跑内置策略，用户策略的入口在工作台——SPEC §5 M4c 已拍板）。
+  if (request.strategy === "user") {
+    return {
+      ...base,
+      symbol: request.symbol,
+      start: request.start,
+      end: request.end,
+      fees: request.costs.fees,
+      slippage: request.costs.slippage,
+      slippageBps: String(request.costs.slippage_bps),
+    };
+  }
+
   return {
     strategy: request.strategy,
     symbol: request.symbol,
@@ -196,7 +218,9 @@ export function symbolName(code: string): string {
   return SAMPLE_SYMBOLS.find((symbol) => symbol.code === code)?.name ?? code;
 }
 
+/** 策略显示名。用户策略没有内置名，由调用方补上具体名字（`strategy_name` 在报告 meta 里） */
 export function strategyLabel(strategy: Strategy): string {
+  if (strategy === "user") return "用户策略";
   return STRATEGIES.find((item) => item.value === strategy)?.label ?? strategy;
 }
 

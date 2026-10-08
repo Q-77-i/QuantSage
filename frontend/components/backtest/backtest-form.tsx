@@ -14,7 +14,7 @@ import {
 } from "@/lib/backtest-form";
 import type { FormState } from "@/lib/backtest-form";
 import { cn } from "@/lib/utils";
-import type { PitMode, Strategy } from "@/lib/types";
+import type { BuiltinStrategy, PitMode } from "@/lib/types";
 
 /**
  * 参数表单。
@@ -53,7 +53,7 @@ export function BacktestForm({
             className="w-32"
             value={value.strategy}
             onChange={(event) =>
-              onChange(switchStrategy(value, event.target.value as Strategy))
+              onChange(switchStrategy(value, event.target.value as BuiltinStrategy))
             }
           >
             {STRATEGIES.map((item) => (
