@@ -138,6 +138,7 @@ frontend/components/        # + auth-provider.tsx space/ strategies/（编辑器
 
 - 四页签（`?tab=watchlist|runs|threads|strategies`，默认 `watchlist`）：我的自选（完整增删改分组）/ 我的回测 / 会话历史 / 我的策略（M4 前占位）
 - 深链回原页完整恢复：会话历史 → `/?thread=<id>`；我的回测 → `/backtest?run=<id>`（载入存下来的完整报告，**并把表单回填成该次请求**；跑完一次把地址更新为 `?run=`）
+  - **对话页的 `?thread=` 与「当前打开的会话」双向同步**（2026-10-09 订正，用户反馈刷新丢会话）：状态变了写地址栏（发消息新建的会话号也进），地址栏变了开对应会话（深链、浏览器前进后退都走这条），两边用「最近一次已同步的号」去重。原「用完即摘」的写法（T6b）防的是「切侧栏被旧 id 拽回去」，代价是**刷新落到欢迎页**；双向同步同时解决这两件事，与 `/backtest?run=`、`/strategies?id=` 统一成一套做法
 - 深链的 `useSearchParams` 以「只渲染 `null` 的子组件」形式包在 `Suspense` 内：生产构建下边界内整棵子树降级为 CSR，把整页包进去会让全高布局塌陷（同 `app/login/page.tsx`）
 - `(app)/layout.tsx` 的守卫把 `next` 写成 `pathname + window.location.search`，否则深链在重新登录后丢失
 - `GET /api/v1/chat/threads` 响应**增补 `last_active_at`**（additive）：会话列表口径不变，只是把排序依据一并带出，供个人空间显示「最近活动」

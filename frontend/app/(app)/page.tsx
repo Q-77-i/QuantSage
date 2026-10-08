@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 
 import { Composer } from "@/components/chat/composer";
 import { MessageList } from "@/components/chat/message-list";
@@ -32,7 +32,7 @@ export default function ChatPage() {
       {/* 边界只包一个渲染 null 的子组件：生产构建下边界内整棵子树降级为 CSR，
           把整页包进去会让全高布局先塌一下（登录页同款写法，见其注释） */}
       <Suspense fallback={null}>
-        <ThreadDeepLink onOpen={chat.openThread} />
+        <ThreadUrlSync threadId={chat.threadId} onOpen={chat.openThread} />
       </Suspense>
 
       <div className="mx-auto flex h-[calc(100dvh-3.5rem)] max-w-[1400px]">
@@ -113,22 +113,43 @@ export default function ChatPage() {
 }
 
 /**
- * `/?thread=<id>`：个人空间的会话历史点进来时直接打开那条会话。
+ * `/?thread=<id>` 与「当前打开的会话」**双向同步**（2026-10-09 改，用户反馈刷新丢会话）。
  *
- * 打开后**立刻把参数摘掉**（`router.replace("/")`）：留在地址栏的话，用户接着点侧栏
- * 里的另一个会话时，这个 effect 会拿旧 id 把他拽回去。摘掉之后地址栏回到「对话页」的
- * 常态——这一页本来就没有 URL 状态（发消息新建的会话号也不进地址栏）。
+ * 原来的做法是「深链用完即摘」（`router.replace("/")`）：参数留在地址栏时，用户接着点侧栏
+ * 里的另一个会话会被旧 id 拽回去。代价是**刷新后回不到原位**——地址栏永远是 `/`，一刷新就
+ * 落到欢迎页。现在改成两边都写：
+ *
+ *   * 状态 → URL：当前会话号进地址栏（发消息新建的会话号也进），刷新才回得到原位；
+ *   * URL → 状态：地址栏带了别的会话号就打开它（深链、浏览器前进后退都走这条）。
+ *
+ * 互相触发用「最近一次已同步的号」去重（两边都写它）：侧栏切会话时先动状态、URL 随后跟上，
+ * 那时 URL→状态 一看 `param === synced` 就不再动作——原来那个「被拽回去」的担忧由它解决，
+ * 不必再靠摘参数。
  */
-function ThreadDeepLink({ onOpen }: { onOpen: (id: string) => void }) {
+function ThreadUrlSync({
+  threadId,
+  onOpen,
+}: {
+  threadId: string | null;
+  onOpen: (id: string) => void;
+}) {
   const params = useSearchParams();
   const router = useRouter();
+  const param = params.get("thread");
+  const synced = useRef<string | null>(null);
 
   useEffect(() => {
-    const threadId = params.get("thread");
-    if (!threadId) return;
-    onOpen(threadId);
-    router.replace("/");
-  }, [params, router, onOpen]);
+    if (!param || param === synced.current) return;
+    synced.current = param;
+    onOpen(param);
+  }, [param, onOpen]);
+
+  useEffect(() => {
+    if (threadId === synced.current) return;
+    synced.current = threadId;
+    // `replace` 不留历史：连点几个会话不该在历史里堆一串（前进后退仍可按 URL 变化生效）
+    router.replace(threadId ? `/?thread=${threadId}` : "/", { scroll: false });
+  }, [threadId, router]);
 
   return null;
 }

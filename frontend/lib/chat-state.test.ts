@@ -223,7 +223,7 @@ describe("canRetry —— 上一轮没拿到回答时才给「重新生成」", 
 
   it("末尾是助手消息 → 不给（哪怕内容不完整，接着说话即可）", () => {
     let state = chatReducer(base, { type: "sent", text: "x" });
-    state = chatReducer(state, { type: "frame", frame: { event: "token", data: { text: "片段" } } });
+    state = chatReducer(state, { type: "frame", frame: frame("token", { text: "片段" }) });
     state = chatReducer(state, { type: "stopped" });
     expect(canRetry(state)).toBe(false);
   });
