@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.agent.graph import build_agent
-from app.agent.tools import load_xiaoshi_tools, query_market_bars
+from app.agent.tools import load_xiaoshi_tools, query_market_bars, search_events
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
                 "业务库不可用（%s），登录鉴权与会话归属将返回 503", type(exc).__name__
             )
 
-        tools = [query_market_bars]
+        tools = [query_market_bars, search_events]
         try:
             async with asyncio.timeout(MCP_BOOT_TIMEOUT):
                 xiaoshi_tools, missing = await load_xiaoshi_tools()

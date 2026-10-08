@@ -81,6 +81,7 @@ flowchart LR
 | 基础设施 | Docker Compose：PostgreSQL 18（宿主 5433）/ Redis / Qdrant；Langfuse v4 全套挂 `observability` profile 默认不启 |
 | 数据层 | **全市场 A 股日线**：`cn-daily` 21 片 = 2020–2026 × raw/qfq/hfq，约 5500 只 / 2397 万行，DuckDB 直读 Parquet 零 ETL（单标的查询 < 0.3s、单日全市场聚合 < 0.1s）；**PIT 事件语料同为全市场**（M2b）：按日落盘 `data/events/cn-events_{日期}.parquet`，一条事件一行、标的是数组，带 `source` / `original_source` / `content_hash` 溯源三元组；交易日历冻结为仓库内文件（`app/data/trading_calendar.json`），运行期零第三方依赖 |
 | Agent 对话 | LangGraph 单 Agent，经 LiteLLM 网关调 `deepseek-flash`；小石 11 个工具收敛为 4 个只读白名单（动作型工具不进 LLM 工具集）；SSE 五类事件流式；会话列表 / 历史回看 / 删除；Langfuse 全链路 trace |
+| RAG 检索（M3） | 事件语料的 **PIT 语义检索**：BGE-M3 双索引（稠密 + 稀疏）落 Qdrant，管线为「`available_at <= as_of` **服务端硬过滤** → 双路召回 → 服务端 RRF(k=61) → bge-reranker-v2-m3 精排」；Agent 工具 `search_events` 可显式传 `as_of`，回答「那个时点当时能看到什么」；自建 200 条中文财经评测集做三档消融（NDCG@10 dense 0.7764 / hybrid 0.7602 / rerank 0.8142） |
 | 回测引擎 | 自研最小事件驱动引擎；信号当根收盘生成、次根开盘成交；A 股撮合（100 股整手、佣金万 2.5 最低 5 元、卖出印花税 0.05%、滑点 5bps），费用与滑点独立开关；策略 `ma_cross` / `event_driven` |
 | 分析输出 | 总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数 + 份额化买入持有基准；`pit_comparison` 量化两口径差异；样本量不足时报告与 UI 双重提示 |
 | 前端 | 对话页（流式渲染、工具步骤可视化、停止生成、历史回看）与回测页（指标卡、净值曲线、K 线买卖点、PIT 对比表、交易明细、事件表含来源标注） |
@@ -97,7 +98,7 @@ flowchart LR
 
 **规划中**
 
-P2-Mn 其余功能（日增量 ETL / RAG 完整化 / 策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
+P2-Mn 其余功能（策略工作台 / 回测增强 / 模拟盘 / 研报页 / 深度研报多 Agent / 轻量教学 / 研究首页）与 P3-En（架构分层 / 治理 / 可靠性 / 风控 / 对外 MCP Server 等）见 [ROADMAP.md](ROADMAP.md) 与 [docs/PRD.md](docs/PRD.md)。
 
 ---
 
@@ -109,7 +110,9 @@ P2-Mn 其余功能（日增量 ETL / RAG 完整化 / 策略工作台 / 回测增
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ |
 | 行情数据 | Parquet + DuckDB | ✅ 只读视图直读，零 ETL |
 | 业务库 | PostgreSQL 18 | 🚧 LangGraph checkpointer 已用；Store 待用 |
-| 缓存 / 向量库 | Redis / Qdrant | ⬜ compose 里已有服务，P1 未调用（P2–P3 接入） |
+| 向量库 | Qdrant | ✅ M3 起已用：事件语料 **dense + sparse 双索引**，`available_at <= as_of` 走服务端过滤 |
+| 缓存 | Redis | ⬜ compose 里已有服务，P2–P3 接入（限流 / 缓存） |
+| 嵌入 / 精排 | BGE-M3 + bge-reranker-v2-m3（FlagEmbedding，CPU） | ✅ M3 起已用：28.9 万条语料全量嵌入 |
 | 模型 | `deepseek-flash`（快档）/ `deepseek-v4-pro`（深度档） | 🚧 快档已用；深度档 P2 起 |
 | LLM 网关 | LiteLLM | ✅ |
 | 前端 | Next.js 15 (App Router) + TS + Tailwind 4 + shadcn/ui | ✅ |
@@ -239,7 +242,9 @@ uv run python scripts/audit_calendar.py                # 交易日历 × 行情�
 - **自选股的价格取自本地行情快照**：取不到价的标的一律显示「—」，不编数；加入时价是当时最近可得**有价**交易日的收盘价，之后不随行情前移
 - **事件语料窗口由数据源决定，回测要么落在窗口内、要么换策略**：新闻源只保留 3 个月（滚动），更早的事件永久不可得，所以本地语料的覆盖区间是「首次回填日 → 最新可用日」——**起点固化、终点随日增量前移**。事件驱动策略对显式早于覆盖起点的请求直接报 400 并给出出路，报告 `meta.event_coverage` 与回测页都显示这次看的是哪一段语料
 - **无价 bar 不进定价路径**：数据源用「整行价量为空」表示某天没观测到成交，`bars()` 只返回四价齐全的行——**无价即无价，不是零价**
-- **Redis 与 Qdrant 在 P1 未被后端调用**，只是 compose 里就位的服务（RAG 属 P2-M3）
+- **RAG 检索已落地（M3）**：全量事件语料建成 Qdrant 双索引（84 个日分区 / 289,519 点，逐日覆盖对账零差异）；`search_events` 工具走「PIT 服务端硬过滤 → 双路召回 → 服务端 RRF → 精排」，`as_of` 之后才可得的事件**不可能**出现在结果里
+- **稀疏腿在本语料上没有增益**（实测 NDCG@10 dense 0.7764 → hybrid 0.7602），精排增益明显（→ 0.8142）；**精排把检索延迟抬到 p95 7.55s**（CPU 上的 cross-encoder），与 PRD「检索 p95 ≤ 500ms」冲突，处置待定——两条都如实写在 [ROADMAP.md](ROADMAP.md) 与 `docs/specs/P2-Mn.md`
+- **Redis 在本轮之前未被后端调用**，仍是 compose 里就位的服务（限流 / 缓存留 P2–P3）
 - **多 Agent 深路径尚未实现**，P1 是单 Agent ReAct
 - **回测引擎为最小实现**：无组合、无模拟盘；`bars < 120` 时年化与夏普会被放大（UI 常驻提示）
 - **事件语料的日增量默认不跑**（`ETL_ENABLED=false`）：定时任务要显式打开，或走 `POST /api/v1/etl/run` 手动触发。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**——这也是启动时自动补缺口的原因

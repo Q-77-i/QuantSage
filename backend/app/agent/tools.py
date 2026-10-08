@@ -1,4 +1,4 @@
-"""Agent 工具：本地行情查询 + 小石 MCP（白名单制）。
+"""Agent 工具：本地行情查询 + 本地事件语义检索（PIT）+ 小石 MCP（白名单制）。
 
 白名单不是可选项：小石暴露 11 个工具，其中动作型的（`plan_history_download`
 生成下载计划、`prepare_local_research` 准备本地研究）一旦被 LLM 误调用会触发
@@ -95,6 +95,112 @@ async def query_market_bars(
             f"高 {row['high']:.2f}  低 {row['low']:.2f}  量 {volume_text}{flag}"
         )
     return "\n".join(lines)
+
+
+@tool
+async def search_events(
+    query: str,
+    as_of: str | None = None,
+    symbol: str | None = None,
+    event_type: str | None = None,
+    top_k: int = 5,
+) -> str:
+    """语义检索本地事件语料（新闻 / 公告 / 政策 / 人物 / 研报），**按可得时间设卡**。
+
+    与在线接口的区别：本地库带 PIT 语义——`as_of` 之后才「可得」的事件一律不返回，
+    所以问「某个时点当时能看到什么」时必须用它，而不是用在线检索。
+
+    Args:
+        query: 自然语言问题或关键词，如「央行降准对银行股的影响」
+        as_of: 截止时点 YYYY-MM-DD 或完整 ISO 时间；**省略表示「现在」**。
+            问历史时点（如「8 月 20 日当时市场看到什么」）必须显式传，否则会用到之后才公开的消息
+        symbol: 限定相关标的的六位代码，如 600519
+        event_type: 限定事件类型：news / announcement / policy / person / research
+        top_k: 返回条数，默认 5，上限 10
+    """
+    from app.rag import RagNotReady
+    from app.rag.retrieve import SearchQuery, coverage_window, search
+
+    moment = _parse_as_of(as_of)
+    if moment is _INVALID:
+        return f"时间格式无法解析：{as_of!r}。请用 YYYY-MM-DD 或完整 ISO 时间。"
+
+    size = max(1, min(int(top_k), 10))
+    try:
+        # 检索是同步 IO + 模型推理，卸到线程避免阻塞事件循环
+        hits = await asyncio.to_thread(
+            search,
+            SearchQuery(
+                query=query,
+                as_of=moment,
+                symbol=symbol or None,
+                event_type=event_type or None,
+                top_k=size,
+            ),
+        )
+        start, end = await asyncio.to_thread(coverage_window)
+    except RagNotReady as exc:
+        # 降级要说人话，且**不能说成「查不到」**——那是两回事
+        return f"本地事件检索不可用：{exc}"
+    except Exception as exc:  # noqa: BLE001 —— 查询失败要让模型能自纠，而不是炸掉整条流
+        log.warning("事件检索失败 (%s)", type(exc).__name__)
+        return f"事件检索失败（{type(exc).__name__}），可改用小石的在线新闻检索。"
+
+    window = f"本地语料覆盖 {start} ~ {end}" if start else "本地语料为空"
+    if not hits:
+        return (
+            f"{window}。该条件下没有检索到事件（可能是时点太早、标的无事件，"
+            f"或语料窗口外的历史）。"
+        )
+
+    kind = hits[0].score_kind
+    lines = [f"{window}｜检索到 {len(hits)} 条{'（未精排，按融合排序）' if kind == 'rrf' else ''}："]
+    for index, hit in enumerate(hits, start=1):
+        lines.append(f"\n{index}. [{hit.event_type}] {hit.title}")
+        lines.append(
+            f"   事发 {_short(hit.event_time)}｜可得 {_short(hit.available_at)}"
+            f"｜方向 {hit.direction_norm or '—'}｜重要度 {_score(hit.importance_score)}"
+        )
+        if hit.summary:
+            lines.append(f"   摘要：{_clip(hit.summary, 120)}")
+        sources = " / ".join(x for x in (hit.source, hit.original_source) if x)
+        targets = "/".join(hit.symbols[:6]) if hit.symbols else "—"
+        lines.append(f"   来源：{sources or '—'}｜标的：{targets}")
+    return "\n".join(lines)
+
+
+class _Invalid:
+    """`as_of` 解析失败时的哨兵（与「未传」区分开）。"""
+
+
+_INVALID = _Invalid()
+
+
+def _parse_as_of(value: str | None):
+    """`YYYY-MM-DD` 或完整 ISO 时间 → datetime；未传返回 None；解析失败返回哨兵。"""
+    from datetime import date, datetime
+
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    try:
+        if len(text) == 10:
+            return datetime.combine(date.fromisoformat(text), datetime.min.time())
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return _INVALID
+
+
+def _short(value: str | None) -> str:
+    return (value or "—")[:16].replace("T", " ")
+
+
+def _score(value: float | None) -> str:
+    return f"{value:.1f}" if isinstance(value, (int, float)) else "—"
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def filter_allowlist(tools: list[BaseTool]) -> tuple[list[BaseTool], set[str]]:

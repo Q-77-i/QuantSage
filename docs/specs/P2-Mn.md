@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.5 ｜ 2026-10-07 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；**M2c 规格已细化（实施中）**；M3–M10 随各功能开工滚动过审
+> 版本 v1.8 ｜ 2026-10-08 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；M4–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -29,6 +29,8 @@ backend/app/
 │                           #   data_health.py（体检检查器，M2c）/ delisting.py（退市覆盖核实，M2c）
 ├── etl/                    # 事件语料接入（M2b）：archive.py（归档通道）/ store.py（日分区落盘）
 │                           #   runner.py（回填与日增量编排）/ scheduler.py（APScheduler 定时）
+├── rag/                    # RAG（M3）：encoder.py（编码器协议 + 懒加载）/ collection.py（Qdrant 索引）
+│                           #   embed.py（逐日分区批处理 + 断点续跑）/ retrieve.py（过滤 → 双路 → RRF → rerank）
 ├── paper/                  # 模拟盘：account.py / broker.py / settlement.py / decisions.py
 ├── memory/                 # 决策记忆：decision_store.py / settle.py / reflection.py
 ├── strategy/               # 策略沙箱 + static_check.py（AST 前视检查，纯函数）
@@ -36,7 +38,8 @@ backend/app/
 │                           #   scheduler.py（ETL 与到期结算定时）
 scripts/                    # + generate_calendar.py（生成冻结日历）/ audit_calendar.py（日历×行情对账）
 │                           #   download_events.py（改薄壳：回填 / 日增量 / 状态）
-│                           #   run_health_check.py / run_settlement.py / run_backfill.py
+│                           #   run_health_check.py / embed_events.py（嵌入薄壳）
+│                           #   spike_rag_encoder.py（M3 运行时实测，结论见 §4）/ build_rag_eval.py（评测集：生成/池化/标注/报告）
 frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ space/（个人空间）paper/
 │                           #   dashboard/（研究首页）research/[id]/（研报页）
 │                           #   自选股不单开路由，是 space/ 的一个页签（M1c 定）
@@ -227,13 +230,76 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 
 ## 4. M3 RAG 完整化
 
-- 语料 ETL → BGE-M3 嵌入（批处理 + 断点续跑；Mac 无 GPU，全量嵌入小时级一次性成本）→ Qdrant 双索引（dense + sparse）
-- 检索管线（规划报告 §五 已定稿）：元数据硬过滤（`available_at <= as_of` / 行业 / 标的 / 重要度）→ 稠密∥稀疏并行 top-100 → 服务端 RRF（k=60）→ bge-reranker-v2-m3 精排 → top-3~5（small-to-big 取回父文档）
-- 分块：文档级 + 元数据 header 拼接；仅长文本（公告/研报）走递归分块 + 父子文档
-- 自建 200 条中文财经评测集，覆盖事实型 / 事件型 / 数值型 / 时间型 / 多跳型五类
-- PIT 单元测试：任意 `as_of` 下检索结果严格不含 `available_at > as_of` 的事件
+> 切片：**M3a** 嵌入流水线与索引 → **M3b** 检索管线与 PIT 接线 → **M3c** 评测集与消融。
+> 语料形态由 M2b 定死（日分区 Parquet、一条事件一行、`symbols` 为数组）；M3 **只读语料、不重跑 ETL**。
 
-**验收**：评测集 NDCG@10 达基线；PIT 单元测试通过。
+### 共同口径（三条实测约束，2026-10-07 规划期实测）
+
+1. **无长文本 ⇒ 分块与父子文档本轮不落地**：全量 289,519 条的标题+摘要中位 29–198 字、最长 2,065 字，远低于 BGE-M3 的 8,192 token 上限。「仅长文本走递归分块 + 父子文档」保留为设计预留，**不写代码**——为空集写的分支只会烂在那里。
+2. **公告是标题流**：`announcement` 90,362 条中 83% 摘要为空（标题即全文）；`industries` 覆盖 news 44% / policy 100% / **announcement 0%**。故 `event_type` 与 `industries` 过滤一律**可选**，不得默认开启。
+3. **主键既不是 `event_id` 也不是 `dedup_key`**：实测 `dedup_key` 289,494 distinct / 289,519 行（18 组重复，与 M2b 记的「同题事件跨月复用 id」同源）。point id 一律 `uuid5(NS, f"{day}|{event_id}")`。
+
+### M3a 嵌入流水线与索引
+
+**落点**
+
+```
+backend/app/rag/encoder.py     # 编码器协议 + 实现（懒加载；不可用抛 RagNotReady）
+backend/app/rag/collection.py  # collection schema / point id / upsert / delete_day / 逐日点数对账
+backend/app/rag/embed.py       # 离线批处理：逐日分区、长度分桶、断点续跑
+scripts/embed_events.py        # 薄壳：--full / --incremental / --status / --rebuild-day
+```
+
+- **运行时已由 spike 定档（2026-10-07 实测，见 §13 v1.7）**：
+  - **fastembed 路线否决**——它到 0.8.1（PyPI 最新）仍**不支持 `BAAI/bge-m3`**（dense 与 sparse 都不在 `list_supported_models()` 里），reranker 列表里也没有 `bge-reranker-v2-m3`；
+  - **选 FlagEmbedding + torch，跑 CPU**：199 条真实语料上 CPU batch=4 **22.8 条/s**（batch=8 → 18.5、batch=32 → 13.6）、峰值内存约 1.0GB；MPS 只快 1.57 倍（29.0 条/s）却吃 4.2GB 内存，且该后端有长跑内存泄漏——**收益不抵风险**；
+  - 全量 289,519 条外推 **约 3 小时**（插入式逐日分区断点，中断即续）。
+- 模型 `BAAI/bge-m3`（dense 1024 + sparse lexical weights）+ `BAAI/bge-reranker-v2-m3`；缓存指向 `.tools/models`（`HF_HOME`），不入库。**两个下载期的坑都实测过**：① 默认的 **Xet 通道在本机会卡死**（自适应并发一路降到 50，20 分钟只落 43MB），必须 `HF_HUB_DISABLE_XET=1` 回落普通 HTTP（实测 3–4 MB/s，主站比 hf-mirror 略快）；② `cache_dir` 必须给 **`<模型目录>/hub`**——给 `<模型目录>` 会让同一份权重落进第二套缓存（实测白下 2.3GB）
+- 若走 MPS：**按日分区分数段重启进程**——该后端有实测长跑内存泄漏（3,000 句后 >20GB OOM），批处理本来就有检查点，重启是零成本的规避
+- collection `cn_events_v1`：命名向量 `dense`（1024，Cosine）+ `sparse`
+- **payload 索引必建**：`available_at`（datetime range）+ `day` / `event_type` / `symbols` / `industries`（keyword）——PIT 过滤走服务端 range，无索引即全表扫
+- 嵌入文本 = 元数据 header + 标题 + 摘要（`【标题】【类型】【时间】【方向】【重要度】【行业】【标的】`）；**空字段不写标签**，不留 `【行业】` 空壳
+- 断点单位 = 日分区；状态文件 `data/_meta/embeddings.json` 逐日记 `{date, rows, sha256, points, embedded_at}`，**sha 与 `_meta/events.json` 的 `days[].sha256` 同源**——sha 未变跳过，变了**先删该日 points 再重嵌**（平台会改既有事件内容，M2b 实测 353 条里 255 条一天内被改过）
+- 幂等表述沿用 M2b 口径：强制重嵌同一天两次，点数与向量**逐点一致**（不靠「跳过所以没变」自证）
+- `--status`：本地逐日行数 vs Qdrant 逐日点数**双向对账**（差集两个方向都要报）
+
+### M3b 检索管线与 PIT
+
+**落点** `backend/app/rag/retrieve.py`
+
+- 过滤构造：`available_at <= as_of` **必带**；`symbol` / `industries` / `event_type` / `min_importance` 可选
+- **PIT 过滤必须写进 Qdrant 服务端 filter**，不得「先取 top-100 再本地过滤」——后者会让未来事件挤掉合法的历史结果，召回静默塌陷（这是护城河的实现细节，不是优化项）
+- 双路召回 dense top-100 ∥ sparse top-100 → 服务端 RRF → rerank → `top_k`（默认 5）
+- **RRF 的 k 必须显式传 `k=61`**：Qdrant 默认 `k=2`（rank 从 0 起计数），规划报告写的「k=60」在 Qdrant 公式下等价于 `k=61`；不显式传就等于悄悄换了算法。自定义 k 需服务端 ≥ v1.16（本机 v1.19.1 满足）
+- **rerank 候选数默认 50，由端到端实测定档**（M3c，200 条评测集 + 30 样本延迟）：
+
+  | 候选数 | NDCG@10 | 重排延迟（中位 / p95） |
+  |---|---|---|
+  | 10 | 0.7615 | 0.84s / 1.57s |
+  | 20 | 0.7768 | 1.27s / 2.31s |
+  | **50（默认）** | **0.8142** | 5.17s / 7.55s（端到端，与文档长度相关） |
+
+  **关键读数：精排的增益主要来自第 21–50 名那一段**——只精排 20 篇时 NDCG@10 几乎与稠密档打平（0.7768 vs 0.7764），「精排值得一跳」这个结论在 20 篇候选下不成立。所以默认保持 50；要压延迟就得接受质量回落到「与稠密档持平」。
+  瓶颈是 CPU 上的 cross-encoder（单篇 44–68 ms，随文档长度上升，非并行可解——本机实测多进程无增益）。
+- NFR「检索 p95 ≤ 500ms」与上面这组数字冲突（**召回+融合一档 p95 0.21s 是达标的**，超的是精排那一跳）。**由用户裁决，不擅自改 PRD**：① 改措辞（检索不含精排 ≤500ms、端到端 ≤ 数秒）；② 减候选（质量代价见上表）；③ 换 0.3B 档重排模型（需重新验证质量）
+- 返回结构：`{event_id, day, title, summary, event_time, available_at, event_type, direction_norm, importance_score, symbols, industries, source, original_source, source_url, content_hash, score, score_kind}`——**双时间戳并列 + 来源三元组**（PRD §5 硬性要求），M7 证据面板直接消费
+- 降级：Qdrant 或模型不可用 → `RagNotReady`；Agent 工具返回一句人话（同 `query_market_bars` 姿态），不炸整条流；**不得静默返回空列表冒充「查不到」**
+
+**Agent 接线**：`app/agent/tools.py` 新增 `search_events`（本地 RAG）。与小石在线检索**并存**——本地管历史与 PIT 语义检索，在线（`search_financial_news`）管实时快讯；`prompts.py` 写明两条通道的边界，且本地语料覆盖区间**从数据里查、不写死**（M2b 已定口径）。
+
+### M3c 评测集与消融
+
+- 评测集 `backend/tests/rag/eval_set_v1.json`：**200 条**，五类各 40（事实型 / 事件型 / 数值型 / 时间型 / 多跳型）
+- 构建（用户 2026-10-07 拍板）：分层抽样真值事件 → LLM 写 query（**不泄漏答案**）→ 候选池 = 真值事件 ∪ 各档 top-20 → LLM 分级 0/1/2 → **人工抽检 20–30 条**并把修正记进文件；标注指南与生成 prompt 一并入库
+- 两条纪律：① query 必须**能被本语料回答**（真值事件自身含答案）——数值型只能取标题/摘要里真带数字的事件，否则是在测一个不存在的目标；② 语料窗口随日增前移，评测集**冻结为 v1 快照**，重建另起版本号
+- 指标自实现（不引 `pytrec_eval`）：NDCG@10（主）/ MRR / Recall@20
+- 消融三档：dense-only / hybrid(RRF) / hybrid+rerank；**延迟分两段单列**（召回+融合 / 含 rerank）
+- 验收口径（用户 2026-10-07 拍板）：hybrid+rerank 的 NDCG@10 **≥ 0.5**，且**同时优于**另两档；三档绝对分数与延迟如实记录在 `logs/m3/rag_eval.{json,md}`
+- **实测结果（2026-10-08）**：dense **0.7764** / hybrid **0.7602** / rerank **0.8142** ⇒ **验收通过**。两条如实记录、不作修饰的发现：① **稀疏腿在本语料上没有增益反而略损**（dense→hybrid −0.0162；已核实稀疏向量非空、结果确有差异，不是「稀疏没生效」）；② 精排增益 +0.0540，是整条管线里唯一被数据支持的一跳
+
+**验收**（§4 共享）：① PIT 单测——任意 `as_of` 下结果严格不含 `available_at > as_of`（含边界：恰好等于某事件 `available_at` 应含、早一秒应不含、早于语料窗口起点为空集）；② **服务端过滤的行为证据**——注入一条与 query 高度相关但 `available_at` 很晚的事件，证明它不会挤掉合法结果（只断言「结果里没有未来事件」不足以证明过滤发生在服务端）；③ 评测集 NDCG@10 达上述口径；④ `--status` 覆盖对账零差异。
+
+**本轮不做**：分块与父子文档（无长文本）；新 API 端点（等 M7 / M10 的真实消费方）；嵌入挂调度器（可延，同 M2c 口径：先脚本 + 非零退出码）；ColBERT 第三路精排；RAGAS 生成质量指标（M8）；嵌入覆盖对账**不进体检脚本**（体检是数据层护栏，嵌入是派生物，完整版留 P3-E3）。
 
 ## 5. M4 策略工作台
 
@@ -312,6 +378,7 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 - M1c 增量：自选股离线用例注入内存业务库（未登录 401 门 / 重复 409 / 越权 404 / 分组 UPDATE 语义 / 涨幅与 NULL 口径 / 行情层不可用时的降级），**内存替身必须照抄 `UNIQUE(user_id, symbol)` 语义**，否则 409 用例是假的；回测落库用例验信封形状、列表只列本人、越权 404
 - M1c 回归：`POST /api/v1/backtest` 改信封与加鉴权后，P1 既有的 12 个离线回测用例统一挂 `signed_in` 夹具并改读 `body["report"]`；集成侧两个回测用例改为跑 lifespan + 真实注册（裸 `TestClient` 没有 `app.state.db`），账号在 teardown 里清（`users` 级联清 `watchlist` 与 `backtest_runs`）
 - M2b 增量：交易日历纯函数（长假边界 + 与行情 `trade_date` 的全期双向对账脚本）；`symbols` 归一化矩阵（`code` 为 null / 带 `.SZ/.SH` 后缀 / 多标的 / 无标的）；归档分片合并的**幂等**（同日重跑逐字节一致、中途 kill 后重跑与干净运行逐字节一致）；`list_contains` 按标的过滤；事件驱动窗口收口（显式越界 400、缺省仍取语料起点）。集成侧对真实归档分片跑一次小窗口回填，回归 P1 的 **353 条包含性**
+- M3 增量：**离线用例不下载模型**——编码器是协议，测试注入假实现（返回确定性向量）；文本构造（空字段不写标签）、point id 稳定、filter 构造（`as_of` 必带）、RRF 融合排序、NDCG 计算（对已知排序手算）、长度分桶、增量判据（sha 变 / 不变）、`RagNotReady` 降级各一组。检索层的 PIT 边界在**内存向量库替身**上离线跑（替身必须照抄「服务端过滤」语义，否则边界用例是假的，同 M1 内存业务库口径），另在集成侧对**真实 Qdrant** 跑 upsert → 检索 → 按日重建幂等
 - 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验），不引组件测试框架（沿用 P1 口径）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
@@ -319,6 +386,9 @@ frontend/components/        # + auth-provider.tsx space/ dashboard/ evidence/ ag
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.8 | 2026-10-08 | M3 | **M3 落地回填**：§4 M3c 写入实测三档分数（dense 0.7764 / hybrid 0.7602 / rerank 0.8142，验收通过）与两条如实记录的发现——**稀疏腿在本语料无增益反而略损**（−0.0162，已核实稀疏向量非空）、**精排增益 +0.0540**；**精排候选数由端到端实测定档为 50**，并给出 10 / 20 / 50 三档的质量-延迟权衡表（关键读数：增益主要来自第 21–50 名，只精排 20 篇时与稠密档打平）；NFR 冲突的处置列三条出路交用户裁决 |
+| v1.7 | 2026-10-07 | M3 | §4 M3a 回填 spike 实测：**fastembed 路线否决**（0.8.1 为 PyPI 最新版仍不支持 `BAAI/bge-m3` 的 dense 与 sparse，reranker 也无 `bge-reranker-v2-m3`）→ 定 FlagEmbedding + torch；**CPU vs MPS 用数据定档**（CPU batch=4 22.8 条/s、峰值 1.0GB；MPS 仅快 1.57 倍却吃 4.2GB 且有长跑泄漏 ⇒ 选 CPU），全量外推约 3 小时；**精排实测 30–34 ms/对**（50 候选 ≈1.6s），NFR「检索 p95 ≤500ms」的冲突留 M3c 报告后由用户裁决；补两条下载期实测坑（Xet 通道卡死须 `HF_HUB_DISABLE_XET=1`；`cache_dir` 必须指 `<模型目录>/hub` 否则白下 2.3GB）；§1 脚本落点改为 `build_rag_eval.py`（评测四步：生成/池化/标注/报告）与 `spike_rag_encoder.py` |
+| v1.6 | 2026-10-07 | M3 | §4 从 5 行扩写为可执行规格并切 M3a / M3b / M3c：**三条实测约束**（289,519 条语料无长文本 ⇒ 分块与父子文档不落地为代码；公告 83% 摘要为空、`industries` 覆盖 0% ⇒ 过滤项一律可选；`dedup_key` 亦非唯一 ⇒ point id 用 `uuid5(day\|event_id)`）；落点 `app/rag/`（encoder / collection / embed / retrieve）与两个薄壳脚本；**嵌入运行时先 spike 后定**（FlagEmbedding vs fastembed，用吞吐/内存/sparse 支持定栈）、MPS 需分段重启规避内存泄漏；**RRF 的 k 显式传 61**（Qdrant 默认 k=2，论文 k=60 在其公式下等价 k=61，不显式传即换了算法）；payload 索引必建（`available_at` range 为 PIT 过滤的性能前提）；PIT 过滤**必须服务端**且验收含「高度相关但晚可得的事件不挤掉合法结果」的行为证据；评测集构建口径（LLM 生成 + LLM 分级 + 人工抽检）、基线口径（**相对消融 + NDCG@10 ≥ 0.5 绝对下限**）；§1 补 `app/rag/` 与脚本落点；§12 补 M3 测试分工（离线用假编码器 + 内存向量库替身，集成对真实 Qdrant） |
 | v1.5 | 2026-10-07 | M2c | §3 M2c 细化为可执行规格：落点 `data_health.py` / `delisting.py` / `run_health_check.py` 与 `Check` 接口 + 三条硬规则（每检查自带 try/except、共用一条连接、集合式 SQL 禁逐标的 API）；检查项 B1–B8 / E1–E7 / X1–X3 逐条定级并写死基线；**E7 明确不得复用 `runner.status()`**（其 `archive.coverage()` 走子进程 CLI，不可达时会把「查不到归档」静默显示成「缺口 0」）；**B7 由「跨年边界」改为每日 bar 数包络**（原判据被 B2+B8 覆盖且会命中 500 只停牌股）；**B5 自洽性容差写死 0.011pp**（容差取 0 时命中 762 万条，判据不可复现）；**退市股核实口径由「对照全市场清单」改成数据内双证据链**（本地无标的清单、小石无证券主数据、归档无 symbol 维度），按 8 候选 / 2 确证 / 6 待解释如实呈现；「真实三天连跑」改为**分两段收口**；顺带修三处漂移——头部版本号、M2c 验收的 353 条回归锚点由 `(event_id, content_hash)` 改锚 `event_id`（与 M2b 口径自相矛盾）、events 列名 `original_url` / `lineage` 实测不存在 |
 | v1.4 | 2026-10-07 | M2b | §3 M2b 细化为可执行规格：**事件语料通道改归档按日整片**（实测 MCP 单次 500 硬顶 + `cursor` 被 FastMCP 拒收 ⇒ 结构上不可翻页，单日任一主要类型即触顶；归档为 `date × event_type` 整市场分片，逐片 sha256，保留期为滚动窗口）——MCP 退回只服务对话实时查询；**日历只落冻结文件 + DuckDB 视图**（PG 表延后，无消费方）；日历验证由「抽查 1 年」升级为**与 21 片行情 `trade_date` 全期双向对账**；**落盘 schema 按 `quant-event-v2` 重定**（新增 `dedup_key`/`revision_id`/`is_corrected` 等 9 列，去重键以平台 `dedup_key` 为准）；**新增事件驱动策略的时间收口**——判据为本地语料覆盖区间（起点固化、终点随日增前移，不写死「最近 3 个月」），显式越界 400、报告带 `event_coverage`；日任务改「拉最近 N 个交易日」的回落窗口 |
 | v1.3 | 2026-10-07 | M2a | §3 拆成 M2a / M2b / M2c 三段并把 M2a 细化为可执行规格：全市场 21 片与扁平命名（glob 不变）、**P1 按标的文件必须清掉**（唯一静默错误点）、物化先暂存后换入、数据版本指纹锚定逐片 `object_key` + sha256（顶层 manifest_version 不可用作锚点）、**无价 bar 不进定价路径**（`no_turnover_observed` 整行价量为空，全市场 271 行/复权）、满规模查询实测；**关闭两项待验证**（小石不覆盖指数、`cn-daily` 不含行业字段）并写明对 M5 基准与 M10 热力图的影响；事件长历史口径复核（归档 2026-07 起才有量，P1 结论成立）；M2b 记入交易日历来源的已拍板方案与事件语料归一化要求 |

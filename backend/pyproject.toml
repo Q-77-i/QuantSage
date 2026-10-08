@@ -33,6 +33,14 @@ dependencies = [
     "bcrypt==5.0.0",
     "pyjwt==2.15.1",
     "apscheduler>=3.11.3",
+    # ── RAG（M3）：向量库客户端与服务端 v1.19.1 对齐（RrfQuery 的自定义 k 需 ≥1.16）──
+    "qdrant-client~=1.19.1",
+    # 嵌入与精排走 BAAI 官方实现。**fastembed（ONNX）路线经 spike 实测否决**：
+    # 它到 0.8.1（PyPI 最新）仍不支持 BAAI/bge-m3（dense 与 sparse 都不在支持列表），
+    # reranker 列表里也没有 bge-reranker-v2-m3（见 SPEC §4 M3a）。
+    # 版本按 spike 实测通过的那一版钉住（macOS arm64，无 CUDA）。
+    "FlagEmbedding==1.4.2",
+    "torch==2.14.1",
 ]
 
 [dependency-groups]

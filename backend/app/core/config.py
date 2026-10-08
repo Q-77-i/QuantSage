@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     etl_trailing_days: int = 7  # 回落窗口（自然日）：吸收迟到事件与平台修订
     etl_catchup_on_start: bool = True  # 启动时对一次缺口（关机/长假后自动对齐）
 
+    # ── RAG（M3）：本地嵌入与检索 ──
+    # 权重目录放仓库内 .tools/（已 gitignore），不散落到 ~/.cache；模型各约 2.3GB
+    rag_model_dir: Path = REPO_ROOT / ".tools" / "models"
+    # cpu / mps：Mac 上 MPS 更快但有长跑内存泄漏（按日分区重启规避，见 SPEC §4 M3a）
+    rag_device: str = "cpu"
+    # 批量小反而快：实测 batch=4 22.8 条/s、8 → 18.5、32 → 13.6（CPU，padding 到批内最长样本）
+    rag_embed_batch_size: int = 4
+    rag_rerank_batch_size: int = 8
+    rag_max_length: int = 512  # 语料最长 2,065 字，512 token 足够；截断短一点省显存/内存
+    rag_rerank_candidates: int = 50  # 进精排的候选数，由延迟实测定档（M3c）
+    rag_top_k: int = 5
+    # collection 名可配：集成用例必须能指向测试库，**绝不能拿生产索引当试验场**
+    rag_collection: str = "cn_events_v1"
+
     # ── 模型（T3 使用）──
     deepseek_api_key: SecretStr = SecretStr("")
 
