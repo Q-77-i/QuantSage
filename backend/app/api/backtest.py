@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig
 from app.backtest.report import build_report, resolve_window
-from app.backtest.strategies import EventDriven, available_strategies, known_params
+from app.backtest.strategies import EventDriven, available_strategies, validate_params
 from app.backtest.types import Mode
 from app.core.auth import require_db, require_user
 
@@ -76,11 +76,11 @@ class BacktestRequest(BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
-        # 拼错的参数键必须挡在这里：from_params 会静默忽略它，用户会以为参数生效了
-        unknown = sorted(set(self.params) - known_params(self.strategy))
-        if unknown:
-            allowed = "、".join(sorted(known_params(self.strategy))) or "（无）"
-            raise ValueError(f"{self.strategy} 不接受参数 {unknown}；可用：{allowed}")
+        # 未知键与取值一起挡在这里（M4 补齐后半）：前者会被 from_params 静默忽略，
+        # 后者（`fast=20 / slow=5`）会静默跑出没有意义的结果——两条都是「用户以为生效了」
+        errors = validate_params(self.strategy, self.params)
+        if errors:
+            raise ValueError("；".join(errors))
         if self.start and self.end and self.start > self.end:
             raise ValueError(f"区间起点 {self.start} 晚于终点 {self.end}")
         return self

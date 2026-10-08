@@ -35,6 +35,22 @@ class MaCross:
         kwargs = {k: int(v) for k, v in params.items() if k in known}
         return cls(**kwargs)
 
+    @classmethod
+    def validate_params(cls, params: Mapping[str, float | int]) -> list[str]:
+        """值域规则与 T6c 前端表单同源：`fast ≥ 1`、`slow ≥ 2`、`fast < slow`。
+
+        没有这条，`fast=20 / slow=5` 会被 `from_params` 照单全收，静默跑出没有意义的交叉结果。
+        """
+        fast, slow = params.get("fast"), params.get("slow")
+        errors: list[str] = []
+        if fast is not None and fast < 1:
+            errors.append(f"fast 至少为 1（当前 {fast:g}）")
+        if slow is not None and slow < 2:
+            errors.append(f"slow 至少为 2（当前 {slow:g}）")
+        if fast is not None and slow is not None and fast >= slow:
+            errors.append(f"fast({fast:g}) 必须小于 slow({slow:g})，否则双均线交叉没有意义")
+        return errors
+
     def on_bar(self, ctx: BarContext) -> list[Signal]:
         closes = [bar.close for bar in ctx.history]
         index = len(closes) - 1

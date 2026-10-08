@@ -17,12 +17,17 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from collections.abc import Callable
+
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from app.backtest.metrics import SHORT_WINDOW_BARS, Metrics, benchmark_curve, compute_metrics
-from app.backtest.strategies import EventDriven
+from app.backtest.strategies import EventDriven, Strategy
 from app.backtest.types import BacktestError, Mode, NoDataError, Position
 from app.data import duckdb_client as dc
+
+#: 策略工厂：每遍回测都新建一个实例（用户策略可能在模块级持状态，复用实例会串味）。
+StrategyFactory = Callable[[], Strategy]
 
 
 def _iso(value: date | None) -> str | None:
@@ -118,17 +123,25 @@ def _delta(pit: Metrics, non_pit: Metrics) -> dict[str, Any]:
     }
 
 
-def _run_mode(config: BacktestConfig, mode: Mode) -> BacktestResult:
-    return run_backtest(config if config.pit_mode is mode else replace(config, pit_mode=mode))
+def _run_mode(
+    config: BacktestConfig, mode: Mode, factory: StrategyFactory | None = None
+) -> BacktestResult:
+    cfg = config if config.pit_mode is mode else replace(config, pit_mode=mode)
+    return run_backtest(cfg, strategy=factory() if factory else None)
 
 
-def _pit_comparison(config: BacktestConfig, primary: BacktestResult) -> dict[str, Any]:
+def _pit_comparison(
+    config: BacktestConfig,
+    primary: BacktestResult,
+    factory: StrategyFactory | None = None,
+) -> dict[str, Any]:
     """同区间跑 PIT 与非 PIT 各一次，返回两份指标 + 差值 + 入场日序列。
 
     两遍只有 `pit_mode` 不同（成本、参数、区间、初始资金全部一致），否则对比无意义。
+    用户策略每遍走一次工厂——不是性能考虑，是不让模块级状态跨遍残留。
     """
-    pit = _run_mode(config, Mode.PIT)
-    non_pit = _run_mode(config, Mode.NON_PIT)
+    pit = _run_mode(config, Mode.PIT, factory)
+    non_pit = _run_mode(config, Mode.NON_PIT, factory)
     pit_metrics = compute_metrics(pit.equity_curve, pit.trades, config.initial_cash)
     non_pit_metrics = compute_metrics(non_pit.equity_curve, non_pit.trades, config.initial_cash)
     return {
@@ -154,9 +167,19 @@ def _first_event_date(symbol: str, data_dir: Path | None) -> date | None:
     return min(row["event_time"].date() for row in rows) if rows else None
 
 
-def _events_in_window(config: BacktestConfig) -> int | None:
+def uses_events_of(strategy: str, declared: bool | None = None) -> bool:
+    """「该策略是否消费事件」的统一判据。
+
+    内置策略按名字认（只有 `event_driven` 吃事件）；用户策略（M4）由源码里的 `USES_EVENTS`
+    声明给出——**不猜**：靠扫源码里有没有 `ctx.events` 会把「声明与代码不一致」这类问题
+    藏起来（那正是 M4b 检查器要报的 warning）。
+    """
+    return strategy == EventDriven.name if declared is None else declared
+
+
+def _events_in_window(config: BacktestConfig, strategy_uses_events: bool) -> int | None:
     """该标的在回测窗口内的事件条数；不消费事件的策略返回 `None`（不是 0——两者含义不同）。"""
-    if config.strategy != EventDriven.name or config.start is None or config.end is None:
+    if not strategy_uses_events or config.start is None or config.end is None:
         return None
     rows = dc.events(
         config.symbol,
@@ -173,6 +196,7 @@ def resolve_window(
     start: date | None = None,
     end: date | None = None,
     *,
+    uses_events: bool | None = None,
     data_dir: Path | None = None,
 ) -> tuple[date, date]:
     """把「可缺省的请求区间」解析成确定区间。
@@ -192,7 +216,7 @@ def resolve_window(
     if not rows:
         raise NoDataError(f"{symbol} 无行情数据，先跑 scripts/download_bars.py")
 
-    if strategy == EventDriven.name:
+    if uses_events_of(strategy, uses_events):
         coverage = dc.event_coverage(data_dir)
         coverage_start = date.fromisoformat(coverage["start"]) if coverage["start"] else None
         if start is not None and coverage_start is not None and start < coverage_start:
@@ -216,16 +240,33 @@ def resolve_window(
     return start, end
 
 
-def build_report(config: BacktestConfig, *, compare_pit: bool = False) -> dict[str, Any]:
-    """跑回测并返回 SPEC §5 的报告结构（可直接 `json.dumps`）。"""
-    result = run_backtest(config)
+def build_report(
+    config: BacktestConfig,
+    *,
+    compare_pit: bool = False,
+    strategy_factory: StrategyFactory | None = None,
+    strategy_name: str | None = None,
+    uses_events: bool | None = None,
+) -> dict[str, Any]:
+    """跑回测并返回 SPEC §5 的报告结构（可直接 `json.dumps`）。
+
+    `strategy_factory` / `strategy_name` 是用户策略（M4）的入口，报告结构与内置策略**完全同构**，
+    只多两个标识键（`strategy_kind` / `strategy_name`）——前端不需要第二条渲染路径。
+    工厂每遍调用一次（PIT 对比要跑两遍）。
+    """
+    result = run_backtest(config, strategy=strategy_factory() if strategy_factory else None)
     metrics = compute_metrics(result.equity_curve, result.trades, config.initial_cash)
     benchmark = benchmark_curve(result.bars, config.initial_cash, config.costs)
+    strategy_uses_events = uses_events_of(config.strategy, uses_events)
 
     return {
         "meta": {
             "symbol": config.symbol,
             "strategy": config.strategy,
+            # `strategy_kind` 与 `strategy_name` 是 M4 新增的标识键（内置策略为 builtin / None），
+            # 其余键一个没动——既有报告的重开、对比、测试全部照旧
+            "strategy_kind": "user" if strategy_factory else "builtin",
+            "strategy_name": strategy_name,
             "mode": config.pit_mode.value,
             "start": _iso(result.bars[0].trade_date) if result.bars else None,
             "end": _iso(result.bars[-1].trade_date) if result.bars else None,
@@ -238,7 +279,7 @@ def build_report(config: BacktestConfig, *, compare_pit: bool = False) -> dict[s
             "warnings": _warnings(result),
             # 语料覆盖区间 + 窗口内事件数：让存下来的报告自证「这次看的是哪一段事件语料」
             "event_coverage": dc.event_coverage(config.data_dir),
-            "events_in_window": _events_in_window(config),
+            "events_in_window": _events_in_window(config, strategy_uses_events),
         },
         "metrics": _metrics_row(metrics, _benchmark_return(result, config)),
         "equity_curve": [
@@ -247,5 +288,5 @@ def build_report(config: BacktestConfig, *, compare_pit: bool = False) -> dict[s
         ],
         "trades": _trades(result),
         "open_position": _open_position(result),
-        "pit_comparison": _pit_comparison(config, result) if compare_pit else None,
+        "pit_comparison": _pit_comparison(config, result, strategy_factory) if compare_pit else None,
     }

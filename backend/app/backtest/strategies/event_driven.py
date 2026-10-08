@@ -34,6 +34,18 @@ class EventDriven:
             kwargs["hold_days"] = int(kwargs["hold_days"])
         return cls(**kwargs)  # type: ignore[arg-type]
 
+    @classmethod
+    def validate_params(cls, params: Mapping[str, float | int]) -> list[str]:
+        """值域规则与 T6c 前端表单同源：`min_score ∈ [0, 100]`、`hold_days ≥ 1`。"""
+        errors: list[str] = []
+        min_score = params.get("min_score")
+        if min_score is not None and not 0 <= min_score <= 100:
+            errors.append(f"min_score 需在 0~100（当前 {min_score:g}）")
+        hold_days = params.get("hold_days")
+        if hold_days is not None and hold_days < 1:
+            errors.append(f"hold_days 至少为 1（当前 {hold_days:g}）")
+        return errors
+
     def on_bar(self, ctx: BarContext) -> list[Signal]:
         position = ctx.position
         if not position.is_flat:

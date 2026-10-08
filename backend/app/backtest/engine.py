@@ -20,7 +20,7 @@ from app.backtest.broker import Broker
 from app.backtest.costs import CostModel
 from app.backtest.events import build_feed
 from app.backtest.portfolio import Portfolio
-from app.backtest.strategies import build_strategy
+from app.backtest.strategies import Strategy, build_strategy
 from app.backtest.types import (
     Bar,
     BarContext,
@@ -109,10 +109,17 @@ def _load_bars(config: BacktestConfig) -> list[Bar]:
     return [Bar.from_row(row) for row in rows]
 
 
-def run_backtest(config: BacktestConfig) -> BacktestResult:
-    """按 bar 时间驱动回测；信号在 bar 收盘生成，成交在下一 bar 开盘。"""
+def run_backtest(config: BacktestConfig, strategy: Strategy | None = None) -> BacktestResult:
+    """按 bar 时间驱动回测；信号在 bar 收盘生成，成交在下一 bar 开盘。
+
+    `strategy` 是**用户策略（M4）的唯一注入点**：内置策略一律传 `None`，仍按 `config.strategy`
+    查注册表——那条路径一行没动，是「沙箱出问题不影响既有回测」的保证。
+    注入的实例每次调用都应新建（见 `report.build_report` 的 `strategy_factory`）：
+    用户代码可以在模块级持有状态，跨运行复用同一实例会让第二遍带上第一遍的残留。
+    """
     bars = _load_bars(config)
-    strategy = build_strategy(config.strategy, config.params)
+    if strategy is None:
+        strategy = build_strategy(config.strategy, config.params)
 
     # 事件一次性取全量、不按 start/end 预过滤：dc.events() 的窗口过滤打在 event_time 上，
     # 拿它做 PIT 预筛会误删「事发在窗口前、但窗口内才可得」的事件。可见性一律交给 feed。

@@ -75,6 +75,17 @@ class Settings(BaseSettings):
     # collection 名可配：集成用例必须能指向测试库，**绝不能拿生产索引当试验场**
     rag_collection: str = "cn_events_v1"
 
+    # ── 用户策略沙箱（M4）──
+    # 三层配额：CPU 走 RLIMIT_CPU（macOS 实测生效）；**内存不能用 rlimit**——macOS 上
+    # setrlimit 与 `ulimit -v/-d` 都设不下去（实测 512MB 限下子进程照样分配 1GB，见 SPEC §5），
+    # 改子进程内 ru_maxrss 峰值看门狗；墙钟由父进程兜底。
+    # 阈值定档依据：全期 1,636 bars 的 build_report 仅 0.25s（含解释器启动整次 1.0s），
+    # 20s 墙钟不误杀正常策略，又能兜住死循环。
+    strategy_wall_seconds: float = 20.0
+    strategy_cpu_seconds: int = 15
+    strategy_memory_mb: int = 512
+    strategy_output_bytes: int = 2_000_000  # 报告 JSON 上限（1,636 根 bar 的报告约 0.2MB）
+
     # ── 模型（T3 使用）──
     deepseek_api_key: SecretStr = SecretStr("")
 

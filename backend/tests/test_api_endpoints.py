@@ -256,6 +256,34 @@ def test_backtest_unknown_param_is_422(signed_in: FakeDatabase, data_dir: Path) 
     assert "minscore" in response.text
 
 
+@pytest.mark.parametrize(
+    ("strategy", "params", "keyword"),
+    [
+        ("ma_cross", {"fast": 20, "slow": 5}, "必须小于"),
+        ("ma_cross", {"fast": 0}, "至少为 1"),
+        ("ma_cross", {"slow": 1}, "至少为 2"),
+        ("ma_cross", {"fast": 5.5}, "需要整数"),
+        ("event_driven", {"min_score": 101}, "0~100"),
+        ("event_driven", {"hold_days": 0}, "至少为 1"),
+    ],
+)
+def test_backtest_param_values_are_422(
+    signed_in: FakeDatabase, data_dir: Path, strategy: str, params: dict[str, float], keyword: str
+) -> None:
+    """M4 补齐的另一半：值域也挡（原先只挡未知键）——绕过前端直接打 API 同样拦得住。"""
+    response = post_backtest(strategy=strategy, params=params)
+    assert response.status_code == 422
+    assert keyword in response.text
+
+
+def test_backtest_frontend_boundary_values_still_pass(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """反面守卫：T6c 前端放行的边界值，后端必须同样放行（不能悄悄加限制）。"""
+    assert post_backtest(strategy="ma_cross", params={"fast": 1, "slow": 2}).status_code == 200
+    assert post_backtest(strategy="event_driven", params={"hold_days": 1}).status_code == 200
+
+
 def test_backtest_reversed_window_is_422(signed_in: FakeDatabase, data_dir: Path) -> None:
     response = post_backtest(start="2026-08-01", end="2026-07-01")
     assert response.status_code == 422
