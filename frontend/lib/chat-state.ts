@@ -205,6 +205,18 @@ function applyFrame(state: ChatState, frame: SseFrame): ChatState {
   }
 }
 
+/**
+ * 上一次提问是否**没拿到回答**（对话页据此给「重新生成」）。
+ *
+ * 判据是「列表停在一条用户消息上」：失败时若一个 token 都没吐，占位气泡会被撤掉
+ * （见 `failed` 分支），刷新后重新拉历史也是同一种形状（服务端那轮同样没落答案）。
+ * 正在流式输出、或末尾是助手消息（哪怕内容不完整）都不给——那两种情况用户直接接着说话即可。
+ */
+export function canRetry(state: ChatState): boolean {
+  const last = state.messages[state.messages.length - 1];
+  return state.streamingId === null && last?.role === "user";
+}
+
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "sent": {

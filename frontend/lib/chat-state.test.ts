@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type ChatState,
+  canRetry,
   chatReducer,
   historyToMessages,
   initialChatState,
@@ -203,5 +204,31 @@ describe("historyToMessages", () => {
     );
     expect(messages[0].id).toBe("m7");
     expect(seq).toBe(8);
+  });
+});
+
+describe("canRetry —— 上一轮没拿到回答时才给「重新生成」", () => {
+  const base = { ...initialChatState };
+
+  it("停在用户消息上 → 可重试", () => {
+    const state = chatReducer(base, { type: "sent", text: "茅台行情？" });
+    const failed = chatReducer(state, { type: "failed", message: "内部错误，请重试" });
+    // 一个 token 都没吐：占位气泡被撤掉，列表停在用户消息上
+    expect(canRetry(failed)).toBe(true);
+  });
+
+  it("正在流式输出 → 不给（此时该用「停止」）", () => {
+    expect(canRetry(chatReducer(base, { type: "sent", text: "x" }))).toBe(false);
+  });
+
+  it("末尾是助手消息 → 不给（哪怕内容不完整，接着说话即可）", () => {
+    let state = chatReducer(base, { type: "sent", text: "x" });
+    state = chatReducer(state, { type: "frame", frame: { event: "token", data: { text: "片段" } } });
+    state = chatReducer(state, { type: "stopped" });
+    expect(canRetry(state)).toBe(false);
+  });
+
+  it("空会话 → 不给", () => {
+    expect(canRetry(base)).toBe(false);
   });
 });

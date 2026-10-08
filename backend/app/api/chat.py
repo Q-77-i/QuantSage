@@ -6,7 +6,10 @@ SSE 帧手写而非引库：帧格式极简（`event:` + 单行 `data:` + 空行
 两条容易踩的线：
   * 首字节一旦发出就无法再改状态码——图内的异常必须转成 `error` 帧，裸抛会让客户端
     直接断连、什么也收不到；
-  * `asyncio.CancelledError`（客户端断连）必须原样抛，吞掉它会留下仍在跑的图。
+  * 客户端断连**不再取消图**（2026-10-09 改，见 `_detach`）：取消点若落在「模型已给出
+    tool_calls、工具还没执行」之间，checkpoint 会留下悬空调用，之后这个会话每一轮都被
+    模型 400 拒掉——**会话永久毒化**（实测复现）。让图跑完只多花一次调用，换来刷新回来
+    就能看到完整答案。
 
 归属（M1）：会话的主人是自建的 `chat_threads` 表，不是 checkpointer 的 `checkpoints`。
 三个端点一律先按 `user_id` 查，命中 0 行翻 404——**与「会话不存在」同响应**，不泄露存在性。
@@ -15,7 +18,6 @@ SSE 帧手写而非引库：帧格式极简（`event:` + 单行 `data:` + 空行
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import uuid
@@ -44,6 +46,31 @@ TITLE_MAX = 30
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     thread_id: str | None = None
+
+
+#: 断连后仍在跑的图。**留住引用**：asyncio 只持弱引用，不留的话任务可能被 GC 掉，
+#: 静默停在半路——那正是我们要避免的「半截 checkpoint」
+_DETACHED: set[asyncio.Task[None]] = set()
+
+
+def _detach(task: asyncio.Task[None]) -> None:
+    """把任务交给事件循环自己跑完，只记结果。
+
+    两个必须做的动作：**留着引用**（防 GC）与**取一次异常**（不取的话 asyncio 会在
+    回收时打「exception was never retrieved」）。异常本身不影响用户——checkpoint 已落，
+    重新进会话看到的就是中断前那一步的合法状态（`heal_dangling_tool_calls` 会补平缺口）。
+    """
+    _DETACHED.add(task)
+
+    def _done(finished: asyncio.Task[None]) -> None:
+        _DETACHED.discard(finished)
+        if finished.cancelled():
+            return
+        error = finished.exception()
+        if error is not None:
+            log.warning("断连后继续跑的图出错（checkpoint 已落）: %r", error)
+
+    task.add_done_callback(_done)
 
 
 def sse_frame(event: str, payload: dict[str, Any]) -> str:
@@ -125,10 +152,8 @@ async def chat(
                 event, data = payload
                 yield sse_frame(event, data)
         finally:
-            # 客户端断连时在这里取消图；不能 await 太慢的东西（会立刻再被取消）
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            # 断连时不取消图，也不 await（这里立刻会再被取消）：让它自己跑完并落 checkpoint
+            _detach(task)
 
     return StreamingResponse(
         stream(),

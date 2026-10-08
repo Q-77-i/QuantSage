@@ -146,6 +146,8 @@ export function useChat(onTurnEnd?: () => void) {
   }, []);
 
   return {
+    /** 完整状态也交出去：`canRetry(state)` 一类判据是纯函数，页面直接用，不必再摊一套字段 */
+    state,
     messages: state.messages,
     isStreaming: state.streamingId !== null,
     loading: state.loading,

@@ -87,6 +87,7 @@ QuantSage/
   - `tool_call.data` = `{id, name, args}`；`tool_result.data` = `{id, name, content, is_error}`，其中 `content` 为**截断预览**——MCP 返回可达上百 KB，不整包塞进事件流
   - `data` 一律单行 JSON（`ensure_ascii=False`）；客户端按 `\n\n` 切帧，不得假设「一个网络分片 = 一个事件」
   - 图内异常转 `error` 帧（`{code, message, request_id}`）而非裸抛断连；静默期发注释帧保活
+  - **客户端断连后图继续跑完**（2026-10-09 改，原为「断连即取消」）：取消点若落在「模型节点已写出 `tool_calls`、工具节点尚未执行」之间，checkpoint 会留下悬空调用，此后**每一轮**都被模型 400 拒掉——会话永久不可用（实测复现）。现在断连只是不再收帧，图跑完照常落 checkpoint，重新进会话就能看到完整回答；起新一轮前还会先体检历史、给悬空调用补一条错误结果（`heal_dangling_tool_calls`），治的是进程被杀一类留下的存量会话
 - API：`POST /api/v1/chat`，请求 `{thread_id?, message}`；`thread_id` 缺省时由服务端生成 UUID，经响应头 `X-Thread-Id` 与 `done` 事件**双通道**回传（客户端中途断连也能拿到会话号）
 - API：`GET /api/v1/chat/threads` → 会话列表（T6 对话页需要；补齐 SPEC 原有的契约缺口）
   - 取数：只读 SQL 从 `checkpoints` 表按 `thread_id` 聚合（限 `checkpoint_ns = ''`）；消息正文落在 `checkpoint_blobs`（msgpack），**不能手写 JSONB 路径取**，须经 checkpointer 官方读接口反序列化；标题由服务端从首条人类消息派生，不接受客户端传入
@@ -237,3 +238,4 @@ class Strategy(Protocol):
 | v0.12 | 2026-10-06 | T6d | §7 新增**图表交互口径**：两图均可缩放平移且**各自独立**；**竖直滚轮一律归还页面**；缩放下限 `MIN_VISIBLE_BARS` = 8 根；每图一个「重置缩放」 |
 | v0.13 | 2026-10-07 | P2-M1c | §7 的 `POST /api/v1/backtest` 契约加注：响应自 P2-M1c 起外套 `{run_id, report}` 并纳入鉴权（§6 报告结构未动）——回测落库后归属成为必要信息 |
 | v0.14 | 2026-10-08 | P2-M4c | §7 的 `POST /api/v1/backtest` 契约加注：请求体自 P2-M4c 起加可选 `strategy_id`（**additive**），`strategy="user"` 时必带并改走沙箱子进程；信封与 §6 报告结构不动。用户策略参数由源码里的 `PARAMS` schema 校验（非注册表 `from_params`），详见 P2 SPEC §5 M4c |
+| v0.15 | 2026-10-09 | chat 修复 | §4 的 SSE 契约订正一处：**客户端断连后图继续跑完**（原「断连即取消」）——取消点落在「模型已写出 tool_calls、工具未执行」之间会在 checkpoint 留下悬空调用，令**该会话此后每一轮都被模型 400 拒掉**（用户报的「刷新之后这个会话就死了」，已实测复现）。另增「起新一轮前体检历史、给悬空调用补错误结果」的修复路径（治进程被杀留下的存量会话）。前端同轮加「重新生成」入口（末尾停在用户消息时出现） |

@@ -7,6 +7,7 @@ import { Composer } from "@/components/chat/composer";
 import { MessageList } from "@/components/chat/message-list";
 import { ThreadList } from "@/components/chat/thread-list";
 import { useChat, useThreads } from "@/components/chat/use-chat";
+import { canRetry } from "@/lib/chat-state";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -21,6 +22,10 @@ export default function ChatPage() {
 
   // nonce：同一个示例点两次也要重新灌入（只比字符串的话第二次不触发 effect）
   const [preset, setPreset] = useState<{ text: string; nonce: number } | null>(null);
+
+  // 「上一轮没拿到回答」才给「重新生成」（判据与理由在 lib/chat-state.ts 的 canRetry）
+  const retryable = canRetry(chat.state);
+  const lastMessage = chat.messages.at(-1);
 
   return (
     <>
@@ -68,6 +73,25 @@ export default function ChatPage() {
             error={chat.loadError}
             onPick={(text) => setPreset({ text, nonce: Date.now() })}
           />
+
+          {retryable && lastMessage ? (
+            // 上一次提问没拿到回答（刷新断流、模型报错、配额用尽都会这样）：
+            // 会话不会自己恢复，给一个重发入口，别让人重新打字
+            <div className="border-t border-border px-4 py-2">
+              <div className="mx-auto flex max-w-3xl items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => chat.send(lastMessage.content)}
+                >
+                  重新生成
+                </Button>
+                <span className="text-xs text-ink-3">
+                  上一次提问没有拿到回答。重发会在这个会话里再记一轮。
+                </span>
+              </div>
+            </div>
+          ) : null}
 
           {chat.transportError && (
             <p className="border-t border-border px-4 py-2 text-xs text-destructive">

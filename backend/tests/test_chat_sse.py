@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -113,6 +113,68 @@ async def test_astream_chat_event_sequence() -> None:
     done = next(p for n, p in events if n == "done")
     assert done["thread_id"] == "thread-1"
     assert done["content"] == "好了"
+
+
+async def test_dangling_tool_calls_are_healed_before_the_next_turn() -> None:
+    """上一轮被中断留下的悬空 `tool_calls` 必须先补平，否则这一轮又被模型拒掉。
+
+    复现口径（2026-10-09 实测）：取消点落在「模型节点已写出 tool_calls、工具节点还没执行」
+    之间 → checkpoint 里留下 `[Human, AI(tool_calls)]` 且没有对应的 ToolMessage。此后**每一轮**
+    都把这段畸形历史发给模型，DeepSeek 一律 400 → 会话永久回「内部错误」，也就是用户看到的
+    「刷新之后这个会话就死了」。
+
+    正常路径已被 `_detach` 挡住（断连不再取消图），所以这里**手工注入**那个畸形状态，
+    验的是「已经死掉的会话能被治好」——存量会话靠这条。
+    """
+    agent = _scripted_agent()
+    config = {"configurable": {"thread_id": "poisoned"}}
+    await agent.aupdate_state(
+        config,
+        {
+            "messages": [
+                HumanMessage(content="茅台最近行情如何？"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "echo", "args": {"text": "hi"}, "id": "call_x"}],
+                ),
+            ]
+        },
+        as_node="model",
+    )
+
+    events = [
+        (name, payload)
+        async for name, payload in astream_chat(agent, message="那宁德时代呢？", thread_id="poisoned")
+    ]
+    assert "done" in [name for name, _ in events], "会话仍被毒化：这一轮没跑完"
+
+    state = await agent.aget_state(config)
+    tool_ids = [
+        message.tool_call_id
+        for message in state.values["messages"]
+        if isinstance(message, ToolMessage)
+    ]
+    assert "call_x" in tool_ids, "悬空调用没有被补上结果"
+
+
+async def test_healing_is_idempotent() -> None:
+    """没有缺口时什么都不做——正常会话不该被这次修复碰到。"""
+    agent = _scripted_agent()
+    config = {"configurable": {"thread_id": "clean"}}
+    async for _ in astream_chat(agent, message="第一次", thread_id="clean"):
+        pass
+    before = len((await agent.aget_state(config)).values["messages"])
+
+    async for _ in astream_chat(agent, message="第二次", thread_id="clean"):
+        pass
+    after = (await agent.aget_state(config)).values["messages"]
+    assert len(after) > before  # 第二轮照常写进了消息
+    patches = [
+        message
+        for message in after
+        if isinstance(message, ToolMessage) and "中断" in str(message.content)
+    ]
+    assert patches == [], "没有缺口的会话不该被补丁碰到"
 
 
 async def test_done_content_matches_joined_tokens() -> None:
