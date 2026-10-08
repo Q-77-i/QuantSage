@@ -10,6 +10,7 @@ M2a 起行情是**全市场**（21 片 = 7 年 × 3 复权，约 5500 只标的�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -68,11 +69,29 @@ def test_bars_partitions_cover_full_market() -> None:
         )
 
 
+def _file_sha256(path: Path) -> str:
+    """分块算 sha256：单片最大约 80MB，不值得整块读进内存。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def test_bars_manifest_carries_data_version_fingerprint() -> None:
     """M2a 决策：价量口径不动，靠这组指纹声明「这批数字跑在哪份数据上」。
 
     锚点是**逐片 `object_key` + sha256**，不是回执顶层的版本号——实测同一批分片来自
-    多个 release，没有任何一片来自顶层那个版本号。所以这里也断言「清单里的 sha 与回执一致」。
+    多个 release，没有任何一片来自顶层那个版本号。
+
+    **对账对象是盘上那 21 片本身，不是 CLI 的回执**（2026-10-08 订正）：回执
+    `data/raw/.xiaoshi-history-state.json` 由行情下载与 M2b 的归档通道**共用同一个文件名**，
+    CLI 每次调用都按最新 publication 重写它——日增量一跑，行情条目就没了（2026-10-07 踩坑
+    记录已写「不能只信回执」）。物化是**字节级复制**（见 `download_bars.materialize`），
+    所以「清单 sha256 == 盘上文件 sha256」与回执对账**等价且更强**：它验的是真正拿去算数字的
+    那份字节。M2b 的 `events.json` 走的是同一条路子（自算逐日 digest，不看回执）；
+    平台来源这件事由下载期写下的 `source.verify` 声明（回执在 store 里也已滚动清理，实测
+    21 个行情对象全不在 `data/raw/o/`）。
     """
     meta = _meta("bars.json")
     fingerprint = meta["fingerprint"]
@@ -80,13 +99,20 @@ def test_bars_manifest_carries_data_version_fingerprint() -> None:
     assert len(fingerprint["shards"]) == len(PARTITIONS)
     assert all(item["object_key"] and len(item["sha256"]) == 64 for item in fingerprint["shards"])
     assert fingerprint["receipt_data_version"]
+    assert fingerprint["receipt_manifest_version"]
     assert meta["source"]["verify"]["valid"] is True
     assert meta["source"]["verify"]["issues"] in ([], None)
 
-    # 指纹与回执必须对得上，否则「同一快照」这个说法是空头支票
-    receipt = json.loads((DATA_DIR / "raw" / ".xiaoshi-history-state.json").read_text(encoding="utf-8"))
-    for item in fingerprint["shards"]:
-        assert receipt["files"][item["object_key"]]["sha256"] == item["sha256"]
+    # 逐片对账：清单里两处 sha 必须自洽，且与盘上那一份逐字节一致
+    shard_sha = {item["object_key"]: item["sha256"] for item in fingerprint["shards"]}
+    outputs = {(item["year"], item["adjust"]): item for item in meta["outputs"]}
+    assert set(outputs) == set(PARTITIONS)
+    for (year, adjust), output in sorted(outputs.items()):
+        path = _partition_file(year, adjust)
+        assert path.is_file(), f"缺分片 {path.name}"
+        expected = shard_sha[output["object_key"]]
+        assert output["sha256"] == expected, f"{path.name}：outputs 与 fingerprint 两处 sha 不一致"
+        assert _file_sha256(path) == expected, f"{path.name} 与清单 sha 不符（盘上这份不是清单说的那份）"
 
 
 def test_no_legacy_symbol_files_in_bars_dir() -> None:
