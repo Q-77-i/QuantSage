@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.10 ｜ 2026-10-08 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API），M4b / M4c 待开工**；M5–M10 随各功能开工滚动过审
+> 版本 v1.12 ｜ 2026-10-08 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库），M4c 待开工**；M5–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -356,23 +356,35 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 
 ### M4b 静态检查器（`static_check.py`，纯函数 + 规则表）
 
-规则表，结果 `{rule, line, snippet, severity}`；`error` 命中即拒绝执行，`warning` 照跑但显示：
+**检查只做在 AST 上，不执行代码**（与 `api.parse_meta` 同一路线——编辑器要标注、父侧要不 spawn 就能判，两处都不能跑用户代码）。结果形态 `Finding{rule, line, severity, message, snippet}`，按 `(line, rule)` 排序去重；`severity` 只有 `error` / `warning`：**`error` 命中即拒绝执行**（M4c 在回测提交前强制 `error=0`），`warning` 照跑但显示。`check_source(source) -> list[Finding]` **从不抛异常**（语法错也是一条 finding——抛异常的话编辑器就没得标）。
 
-| 规则 | 判据 | 级别 |
-|---|---|---|
-| R1 数据绕行 | 白名单外的 `import` / `__import__` / `importlib` / `open` / `eval` / `exec` / `compile` / `os` / `subprocess` / `socket` / `duckdb` / `pandas` | error |
-| R2 未来函数 | `.shift(<负整数>)`、`.bfill(...)`、`.backfill(...)`、`fillna(method="bfill"/"backfill")` | error |
-| R3 显式未来索引 | 对 `history` 的索引中出现「变量 + 正整数字面量」（可静态判定时） | error |
-| R4 声明一致性 | `USES_EVENTS` 与代码中是否出现 `ctx.events` / `ctx.new_events` 不一致 | warning |
-| R5 结构 | 缺 `on_bar`、`on_bar` 形参不是 1 个、返回值形态可静态判定的错误 | error |
+规则表结构 `Rule(id, severity, node_types, message, match)`：`match(node, ctx) -> str | None` 返回**详情串**（`None` = 未命中），`id` / `severity` / `line` / `snippet` 由单遍遍历器统一组装；`message` 是规则自身的一句话说明（文档与规则表自检用）。遍历器按 `type(node)` 精确分发，**新增规则不改执行器**——同一条规则拆成多条 `Rule` 是允许的（R3 的两个档、R1 的两个臂都这么写），`Finding.rule` 仍是同一个规则号。
+
+| 规则 | 级别 | 判据 | 要点 |
+|---|---|---|---|
+| R0 语法 | error | `ast.parse` 抛 `SyntaxError` | 此后 R1–R5 全不跑 |
+| R1 数据绕行 | error | ① `Import` / `ImportFrom` 的顶层模块名 ∉ 白名单（相对导入同罪）② 出现禁用名 `__import__` / `open` / `eval` / `exec` / `compile` / `importlib` / `__builtins__` | 白名单**读运行时那一份**（`api.ALLOWED_MODULES`），不复制；报错列出可用模块 |
+| R2 未来函数 | error | ① `.shift(<负整数>)`（位置实参或 `periods=`）② `.bfill(...)` / `.backfill(...)` ③ `fillna(method="bfill"/"backfill")` | `ffill` / `pad` 与 `.shift(正数)` **不拦**（只用过去值） |
+| R3 显式未来索引 | error / warning | 仅当基对象是 **`ctx.history` / `ctx.events` / `ctx.new_events`** 且下标**不是切片**：**error** = 下标里出现 `ctx.index + 正数` 或 `len(ctx.history) + 正数`（明说「当前 + n」）；**warning** = 同对象上「其它名字 + 正数」（如 `ctx.history[i+1]`） | `ctx` 名取 `on_bar` 第一个形参名（改名也认）。**覆盖边界如实记录**：自有列表上的 `closes[i+1]` 不报（静态无数据流，分不清它来自 `ctx.history` 还是自己攒的列表）；helper 里另起名字接 `ctx` 同样漏 |
+| R4 声明 | error / warning | error = `parse_meta` 的拒绝（`PARAMS` 非字面量 / 类型不合规 / `USES_EVENTS` 非字面量 / `validate_params` 不是函数）；warning = `USES_EVENTS` 声明值与代码里是否出现 `ctx.events` / `ctx.new_events` 不一致 | warning 要说清后果（缺省窗口与 PIT 对比按声明的来） |
+| R5 结构 | error | ① 无模块级 `on_bar` ② `async def on_bar` ③ 形参不是 `(ctx)` 或 `(ctx, p)`（含无默认值的关键字-only）④ `on_bar` 自身（不含嵌套函数）`return` 值为常量或裸 `return`——**非生成器时**才判（体内有 `yield` 豁免）⑤ `return Signal(...)`（要写成 `[Signal(...)]`） | ③ 与 `api._check_signature` 同判据，配一致性测试防漂移 |
 
 - **`ffill` 不拦**（2026-10-08 拍板）：前向填充只用过去值，不是未来函数；PRD 亦只写 `shift(-n)` / `bfill`。原「`bfill` / `ffill` 并列」就此订正
-- **不误报是硬要求**：`[-1]`、`i-1`、字符串/注释里出现的 `shift(-1)`、变量名叫 `bfill` 均须放行——每条规则配正/负样例，负样例进单测
+- **R3 的口径（2026-10-08 拍板：双档）**：R3 拦不住真实泄漏（未来在物理上不可达），价值是可读报错 + 拦 off-by-one；代价不对称（`error` 档会让合法策略跑不起来，运行前强制 `error=0`），故 `error` 只留给「明说当前 + n」的写法，其余降 warning
+- **不误报是硬要求**：`[-1]`、`i-1`、`ctx.history[a+1:b+1]` 切片、`for i in ...: closes[i+1]` 相邻比较、字符串/注释里出现的 `shift(-1)`、变量名叫 `bfill`、`fillna(method="ffill")`、生成器 `on_bar` 的裸 `return`、嵌套函数里的 `return 1` 一律**零命中**——负样例进单测，另有一条**元测试**断言规则表里每条规则都在样例矩阵里有正/负样例
+- **行号归属（M4c 的编辑器标注直接吃这个）**：节点规则指到命中节点那一行；R4 的「声明形态」指到 `parse_meta` 报的那一行；R4 的「读了事件却没声明」指到**第一处**事件读取行（不刷屏）、「声明了却不读」指到 `USES_EVENTS` 那一行
 - **检查与执行隔离**：检查在 API 进程内纯函数跑（源码不执行）；运行前对**库里的源码**再跑一次，`error` 即 422 并带 findings
+- **它不是安全边界**（同 §5 开篇）：禁用名靠 AST 命中，`getattr` / `type` / `object` 仍在运行时白名单里（M4a 已如实记录的残余风险），本轮不加码、不声称
 
 ### 模板库（5 个，M4b）
 
-双均线 / 事件驱动（这两个是现有内置策略的**源码等价版**）/ 唐奇安突破 / RSI 反转 / 放量突破。前两个配**等价性测试**：模板经沙箱跑出的报告与注册表策略**逐点一致**——一份证据同时证明「用户 API 表达力等价」与「沙箱执行可信」。模板放服务端（`app/strategy/templates/`），是唯一真源，也进测试。
+双均线 / 事件驱动（这两个是现有内置策略的**源码等价版**）/ 唐奇安突破 / RSI 反转 / 放量突破，放服务端 `app/strategy/templates/`，是唯一真源，也进测试。数据结构 `Template{key, title, summary, source, builtin}`——`builtin` 非空即「有内置等价物」，等价性测试**遍历 `TEMPLATES` 自动配对**（并断言恰好 2 个带 `builtin`）：新增模板时忘记配测试会直接红。
+
+- **等价性测试**：模板经沙箱跑出的报告与注册表策略**逐点一致**（离线，`conftest` 的合成 Parquet 小窗口；去掉 `strategy` / `strategy_kind` / `strategy_name` 三个身份键后整份报告相等）——一份证据同时证明「用户 API 表达力等价」与「沙箱执行没有偷偷改口径」
+- **3 个新模板（无内置对应物）**：证据 = 检查器零命中 + 沙箱跑通 + 各配一条**合成触发序列**断言至少 1 笔成交（证明模板不是死的）。两处口径要点：唐奇安突破的 level 取**前 n 根**（`ctx.history[-n-1:-1]`）的 `high` 最大值、与**当前收盘**比较（避免「含当根」的口径含糊）；RSI 用纯 Python 实现 Wilder RSI（没有 numpy，也不打算引）
+- **模板头注释固定三段**：① 这是交给沙箱的源码文本、**不是可导入模块**；② `Signal` / `Side` 已预注入，无需也不能 import；③ **我们故意不给 pandas**——`shift` / `bfill` 正是前视泄漏的常见来源（产品立场，与 M9 教程同源）
+- **模板不进内置注册表**：唐奇安 / RSI / 放量突破只作为「用户策略模板」存在；再写一份内置类 = 两处真源、两处维护（SPEC 只要求模板）
+- **装载 API（M4c 直接用）**：`TEMPLATES` 元组（`key` / `title` / `summary` / `source` / `builtin`）、`get_template(key) -> Template | None`、`template_source(key)`（未知 key 抛 `KeyError`，HTTP 层自己映射 404）。源码一律**读文本**，不作模块导入——`Signal` / `ctx` 都是沙箱注入的，`import` 这些文件只会得到未定义的全局名
 
 ### 持久化与契约（M4c）
 
@@ -405,7 +417,7 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 - 跑完跳 `/backtest?run=<id>` 复用整套报告 UI；`/space?tab=strategies` 从占位改为列表 + 入口
 - 开工前出 **design brief**（沿用 T6 口径，与 P2-M4c 同目录）
 
-**验收**：① 在线写策略可成功回测（模板与自写各一条端到端证据）；② 坏代码不拖垮服务（故障注入矩阵：死循环 / 大内存 / 语法错 / 缺 `on_bar` / 超长输出 / 数据绕行——各给明确错误码且 API 存活）；③ 注入含 `shift(-1)` / `bfill` 的策略被拦截并提示行号（编辑器标注截图 + API 422 findings）。
+**验收**：① 在线写策略可成功回测（模板与自写各一条端到端证据）；② 坏代码不拖垮服务（故障注入矩阵：死循环 / 大内存 / 语法错 / 缺 `on_bar` / 超长输出 / 数据绕行——各给明确错误码且 API 存活）；③ 注入含 `shift(-1)` / `bfill` 的策略被拦截并提示行号（编辑器标注截图 + API 422 findings）。**分工**：③ 的检查器本体与 CLI/矩阵证据属 **M4b**，编辑器标注与回测提交前的 422 闸门属 **M4c**。
 
 **本轮不做**：并发队列与批量回测（M5）；在线装包；策略分享/市场；用户策略调 RAG（M8）；容器级隔离（P3-E8）；编辑器高级能力（补全 / 跳转 / 实时 lint 之外的特性）。
 
@@ -475,7 +487,8 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 - M1c 回归：`POST /api/v1/backtest` 改信封与加鉴权后，P1 既有的 12 个离线回测用例统一挂 `signed_in` 夹具并改读 `body["report"]`；集成侧两个回测用例改为跑 lifespan + 真实注册（裸 `TestClient` 没有 `app.state.db`），账号在 teardown 里清（`users` 级联清 `watchlist` 与 `backtest_runs`）
 - M2b 增量：交易日历纯函数（长假边界 + 与行情 `trade_date` 的全期双向对账脚本）；`symbols` 归一化矩阵（`code` 为 null / 带 `.SZ/.SH` 后缀 / 多标的 / 无标的）；归档分片合并的**幂等**（同日重跑逐字节一致、中途 kill 后重跑与干净运行逐字节一致）；`list_contains` 按标的过滤；事件驱动窗口收口（显式越界 400、缺省仍取语料起点）。集成侧对真实归档分片跑一次小窗口回填，回归 P1 的 **353 条包含性**
 - M3 增量：**离线用例不下载模型**——编码器是协议，测试注入假实现（返回确定性向量）；文本构造（空字段不写标签）、point id 稳定、filter 构造（`as_of` 必带）、RRF 融合排序、NDCG 计算（对已知排序手算）、长度分桶、增量判据（sha 变 / 不变）、`RagNotReady` 降级各一组。检索层的 PIT 边界在**内存向量库替身**上离线跑（替身必须照抄「服务端过滤」语义，否则边界用例是假的，同 M1 内存业务库口径），另在集成侧对**真实 Qdrant** 跑 upsert → 检索 → 按日重建幂等
-- M4 增量：**AST 规则样例矩阵**——每条规则正/负样例成对（负样例必须零命中：`[-1]`、`i-1`、字符串与注释里的 `shift(-1)`、名为 `bfill` 的变量），断言行号与 severity；`PARAMS` 校验矩阵（未知键 / 类型不符 / 越界 / 跨字段）；入口解析（缺 `on_bar` / 语法错 / 运行期异常 / 返回值非 Signal 列表）；**沙箱故障注入**（死循环撞 CPU 与墙钟、超大分配撞内存看门狗、超长输出被截断、`sys.exit` 与 `os._exit`、导入白名单外模块）逐条断言「明确错误 + 父进程存活」；**模板等价性**——双均线与事件驱动模板经沙箱跑出的报告与注册表策略逐点一致（离线，真实 Parquet 小窗口）。集成侧对**真实 Postgres** 跑策略 CRUD 与归属矩阵（越权 404 / 撞名 409），并跑一条「保存 → 检查 → 沙箱回测 → 落库 → 重开」端到端
+- M4 增量：**AST 规则样例矩阵**——每条规则正/负样例成对，断言行号与 severity 与 `message` 关键词；`PARAMS` 校验矩阵（未知键 / 类型不符 / 越界 / 跨字段）；入口解析（缺 `on_bar` / 语法错 / 运行期异常 / 返回值非 Signal 列表）；**沙箱故障注入**（死循环撞 CPU 与墙钟、超大分配撞内存看门狗、超长输出被截断、`sys.exit` 与 `os._exit`、导入白名单外模块）逐条断言「明确错误 + 父进程存活」；**模板等价性**——双均线与事件驱动模板经沙箱跑出的报告与注册表策略逐点一致（离线，真实 Parquet 小窗口）。集成侧对**真实 Postgres** 跑策略 CRUD 与归属矩阵（越权 404 / 撞名 409），并跑一条「保存 → 检查 → 沙箱回测 → 落库 → 重开」端到端
+- M4b 增量：负样例必须**零命中**：`[-1]`、`i-1`、`ctx.history[a+1:b+1]` 切片（双均线模板原样）、`for i in ...: closes[i+1]` 相邻比较、字符串与注释里的 `shift(-1)`、名为 `bfill` 的变量、`fillna(method="ffill")`、生成器 `on_bar` 的裸 `return`、嵌套函数里的 `return 1`；**元测试**断言规则表每条规则都在样例矩阵里有正/负样例；**一致性测试**双跑——① R1 用的白名单与运行时 `api.ALLOWED_MODULES` 是同一对象 ② 同一批入口/签名样例上「R5 命中 ⟺ `api.load_strategy` 抛 `StrategyRejected`」（AST 与 `inspect` 两套判据不许漂移）；模板库 5 个各自 `check_source == []` + `load_strategy` 装载成功，3 个新模板各配一条**合成触发序列**断言至少 1 笔成交
 - 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验；M4 增：findings → 编辑器标注映射、`PARAMS` schema → 表单状态与请求体），不引组件测试框架（沿用 P1 口径）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
@@ -483,6 +496,8 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.12 | 2026-10-08 | M4b | **M4b 落地回填**：§5 M4b 补三处实现期定死的契约——① `Rule` 增 `message` 字段（规则自身的一句话说明），并写明**同一条规则可拆成多条 `Rule`**（R3 双档、R1 两臂），`Finding.rule` 仍是同一个规则号；② **行号归属**（M4c 的编辑器标注直接吃）：节点规则指命中节点行，R4 的「读了事件却没声明」指**第一处**事件读取行（不刷屏）、「声明了却不读」指 `USES_EVENTS` 行；③ 模板**装载 API** 形状（`TEMPLATES` / `get_template` / `template_source`，未知 key 抛 `KeyError`；源码只读文本、不作模块导入）。落地物：`app/strategy/static_check.py`（规则表 R0–R5 + 单遍遍历器，`check_source` 从不抛异常）+ `app/strategy/templates/`（5 份源码 + 装载 API）+ `scripts/check_strategy.py`。**证据**（`logs/m4/`）：规则矩阵 35 正样例全命中本规则、29 负样例全零命中（含切片、`closes[i+1]` 相邻比较、生成器裸 `return`、变量名 `bfill`）；CLI 在一份「从别的框架搬来」的样例上一行一条拦下 6 个 error（R1/R2×2/R3/R5×2，带行号，退出码 1），干净样例零命中退出码 0；R3 双档实测——`ctx.history[i+1]` 只 warning 且退出码 0（不拦运行）；与运行时一致性（白名单同对象、禁用名与 `_SAFE_BUILTINS` 无交集、15 条入口形态上 R5 与 `load_strategy` 结论一致）；**模板等价性真数据逐点一致**（ma_cross 1,636 点 / 50 笔、event_driven 55 点 / 3 笔，去掉三个身份键后整份报告相等）；全量回归 616 passed（新增 109，既有 507 零改动） |
+| v1.11 | 2026-10-08 | M4b | **M4b 细化为可执行规格**（开工前，用户已拍板）：§5 M4b 从 9 行扩为规则表——**新增 R0 语法**（`check_source` **从不抛异常**：语法错也是一条 finding，否则编辑器没得标）、R1 数据绕行（白名单**读运行时那一份** `api.ALLOWED_MODULES` 不复制，禁用名补 `__builtins__`；`os`/`subprocess`/`socket`/`duckdb`/`pandas` 由 import 臂自然覆盖）、R2 未来函数（`ffill`/`pad` 与 `.shift(正数)` 不拦）、**R3 定档为双档**（`error` 只留给「明说当前 + n」的 `ctx.index + 正数` / `len(ctx.history) + 正数`，`ctx.history[i+1]` 一类降 warning——理由：R3 拦不住真实泄漏，而 `error` 档会让**合法**策略在「运行前强制 error=0」下跑不起来；切片一律放行，自有列表不判，覆盖边界如实写进 docstring）、R4 兼收 `parse_meta` 的拒绝（`PARAMS` 非字面量等归**声明**类）、R5 订正为「形参必须是 `(ctx)` 或 `(ctx, p)`」并增拦 `async def on_bar` 与 `return Signal(...)`（生成器 `on_bar` 的裸 `return` 豁免）；findings 契约定为 `{rule, line, severity, message, snippet}`（**增 `message`**），`Rule.match(node, ctx) -> str \| None` 返回详情串、由遍历器统一组装；§5 模板库补 `Template{key,…,builtin}` 结构与**遍历 `TEMPLATES` 自动配对**的等价性测试（断言恰好 2 个带 `builtin`）、3 个新模板的合成触发序列证据、模板头注释三段（含「故意不给 pandas」的产品立场）、**模板不进内置注册表**（两处真源）；§12 补 M4b 测试增量（负样例清单 + 元测试 + 白名单同源与 AST/`inspect` 判据一致性双跑）；§5 验收写明 ③ 的检查器本体属 M4b、编辑器标注与 422 闸门属 M4c。规划与落地记录见 `docs/private/Pn-n/P2-Mn/P2-M4b.md` |
 | v1.10 | 2026-10-08 | M4a | **M4a 落地回填**：§5「用户策略 API」补两处实现期定死的契约——① `on_bar` 的形参是 **(ctx) 或 (ctx, p)**，参数取值走第二个形参而非注入全局名（父侧校验为了不 spawn 给 422、子侧再确认保证字典完整）；② 内存配额**不按平台分叉**（Linux 上虚拟地址空间动辄 >2GB，照 512MB 设 `RLIMIT_AS` 会在 import 期自杀），一律走 `ru_maxrss` 看门狗。落地物：`app/strategy/{api,params,sandbox,worker}.py` + 引擎注入点 `run_backtest(config, strategy=None)` + 报告 `strategy_kind`/`strategy_name` 两键 + 内置策略 `validate_params`（**关闭待办「后端不校验策略参数的值」**）+ `scripts/{run_user_strategy,sandbox_fault_matrix}.py`；证据见 `logs/m4/`（故障矩阵 11 条全处置且每条之后服务可用、用户源码版双均线与内置 ma_cross 在 1,636 根 bar 上逐点一致） |
 | v1.9 | 2026-10-08 | M4 | §5 从 9 行扩写为可执行规格并切 **M4a 沙箱与用户策略 API / M4b 静态检查器与模板库 / M4c 持久化与前端工作台**；开篇写明分工判断——**主闸门是结构（`ctx` 截断 + PIT 过滤 + 无 pandas/IO），import 白名单是正确性闸门，AST 是第二道门**，对外不得写反；用户策略 API 定稿（模块级 `on_bar` + `PARAMS` schema + `USES_EVENTS` + 可选 `validate_params`，白名单不含 pandas）；**沙箱配额按规划期实测定档**——CPU 走 `RLIMIT_CPU`（macOS 生效），**内存不能用 rlimit**（macOS `setrlimit`/`ulimit -v/-d` 实测均不可设，改 `ru_maxrss` 自监控线程），墙钟父进程兜底，威胁模型如实限定为可用性（容器隔离留 P3-E8）；规则库定稿 R1–R5 并**订正 `ffill` 不拦**（只用过去值，PRD 亦只写 shift(-n)/bfill）+ 负样例不误报为硬要求；模板库 5 个（含 2 个内置策略源码等价版，配等价性测试）；**运行契约＝先保存才能跑**（存 `strategy_id` + `code_sha256`），保存允许草稿、运行前强制 error=0；`strategies` 表 + `backtest_runs` 增列（须 `ADD COLUMN IF NOT EXISTS`）+ 7 个端点；前端新开 `/strategies` 工作台、Monaco 走本地资源（spike 不过回落 CodeMirror 6）、跑完跳 `/backtest?run=`；§1 落点与 §12 测试增量同步；**关闭待办「后端不校验策略参数的值」** |
 | v1.8 | 2026-10-08 | M3 | **M3 落地回填**：§4 M3c 写入实测三档分数（dense 0.7764 / hybrid 0.7602 / rerank 0.8142，验收通过）与两条如实记录的发现——**稀疏腿在本语料无增益反而略损**（−0.0162，已核实稀疏向量非空）、**精排增益 +0.0540**；**精排候选数由端到端实测定档为 50**，并给出 10 / 20 / 50 三档的质量-延迟权衡表（关键读数：增益主要来自第 21–50 名，只精排 20 篇时与稠密档打平）；NFR 冲突的处置列三条出路交用户裁决 |
