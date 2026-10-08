@@ -21,6 +21,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import TOOL_RESULT_PREVIEW, astream_chat, build_agent, preview_text
+from app.api.chat import _RUN_LOCKS, _run_lock
 from app.agent.history import messages_to_history
 from app.main import app
 from tests.conftest import TEST_USER
@@ -266,7 +267,43 @@ def test_thread_messages_after_real_turn(signed_in: Any) -> None:
     assert assistant["content"] == "好了"
     assert len(assistant["tools"]) == 1
     assert "ECHO:hi" in assistant["tools"][0]["content"]
+    assert body["running"] is False  # 没人在跑这个会话
 
+
+def test_messages_reports_running_while_a_turn_is_in_flight(signed_in: Any) -> None:
+    """有图在跑时报 `running: true` —— 前端据此显示「回答中…」并轮询。
+
+    刷新断流后那一轮仍在服务端跑（断连不再取消图），端点不告诉前端「还在跑」的话，
+    用户就得手动再刷一次才看得到答案。这里用**替身锁**直接验端点契约（比造真并发确定）。
+    """
+    thread_id = str(uuid.uuid4())
+    saver = InMemorySaver()
+    agent = build_agent(
+        ToolCallingFakeModel(responses=[AIMessage(content="先说着")]), [echo], checkpointer=saver
+    )
+
+    async def seed() -> None:
+        async for _ in astream_chat(agent, message="测试", thread_id=thread_id):
+            pass
+
+    asyncio.run(seed())
+    asyncio.run(signed_in.claim_thread(thread_id, TEST_USER["id"]))
+
+    class _Busy:
+        """替身：只要「这个会话的锁被持有」，端点就该报 running。"""
+
+        def locked(self) -> bool:
+            return True
+
+    app.state.checkpointer = saver
+    _RUN_LOCKS[thread_id] = _Busy()  # type: ignore[assignment]
+    try:
+        body = TestClient(app).get(f"/api/v1/chat/threads/{thread_id}/messages").json()
+    finally:
+        app.state.checkpointer = None
+        _RUN_LOCKS.pop(thread_id, None)
+
+    assert body["running"] is True
 
 # ── 会话删除 ────────────────────────────────────────────────
 

@@ -35,6 +35,13 @@ export interface ChatState {
   loadError: string | null;
   /** 消息 id 序号：放在 state 里，reducer 才是纯函数、测试才好写断言 */
   seq: number;
+  /**
+   * 服务端此刻**正在为这个会话跑图**（刷新断流后回答还在路上）。
+   *
+   * 由 `GET .../messages` 的 `running` 字段带来：前端据此显示「回答中…」并轮询，
+   * 跑完自动出现——不必再手动刷一次。也用来压掉「重新生成」（那一轮没死，只是还在跑）。
+   */
+  running: boolean;
 }
 
 export type ChatAction =
@@ -44,7 +51,7 @@ export type ChatAction =
   | { type: "ended" }
   | { type: "failed"; message: string }
   | { type: "loading" }
-  | { type: "loaded"; messages: ThreadMessage[] }
+  | { type: "loaded"; messages: ThreadMessage[]; running?: boolean }
   | { type: "load_failed"; message: string }
   | { type: "reset" };
 
@@ -55,6 +62,7 @@ export const initialChatState: ChatState = {
   transportError: null,
   loadError: null,
   seq: 0,
+  running: false,
 };
 
 export function messageId(seq: number): string {
@@ -214,7 +222,9 @@ function applyFrame(state: ChatState, frame: SseFrame): ChatState {
  */
 export function canRetry(state: ChatState): boolean {
   const last = state.messages[state.messages.length - 1];
-  return state.streamingId === null && last?.role === "user";
+  // `running` 也算「还没死」：刷新断流后那一轮仍在服务端跑，此时给「重新生成」会误导，
+  // 而且重发会排在它后面（同会话运行是串行的）
+  return state.streamingId === null && !state.running && last?.role === "user";
 }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -278,7 +288,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case "loaded": {
       const { messages, seq } = historyToMessages(action.messages, state.seq);
-      return { ...state, messages, seq, loading: false, loadError: null };
+      return {
+        ...state,
+        messages,
+        seq,
+        loading: false,
+        loadError: null,
+        running: action.running ?? false,
+      };
     }
 
     case "load_failed":

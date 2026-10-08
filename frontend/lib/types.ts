@@ -399,4 +399,6 @@ export interface ThreadMessage {
 export interface ThreadMessagesResponse {
   thread_id: string;
   messages: ThreadMessage[];
+  /** 服务端此刻正在为这个会话跑图（刷新断流后回答还在路上）——前端据此轮询 */
+  running: boolean;
 }

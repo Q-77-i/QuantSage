@@ -257,7 +257,15 @@ async def thread_messages(
         # 归属行在、checkpoint 没了（上一次删除删到一半）：同上，404
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    return {"thread_id": normalized, "messages": messages_to_history(messages)}
+    # `running`：这个会话此刻有没有图在跑。给「刷新之后」用——断连不再取消图，于是刷新的
+    # 那一刻回答还在路上，前端据此显示「回答中…」并轮询，跑完自动出现（不必再刷一次）。
+    # 读锁用**只读**形式（`get` 而不是 `_run_lock`）：查询不该往锁表里塞条目。
+    lock = _RUN_LOCKS.get(normalized)
+    return {
+        "thread_id": normalized,
+        "messages": messages_to_history(messages),
+        "running": bool(lock is not None and lock.locked()),
+    }
 
 
 @router.delete("/threads/{thread_id}")

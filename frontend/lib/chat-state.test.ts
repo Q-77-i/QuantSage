@@ -231,4 +231,23 @@ describe("canRetry —— 上一轮没拿到回答时才给「重新生成」", 
   it("空会话 → 不给", () => {
     expect(canRetry(base)).toBe(false);
   });
+
+  it("服务端还在跑那一轮 → 不给；跑完仍无答案 → 才给", () => {
+    // 刷新断流后的两种时刻，历史形状**一样**（都停在用户消息上），只有 `running` 不同：
+    // 跑着时给「重新生成」会误导，而且重发会排到那一轮后面（同会话运行串行）
+    const history = [{ role: "user" as const, content: "茅台行情？", tools: [] }];
+    const stillRunning = chatReducer(base, {
+      type: "loaded",
+      messages: history,
+      running: true,
+    });
+    expect(canRetry(stillRunning)).toBe(false);
+
+    const finished = chatReducer(stillRunning, {
+      type: "loaded",
+      messages: history,
+      running: false,
+    });
+    expect(canRetry(finished)).toBe(true);
+  });
 });

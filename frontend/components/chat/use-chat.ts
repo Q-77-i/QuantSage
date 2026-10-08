@@ -41,6 +41,11 @@ export function useThreads() {
   return { threads, error, refresh };
 }
 
+/** 轮询间隔：一次问答几秒到几十秒，2s 足够跟手 */
+const POLL_INTERVAL_MS = 2000;
+/** 轮询上限：服务端异常时不无限轮询（3 分钟足够覆盖最长的一次问答） */
+const POLL_TIMEOUT_MS = 180_000;
+
 export function useChat(onTurnEnd?: () => void) {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -50,6 +55,7 @@ export function useChat(onTurnEnd?: () => void) {
   const busyRef = useRef(false);
   const loadSeqRef = useRef(0);
   const onTurnEndRef = useRef(onTurnEnd);
+  const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
     onTurnEndRef.current = onTurnEnd;
@@ -57,8 +63,9 @@ export function useChat(onTurnEnd?: () => void) {
 
   useEffect(
     () => () => {
-      // 卸载即断流：后端的 finally 会取消图，不让它白跑
+      // 卸载即断流：后端**继续跑完那一轮**并落 checkpoint（断连不取消），重进会话就能看到
       abortRef.current?.abort();
+      if (pollRef.current !== null) window.clearInterval(pollRef.current);
       loadSeqRef.current += 1;
     },
     [],
@@ -104,6 +111,10 @@ export function useChat(onTurnEnd?: () => void) {
   }, []);
 
   const reset = useCallback(() => {
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     abortRef.current?.abort();
     loadSeqRef.current += 1;
     threadIdRef.current = null;
@@ -111,24 +122,62 @@ export function useChat(onTurnEnd?: () => void) {
     dispatch({ type: "reset" });
   }, []);
 
-  const openThread = useCallback((id: string) => {
-    abortRef.current?.abort();
-    const seq = ++loadSeqRef.current; // 连点两个会话时，旧响应不得覆盖新响应
-    threadIdRef.current = id;
-    setThreadId(id);
-    dispatch({ type: "loading" });
-
-    api
-      .threadMessages(id)
-      .then((body) => {
-        if (seq !== loadSeqRef.current) return;
-        dispatch({ type: "loaded", messages: body.messages });
-      })
-      .catch((cause: unknown) => {
-        if (seq !== loadSeqRef.current) return;
-        dispatch({ type: "load_failed", message: describe(cause) });
-      });
+  /**
+   * 「回答还在路上」时轮询历史，跑完自动出现。
+   *
+   * 场景：提问后刷新。前端断流、服务端继续跑（断连不再取消图），刷新那一刻回答还没落
+   * checkpoint——不轮询的话用户得**再手动刷一次**才看得到。轮询间隔取 2s（一次问答几秒到
+   * 几十秒，2s 足够跟手），并设上限，避免服务端异常时无限轮询。
+   */
+  const pollUntilDone = useCallback((id: string) => {
+    if (pollRef.current !== null) window.clearInterval(pollRef.current);
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    pollRef.current = window.setInterval(() => {
+      if (threadIdRef.current !== id || Date.now() > deadline) {
+        if (pollRef.current !== null) window.clearInterval(pollRef.current);
+        pollRef.current = null;
+        return;
+      }
+      void api
+        .threadMessages(id)
+        .then((body) => {
+          if (threadIdRef.current !== id) return;
+          dispatch({ type: "loaded", messages: body.messages, running: body.running });
+          if (!body.running && pollRef.current !== null) {
+            window.clearInterval(pollRef.current);
+            pollRef.current = null;
+            onTurnEndRef.current?.(); // 跑完了：顺手刷一次侧栏（标题/排序会变）
+          }
+        })
+        .catch(() => {
+          if (pollRef.current !== null) window.clearInterval(pollRef.current);
+          pollRef.current = null;
+        });
+    }, POLL_INTERVAL_MS);
   }, []);
+
+  const openThread = useCallback(
+    (id: string) => {
+      abortRef.current?.abort();
+      const seq = ++loadSeqRef.current; // 连点两个会话时，旧响应不得覆盖新响应
+      threadIdRef.current = id;
+      setThreadId(id);
+      dispatch({ type: "loading" });
+
+      api
+        .threadMessages(id)
+        .then((body) => {
+          if (seq !== loadSeqRef.current) return;
+          dispatch({ type: "loaded", messages: body.messages, running: body.running });
+          if (body.running) pollUntilDone(id);
+        })
+        .catch((cause: unknown) => {
+          if (seq !== loadSeqRef.current) return;
+          dispatch({ type: "load_failed", message: describe(cause) });
+        });
+    },
+    [pollUntilDone],
+  );
 
   const removeThread = useCallback((id: string) => {
     api
@@ -149,6 +198,8 @@ export function useChat(onTurnEnd?: () => void) {
     /** 完整状态也交出去：`canRetry(state)` 一类判据是纯函数，页面直接用，不必再摊一套字段 */
     state,
     messages: state.messages,
+    /** 服务端正在为这个会话跑图（刷新断流后的那一轮） */
+    running: state.running,
     isStreaming: state.streamingId !== null,
     loading: state.loading,
     transportError: state.transportError,

@@ -74,6 +74,14 @@ export default function ChatPage() {
             onPick={(text) => setPreset({ text, nonce: Date.now() })}
           />
 
+          {chat.running ? (
+            // 刷新断流后那一轮还在服务端跑：说清状态并自动跟上（轮询在 use-chat 里），
+            // 别让用户以为卡住了又手动刷一次
+            <p className="border-t border-border px-4 py-2 text-xs text-ink-3">
+              <span className="mx-auto block max-w-3xl">回答还在生成中，完成后会自动出现。</span>
+            </p>
+          ) : null}
+
           {retryable && lastMessage ? (
             // 上一次提问没拿到回答（刷新断流、模型报错、配额用尽都会这样）：
             // 会话不会自己恢复，给一个重发入口，别让人重新打字
