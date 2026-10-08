@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date
 from typing import Any
@@ -17,7 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import _tool_result_text, astream_chat, build_agent
 from app.agent.tools import filter_allowlist, query_market_bars
-from app.api.chat import normalize_thread_id, sse_frame
+from app.api.chat import _run_lock, normalize_thread_id, sse_frame
 from app.data import duckdb_client
 from app.main import app
 from tests.conftest import make_backtest_dir, trading_days
@@ -113,6 +114,25 @@ async def test_astream_chat_event_sequence() -> None:
     done = next(p for n, p in events if n == "done")
     assert done["thread_id"] == "thread-1"
     assert done["content"] == "好了"
+
+
+async def test_same_thread_runs_are_serialized() -> None:
+    """同一会话的两次运行必须**串行**。
+
+    断连不再取消图之后，「刷新（旧轮继续跑）+ 立刻再问一次」会让两个图同时写同一个 thread
+    的 checkpoint——消息交错落盘，用户看到的是错乱的问答。锁跟**运行**走而不是跟连接走，
+    所以断连后那一轮仍持锁，直到真正跑完。
+    """
+    order: list[str] = []
+
+    async def run(tag: str, hold: float) -> None:
+        async with _run_lock("thread-serial"):
+            order.append(f"{tag}-开始")
+            await asyncio.sleep(hold)
+            order.append(f"{tag}-结束")
+
+    await asyncio.gather(run("A", 0.05), run("B", 0.01))
+    assert order == ["A-开始", "A-结束", "B-开始", "B-结束"]
 
 
 async def test_dangling_tool_calls_are_healed_before_the_next_turn() -> None:

@@ -52,6 +52,24 @@ class ChatRequest(BaseModel):
 #: 静默停在半路——那正是我们要避免的「半截 checkpoint」
 _DETACHED: set[asyncio.Task[None]] = set()
 
+#: 每个会话一把跑图锁（键是 thread_id）。**同一会话不并发跑图**：断连不再取消之后，
+#: 「刷新（旧轮继续跑）+ 立刻再问一次」会让两个图同时写同一个 thread 的 checkpoint，
+#: 两边的消息会交错落盘，用户看到的是错乱的问答。锁的生命周期跟**运行**走（不是跟连接走），
+#: 所以 `_detach` 之后它仍被持有，直到那一轮真正跑完。
+_RUN_LOCKS: dict[str, asyncio.Lock] = {}
+_RUN_LOCKS_MAX = 512
+
+
+def _run_lock(thread_id: str) -> asyncio.Lock:
+    lock = _RUN_LOCKS.get(thread_id)
+    if lock is None:
+        if len(_RUN_LOCKS) >= _RUN_LOCKS_MAX:  # 简单的容量兜底：清掉没在用的
+            for key in [k for k, item in _RUN_LOCKS.items() if not item.locked()]:
+                _RUN_LOCKS.pop(key, None)
+        lock = asyncio.Lock()
+        _RUN_LOCKS[thread_id] = lock
+    return lock
+
 
 def _detach(task: asyncio.Task[None]) -> None:
     """把任务交给事件循环自己跑完，只记结果。
@@ -119,17 +137,20 @@ async def chat(
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
         async def pump() -> None:
-            try:
-                async for item in astream_chat(
-                    agent, message=body.message, thread_id=thread_id, callbacks=callbacks
-                ):
-                    queue.put_nowait(("event", item))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 —— 在流内转成 error 帧
-                queue.put_nowait(("error", exc))
-            finally:
-                queue.put_nowait(("end", None))
+            # 同一会话排队跑（理由见 `_run_lock`）：等锁期间客户端可能已经走了，
+            # 但那一轮仍会跑完并落 checkpoint——与断连的处理一致
+            async with _run_lock(thread_id):
+                try:
+                    async for item in astream_chat(
+                        agent, message=body.message, thread_id=thread_id, callbacks=callbacks
+                    ):
+                        queue.put_nowait(("event", item))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 —— 在流内转成 error 帧
+                    queue.put_nowait(("error", exc))
+                finally:
+                    queue.put_nowait(("end", None))
 
         task = asyncio.create_task(pump())
         try:

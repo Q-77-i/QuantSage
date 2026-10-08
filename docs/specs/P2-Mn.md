@@ -298,6 +298,7 @@ scripts/embed_events.py        # 薄壳：--full / --incremental / --status / --
 - **质量**：MPS + fp16 + 截断 256 下三档 NDCG@10 与 CPU 基线**逐位相同**（0.7764 / 0.7602 / 0.8142），精排排序未被数值精度或截断改变
 - **延迟的方差是真实的，必须如实记录**：同一配置连测三轮，p95 在 **3.9–6.6s** 之间波动（最大 9.7s），取决于机器负载（Docker 的虚拟化进程常占 ~90% CPU）。**单轮测出的 p95 2.45s 属偏乐观的一次**，不能当承诺值
 - **内存**：两模型共存的进程峰值 RSS——CPU 2,954MB / MPS 3,327–4,231MB；MPS 连续 120 次重排（6,000 对）内存**无增长**（社区报的泄漏是嵌入长跑，与「每问一次 50 对」的重排不同风险面）
+- **MPS 调用必须串行（2026-10-09 订正）**：PyTorch 的 MPS 后端**不是线程安全的**——两个线程同时进去会在 Metal 层触发 `MTLReleaseAssertionFailure` → `abort()` **整个服务进程**（实测崩溃：uvicorn 被 SIGABRT 打死，崩溃报告的线程快照里一个线程卡在 `MPSStream::synchronize`、另一个正在 `setCurrentCommandEncoder`）。调用方是 `asyncio.to_thread` 的线程池，两条检索重叠就够了。落地：`app/rag/encoder.py::_run_on_device` 给 MPS 加进程级 `threading.Lock`，**CPU 不加锁**（没有共享的 GPU 命令队列，串行只会白白压吞吐）；单测同时断言「MPS 串行」与「CPU 不串行」。**代价如实记**：并发的检索会排队（每次精排 3–5s），换来的是进程不会再被 GPU 驱动打死
 - **顺手**：`RAG_WARMUP_ON_START`（默认 false）启动期后台预热，把首次提问的 7–15s 载入挪到启动期；默认关是因为集成测试也跑 lifespan
 - 返回结构：`{event_id, day, title, summary, event_time, available_at, event_type, direction_norm, importance_score, symbols, industries, source, original_source, source_url, content_hash, score, score_kind}`——**双时间戳并列 + 来源三元组**（PRD §5 硬性要求），M7 证据面板直接消费
 - 降级：Qdrant 或模型不可用 → `RagNotReady`；Agent 工具返回一句人话（同 `query_market_bars` 姿态），不炸整条流；**不得静默返回空列表冒充「查不到」**

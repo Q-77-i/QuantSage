@@ -18,16 +18,33 @@ CPU 上 `use_fp16` 必须为 False（fp16 在 CPU 上是慢而非快）；MPS �
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from app.core.config import get_settings
 from app.rag import RagNotReady
 
 #: 句向量维度（BGE-M3 稠密）
 DIM = 1024
+
+#: **MPS 的调用闸门**：PyTorch 的 MPS 后端（Apple GPU）**不是线程安全的**——两个线程同时
+#: 提交命令缓冲会在 Metal 层触发 `MTLReleaseAssertionFailure`，而它的处理方式是 `abort()`
+#: **整个进程**。2026-10-09 实测崩溃：uvicorn 被 SIGABRT 打死，崩溃报告的线程快照里一个线程
+#: 卡在 `MPSStream::synchronize`（等 GPU）、另一个正在 `setCurrentCommandEncoder`。
+#: 而调用方是 `asyncio.to_thread` 的线程池——两条检索重叠就够了。
+#: CPU 上**不加锁**：那里没有共享的 GPU 命令队列，串行只会白白压吞吐。
+_MPS_LOCK = threading.Lock()
+
+
+def _run_on_device(device: str, call: Callable[[], Any]) -> Any:
+    """在指定设备上执行；MPS 一律串行进闸门（理由见 `_MPS_LOCK`）。"""
+    if device != "mps":
+        return call()
+    with _MPS_LOCK:
+        return call()
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,14 +155,14 @@ class FlagEmbeddingEmbedder:
         return self._model
 
     def _encode(self, texts: Sequence[str]) -> EncodedDocs:
-        out = self._load().encode(
+        out = _run_on_device(self._device, lambda: self._load().encode(
             list(texts),
             batch_size=self._batch_size,
             max_length=self._max_length,
             return_dense=True,
             return_sparse=True,
             return_colbert_vecs=False,
-        )
+        ))
         dense = [[float(x) for x in vec] for vec in out["dense_vecs"]]
         sparse = [_to_sparse(w) for w in out["lexical_weights"]]
         return EncodedDocs(dense=dense, sparse=sparse)
@@ -204,7 +221,9 @@ class FlagReranker:
         if not docs:
             return []
         pairs = [(query, doc) for doc in docs]
-        scores = self._load().compute_score(pairs, batch_size=self._batch_size)
+        scores = _run_on_device(
+            self._device, lambda: self._load().compute_score(pairs, batch_size=self._batch_size)
+        )
         if isinstance(scores, (int, float)):  # 单对时返回标量
             return [float(scores)]
         return [float(s) for s in scores]
