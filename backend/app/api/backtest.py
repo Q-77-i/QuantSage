@@ -1,4 +1,4 @@
-"""回测 API：SPEC §5 报告结构的同步出口 + 我的回测（M1c）。
+"""回测 API：SPEC §5 报告结构的同步出口 + 我的回测（M1c）+ 用户策略分支（M4c）。
 
 `build_report` 是**同步 CPU + DuckDB IO**，必须卸载到线程——直接在 async 端点里跑会
 阻塞事件循环（T3 在 DuckDB 工具上已踩过同一个坑）。
@@ -10,6 +10,12 @@ M1c 起本组端点**纳入鉴权**：跑完要落库，归属就是必要信息
 `{run_id, report}`——报告结构本身没动（P1 SPEC §6），信封只是把「这次跑的是哪一条记录」
 一并交出去，「我的回测」才重开得起来。落库放在 `build_report` **成功之后**：
 异常路径（404 / 503 / 400）不该留下半条记录。
+
+M4c 起多一条分支：`strategy="user"` 时**只认库里的源码**（先保存才能跑），依次过
+「归属 404 → 静态检查 `error`=0 → 参数校验 → 沙箱子进程」，落库时记 `strategy_id` +
+`code_sha256`。**闸门顺序写在 SPEC §5 M4c 的表里，环环不可省**——尤其是静态检查必须
+在 spawn 之前（那正是它能给出可读报错的前提）。`compare_pit` 的判据从「策略名 =
+event_driven」泛化为源码里的 `USES_EVENTS`（`uses_events_of`）。
 """
 
 from __future__ import annotations
@@ -22,12 +28,18 @@ from typing import Any, Literal, Self
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.api.strategies import normalize_strategy_id
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig
 from app.backtest.report import build_report, resolve_window
 from app.backtest.strategies import EventDriven, available_strategies, validate_params
 from app.backtest.types import Mode
 from app.core.auth import require_db, require_user
+from app.strategy import USER_STRATEGY, StrategyCheckFailed, code_sha256
+from app.strategy.api import parse_meta
+from app.strategy.params import validate_params as validate_user_params
+from app.strategy.sandbox import run_user_strategy
+from app.strategy.static_check import check_source, has_errors
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["backtest"])
 
@@ -58,6 +70,8 @@ class BacktestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     strategy: str
+    #: 仅 `strategy="user"` 时使用（M4c）：要跑的是**库里那条**源码，不是请求里现传的
+    strategy_id: str | None = None
     symbol: str = Field(pattern=SYMBOL_PATTERN)
     start: date | None = None
     end: date | None = None
@@ -68,19 +82,29 @@ class BacktestRequest(BaseModel):
     @field_validator("strategy")
     @classmethod
     def _known_strategy(cls, value: str) -> str:
-        if value not in available_strategies():
-            raise ValueError(
-                f"未知策略 {value!r}；可用策略：{'、'.join(available_strategies())}"
-            )
+        # `user` 是 M4c 的分支：它不在内置注册表里，但要求必须带 `strategy_id`（见下）
+        if value != USER_STRATEGY and value not in available_strategies():
+            names = "、".join([*available_strategies(), USER_STRATEGY])
+            raise ValueError(f"未知策略 {value!r}；可用策略：{names}")
         return value
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
+        if self.strategy == USER_STRATEGY:
+            if not self.strategy_id:
+                raise ValueError(
+                    'strategy="user" 时必须带 strategy_id——策略要先保存才能跑（运行的是库里的源码）'
+                )
+        elif self.strategy_id is not None:
+            raise ValueError('strategy_id 只能与 strategy="user" 一起用')
+
         # 未知键与取值一起挡在这里（M4 补齐后半）：前者会被 from_params 静默忽略，
-        # 后者（`fast=20 / slow=5`）会静默跑出没有意义的结果——两条都是「用户以为生效了」
-        errors = validate_params(self.strategy, self.params)
-        if errors:
-            raise ValueError("；".join(errors))
+        # 后者（`fast=20 / slow=5`）会静默跑出没有意义的结果——两条都是「用户以为生效了」。
+        # 用户策略的 schema 来自源码，得先读到策略才知道，故那一段在端点里（静态检查之后）。
+        if self.strategy != USER_STRATEGY:
+            errors = validate_params(self.strategy, self.params)
+            if errors:
+                raise ValueError("；".join(errors))
         if self.start and self.end and self.start > self.end:
             raise ValueError(f"区间起点 {self.start} 晚于终点 {self.end}")
         return self
@@ -109,6 +133,70 @@ def normalize_run_id(raw: str) -> str:
         raise HTTPException(status_code=422, detail="run_id 必须是 UUID") from exc
 
 
+async def run_user_backtest(
+    request: Request, body: BacktestRequest, user: dict[str, Any]
+) -> dict[str, Any]:
+    """用户策略分支（M4c）：`先保存才能跑`，跑的是**库里那条**源码。
+
+    闸门顺序（SPEC §5 M4c，环环不可省）：归属 404 → 静态检查 `error`=0 → 参数校验 → 沙箱。
+    静态检查必须在 spawn **之前**：那正是「运行前带行号给话术」成立的前提。
+    """
+    db = require_db(request)
+    user_id = int(user["id"])
+    strategy_id = normalize_strategy_id(body.strategy_id or "")
+    row = await db.get_strategy(user_id, strategy_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+
+    code = row["code"]
+    findings = check_source(code)
+    if has_errors(findings):
+        # 由 `main.py` 的处理器翻成 422 + findings（编辑器与面板直接吃）
+        raise StrategyCheckFailed(findings)
+
+    meta = parse_meta(code)  # error=0 时不该抛；真抛了由 StrategyRejected 处理器兜成 422
+    params = validate_user_params(meta.params, body.params)
+
+    start, end = await asyncio.to_thread(
+        resolve_window,
+        body.symbol,
+        USER_STRATEGY,
+        body.start,
+        body.end,
+        uses_events=meta.uses_events,
+    )
+    # 同内置策略的口径：不消费事件的策略两模式必然同结果，跑第二遍只会误导
+    compare_pit = body.pit_mode == "both" and meta.uses_events
+    config = BacktestConfig(
+        symbol=body.symbol,
+        strategy=USER_STRATEGY,
+        start=start,
+        end=end,
+        adjust="qfq",
+        pit_mode=Mode.PIT if body.pit_mode == "both" else Mode(body.pit_mode),
+        costs=body.costs.to_model(),
+        params=params,
+    )
+    outcome = await run_user_strategy(
+        code,
+        config=config,
+        strategy_name=row["name"],
+        uses_events=meta.uses_events,
+        compare_pit=compare_pit,
+    )
+
+    run_id = str(uuid.uuid4())
+    await db.save_backtest_run(
+        run_id,
+        user_id,
+        _stored_request(body, start, end),
+        outcome.report,
+        strategy_id=strategy_id,
+        code_sha256=code_sha256(code),
+    )
+    return {"run_id": run_id, "report": outcome.report}
+
+
 @router.post("")
 async def run_backtest(
     request: Request,
@@ -116,6 +204,9 @@ async def run_backtest(
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
     """跑一次回测，落库并返回 `{run_id, report}`。"""
+    if body.strategy == USER_STRATEGY:
+        return await run_user_backtest(request, body, user)
+
     start, end = await asyncio.to_thread(
         resolve_window, body.symbol, body.strategy, body.start, body.end
     )

@@ -18,6 +18,8 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      // Monaco 的本地资源：由 scripts/sync-monaco.mjs 拷来的压缩产物（不入库、不该被 lint）
+      "public/monaco/**",
     ],
   },
 ];

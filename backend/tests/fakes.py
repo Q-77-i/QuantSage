@@ -26,7 +26,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import BaseTool
 
-from app.core.db import DEFAULT_GROUP, EmailTaken, SymbolTracked
+from app.core.db import DEFAULT_GROUP, EmailTaken, StrategyNameTaken, SymbolTracked
 
 
 class ToolCallingFakeModel(FakeMessagesListChatModel):
@@ -91,7 +91,8 @@ class FakeDatabase:
     真实实现靠 SQL 排序，两边行为必须一致（集成用例会拿真库再验一遍）。
 
     自选股的唯一约束**必须照抄**：`add_watchlist_item` 撞号要抛 `SymbolTracked`，
-    否则离线那条 409 用例测的是替身自己的宽容，不是真库的行为。
+    否则离线那条 409 用例测的是替身自己的宽容，不是真库的行为。策略的
+    `UNIQUE(user_id, name)`（M4c）同理——少了它，409 与归属矩阵都是假的。
     """
 
     def __init__(self) -> None:
@@ -104,6 +105,8 @@ class FakeDatabase:
         self.watchlist: dict[tuple[int, str], dict[str, Any]] = {}
         self.runs: dict[str, dict[str, Any]] = {}
         self._run_order: list[str] = []  # 插入序，列表按它倒序给「最新在前」
+        # 策略：(user_id, strategy_id) → 行（名字唯一性另按 user 判，见 create_strategy）
+        self.strategies: dict[tuple[int, str], dict[str, Any]] = {}
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -189,10 +192,80 @@ class FakeDatabase:
                 hit = True
         return hit
 
+    # ── 用户策略（M4c）─────────────────────────────────────
+
+    async def list_strategies(self, user_id: int) -> list[dict[str, Any]]:
+        """摘要形状与真库一致：**不带 code**，最近改的在前。"""
+        rows = [row for (uid, _), row in self.strategies.items() if uid == user_id]
+        rows.sort(key=lambda row: row["updated_at"], reverse=True)
+        return [
+            {key: row[key] for key in ("id", "name", "created_at", "updated_at")} for row in rows
+        ]
+
+    async def create_strategy(
+        self, strategy_id: str, user_id: int, name: str, code: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._name_taken(user_id, name):
+            raise StrategyNameTaken(name)
+        now = datetime.now(UTC)
+        row = {
+            "id": strategy_id,
+            "name": name,
+            "code": code,
+            "params": dict(params),
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.strategies[(user_id, strategy_id)] = row
+        return dict(row)
+
+    async def get_strategy(self, user_id: int, strategy_id: str) -> dict[str, Any] | None:
+        row = self.strategies.get((user_id, strategy_id))
+        return dict(row) if row is not None else None
+
+    async def update_strategy(
+        self,
+        user_id: int,
+        strategy_id: str,
+        *,
+        name: str | None = None,
+        code: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        row = self.strategies.get((user_id, strategy_id))
+        if row is None:
+            return None
+        if name is not None:
+            if self._name_taken(user_id, name, exclude=strategy_id):
+                raise StrategyNameTaken(name)
+            row["name"] = name
+        if code is not None:
+            row["code"] = code
+        if params is not None:
+            row["params"] = dict(params)
+        row["updated_at"] = datetime.now(UTC)
+        return dict(row)
+
+    async def drop_strategy(self, user_id: int, strategy_id: str) -> bool:
+        return self.strategies.pop((user_id, strategy_id), None) is not None
+
+    def _name_taken(self, user_id: int, name: str, *, exclude: str | None = None) -> bool:
+        return any(
+            uid == user_id and row["name"] == name and sid != exclude
+            for (uid, sid), row in self.strategies.items()
+        )
+
     # ── 回测记录 ────────────────────────────────────────────
 
     async def save_backtest_run(
-        self, run_id: str, user_id: int, request: dict[str, Any], report: dict[str, Any]
+        self,
+        run_id: str,
+        user_id: int,
+        request: dict[str, Any],
+        report: dict[str, Any],
+        *,
+        strategy_id: str | None = None,
+        code_sha256: str | None = None,
     ) -> None:
         self.runs[run_id] = {
             "id": run_id,
@@ -200,6 +273,8 @@ class FakeDatabase:
             "created_at": datetime.now(UTC),
             "request": request,
             "report": report,
+            "strategy_id": strategy_id,
+            "code_sha256": code_sha256,
         }
         self._run_order.append(run_id)
 
@@ -221,6 +296,8 @@ class FakeDatabase:
                     "end": request["end"],
                     "pit_mode": request["pit_mode"],
                     "metrics": row["report"]["metrics"],
+                    # 与真库的 `report->'meta'->>'strategy_name'` 同义（内置策略为 None）
+                    "strategy_name": row["report"]["meta"].get("strategy_name"),
                 }
             )
             if len(summaries) == limit:
@@ -236,6 +313,8 @@ class FakeDatabase:
             "created_at": row["created_at"],
             "request": row["request"],
             "report": row["report"],
+            "strategy_id": row["strategy_id"],
+            "code_sha256": row["code_sha256"],
         }
 
     def _touch(self, thread_id: str) -> None:

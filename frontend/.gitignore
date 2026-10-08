@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Monaco 本地资源：由 scripts/sync-monaco.mjs 从 node_modules 拷来（predev / prebuild 自动跑）
+# 5MB 级的 vendored JS 不入库，与「数据与工具链不入库」同一取向
+/public/monaco
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

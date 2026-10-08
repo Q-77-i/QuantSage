@@ -16,6 +16,7 @@ import asyncio
 import logging
 import threading
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,11 +30,20 @@ from app.api.chat import router as chat_router
 from app.api.etl import router as etl_router
 from app.api.events import router as events_router
 from app.api.market import router as market_router
+from app.api.strategies import router as strategies_router
 from app.api.watchlist import router as watchlist_router
 from app.backtest.types import BacktestError, NoDataError
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
-from app.core.db import Database, EmailTaken, SymbolTracked, init_schema, open_pool
+from app.core.db import (
+    Database,
+    EmailTaken,
+    StrategyNameTaken,
+    SymbolTracked,
+    init_schema,
+    open_pool,
+)
+from app.strategy import SandboxError, StrategyCheckFailed, StrategyRejected
 from app.core.langfuse import build_langfuse_handler
 from app.core.llm import build_chat_model
 from app.core.logging import setup_logging
@@ -171,6 +181,7 @@ for router in (
     market_router,
     events_router,
     watchlist_router,
+    strategies_router,
     etl_router,
 ):
     app.include_router(router)
@@ -189,6 +200,43 @@ async def _symbol_tracked(_: Request, exc: SymbolTracked) -> JSONResponse:
     """自选股唯一约束冲突：与邮箱冲突同姿态，是「已经在里面了」而不是请求写错了。"""
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": f"{exc.args[0]} 已在自选股中"}
+    )
+
+
+@app.exception_handler(StrategyNameTaken)
+async def _strategy_name_taken(_: Request, exc: StrategyNameTaken) -> JSONResponse:
+    """策略重名：是「这个名字已在你名下」，与请求写错（422）区分开，同邮箱 / 自选股姿态。"""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": f"已有一条名为「{exc.args[0]}」的策略，换个名字"},
+    )
+
+
+@app.exception_handler(StrategyCheckFailed)
+async def _strategy_check_failed(_: Request, exc: StrategyCheckFailed) -> JSONResponse:
+    """运行前的静态检查闸门：422 + findings（编辑器标注与检查面板直接吃这份）。"""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": str(exc), "findings": [item.to_dict() for item in exc.findings]},
+    )
+
+
+@app.exception_handler(StrategyRejected)
+async def _strategy_rejected(_: Request, exc: StrategyRejected) -> JSONResponse:
+    """用户要改的问题（参数越界 / 运行期异常 / 返回值形态）：422，带行号供编辑器定位。"""
+    content: dict[str, Any] = {"detail": str(exc)}
+    if exc.line:
+        content["line"] = exc.line
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=content)
+
+
+@app.exception_handler(SandboxError)
+async def _sandbox_error(_: Request, exc: SandboxError) -> JSONResponse:
+    """沙箱终止（cpu / wall / memory / output / crash）：**400**——请求本身合法，是这次运行
+    没能完成（与既有 `BacktestError → 400` 同档）。`kind` 交出去供 UI 分档显示。"""
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": str(exc), "kind": exc.kind},
     )
 
 

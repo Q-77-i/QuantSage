@@ -248,6 +248,21 @@ export interface BacktestRequest {
   params?: Record<string, number>;
 }
 
+// ── 策略静态检查（M4b 产出，M4c 消费）─────────────────────────────────────
+
+/**
+ * 一条检查结果。`severity` 只有两值：`error` 命中即拒绝执行（回测提交前强制为 0），
+ * `warning` 照跑但显示。`line` 是 1-based，编辑器标注直接吃。
+ */
+export interface Finding {
+  rule: string;
+  severity: "error" | "warning";
+  line: number;
+  message: string;
+  /** 命中那一行的原文，面板里跟在话术后面显示 */
+  snippet: string;
+}
+
 // ── 对话（SPEC §6）──────────────────────────────────────────────────────────
 
 export interface ThreadSummary {

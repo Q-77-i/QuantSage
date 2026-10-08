@@ -67,6 +67,26 @@ SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS backtest_runs_user_created_idx "
     "ON backtest_runs (user_id, created_at DESC)",
+    # M4c：用户策略。`params` 存最近一次保存的参数值（工作台回填用）
+    """
+    CREATE TABLE IF NOT EXISTS strategies (
+        id         UUID PRIMARY KEY,
+        user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name       TEXT        NOT NULL,
+        code       TEXT        NOT NULL,
+        params     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (user_id, name)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS strategies_user_updated_idx "
+    "ON strategies (user_id, updated_at DESC)",
+    # M4c：`backtest_runs` 增列走**另起的迁移语句**——`CREATE TABLE IF NOT EXISTS` 对已存在的表
+    # 什么都不做，只改上面的 DDL 是不会生效的（见模块 docstring 第二条约定）。
+    # `strategy_id` **不设外键**：策略删了记录仍在（报告 JSONB 自足，见 SPEC §5 M4c）。
+    "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS strategy_id UUID",
+    "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS code_sha256 TEXT",
 )
 
 
@@ -76,6 +96,10 @@ class EmailTaken(RuntimeError):
 
 class SymbolTracked(RuntimeError):
     """该标的已在本人的自选股里（`watchlist` 的 `UNIQUE(user_id, symbol)`）。"""
+
+
+class StrategyNameTaken(RuntimeError):
+    """策略名已被本人占用（`strategies` 的 `UNIQUE(user_id, name)`）。"""
 
 
 @asynccontextmanager
@@ -252,17 +276,117 @@ class Database:
             is not None
         )
 
+    # ── 用户策略（M4c）─────────────────────────────────────
+
+    async def list_strategies(self, user_id: int) -> list[dict[str, Any]]:
+        """本人全部策略的**摘要**（不带 code / params——列表不为每行拖一份源码），最近改的在前。
+
+        摘要**不复用 `_strategy_row`**：那个函数吃的是整行（要 `params` 列），而这条 SELECT
+        刻意没取它——复用会 KeyError（真库上踩过，离线替身自己拼 dict 反而看不出来）。
+        """
+        rows = await self._all(
+            "SELECT id, name, created_at, updated_at FROM strategies "
+            "WHERE user_id = %s ORDER BY updated_at DESC",
+            (user_id,),
+        )
+        return [
+            {
+                "id": str(row["id"]),
+                "name": row["name"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    async def create_strategy(
+        self,
+        strategy_id: str,
+        user_id: int,
+        name: str,
+        code: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """建策略。撞名抛 `StrategyNameTaken`（不返回 None，避免调用方漏判）。"""
+        try:
+            row = await self._one(
+                "INSERT INTO strategies (id, user_id, name, code, params) "
+                "VALUES (%s::uuid, %s, %s, %s, %s) "
+                "RETURNING id, name, code, params, created_at, updated_at",
+                (strategy_id, user_id, name, code, Jsonb(params)),
+            )
+        except errors.UniqueViolation as exc:
+            raise StrategyNameTaken(name) from exc
+        assert row is not None  # INSERT ... RETURNING 必然有行
+        return _strategy_row(row)
+
+    async def get_strategy(self, user_id: int, strategy_id: str) -> dict[str, Any] | None:
+        """单条（含 code）。带 `user_id` 过滤，越权与不存在同为 None（由调用方翻 404）。"""
+        row = await self._one(
+            "SELECT id, name, code, params, created_at, updated_at FROM strategies "
+            "WHERE id = %s::uuid AND user_id = %s",
+            (strategy_id, user_id),
+        )
+        return _strategy_row(row) if row is not None else None
+
+    async def update_strategy(
+        self,
+        user_id: int,
+        strategy_id: str,
+        *,
+        name: str | None = None,
+        code: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """改策略（部分更新：`None` = 不动该列）。
+
+        一条 UPDATE + `COALESCE`，不做「先读再写」——那样两次请求之间会有竞态窗口。
+        `params` 的 `Jsonb(None)` 是 SQL NULL，正好落进「不动该列」的语义。
+        """
+        try:
+            row = await self._one(
+                "UPDATE strategies SET name = COALESCE(%s, name), code = COALESCE(%s, code), "
+                "params = COALESCE(%s, params), updated_at = now() "
+                "WHERE id = %s::uuid AND user_id = %s "
+                "RETURNING id, name, code, params, created_at, updated_at",
+                (name, code, Jsonb(params) if params is not None else None, strategy_id, user_id),
+            )
+        except errors.UniqueViolation as exc:  # 改名撞上本人另一条策略
+            raise StrategyNameTaken(name or "") from exc
+        return _strategy_row(row) if row is not None else None
+
+    async def drop_strategy(self, user_id: int, strategy_id: str) -> bool:
+        """删策略。返回是否命中（回测记录**不级联删**：`strategy_id` 悬空即可）。"""
+        return (
+            await self._one(
+                "DELETE FROM strategies WHERE id = %s::uuid AND user_id = %s RETURNING id",
+                (strategy_id, user_id),
+            )
+            is not None
+        )
+
     # ── 回测记录 ────────────────────────────────────────────
 
     async def save_backtest_run(
-        self, run_id: str, user_id: int, request: dict[str, Any], report: dict[str, Any]
+        self,
+        run_id: str,
+        user_id: int,
+        request: dict[str, Any],
+        report: dict[str, Any],
+        *,
+        strategy_id: str | None = None,
+        code_sha256: str | None = None,
     ) -> None:
         """落一次回测。`request` 与 `report` 都是普通 dict，必须显式包 `Jsonb`——
-        psycopg 不会把 dict 自动转 jsonb，而 `list` 会被适配成数组。"""
+        psycopg 不会把 dict 自动转 jsonb，而 `list` 会被适配成数组。
+
+        `strategy_id` / `code_sha256` 只对用户策略有值：前者供「我的回测」认出策略，
+        后者供前端比对「代码是否已改」（M4c 运行契约）。
+        """
         await self._exec(
-            "INSERT INTO backtest_runs (id, user_id, request, report) "
-            "VALUES (%s::uuid, %s, %s, %s)",
-            (run_id, user_id, Jsonb(request), Jsonb(report)),
+            "INSERT INTO backtest_runs (id, user_id, request, report, strategy_id, code_sha256) "
+            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s)",
+            (run_id, user_id, Jsonb(request), Jsonb(report), strategy_id, code_sha256),
         )
 
     async def list_backtest_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
@@ -270,25 +394,39 @@ class Database:
 
         `metrics` 整块取（`->` 而非 `->>`）：逐键抽出来的是 text，数字会静默变成字符串，
         前端按比例格式化时不会报错、只会算错。
+
+        `strategy_name` 走 `report->'meta'->>'strategy_name'`（M4c）：内置策略为 null，
+        用户策略给名字——列表要能显示「用户策略 · 双均线」而不是一个 `user`。
         """
         rows = await self._all(
             "SELECT id, created_at, "
             "request->>'symbol' AS symbol, request->>'strategy' AS strategy, "
             "request->>'start' AS start, request->>'end' AS end, "
-            "request->>'pit_mode' AS pit_mode, report->'metrics' AS metrics "
+            "request->>'pit_mode' AS pit_mode, report->'metrics' AS metrics, "
+            "report->'meta'->>'strategy_name' AS strategy_name "
             "FROM backtest_runs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
             (user_id, limit),
         )
         return [{**row, "id": str(row["id"])} for row in rows]
 
     async def get_backtest_run(self, user_id: int, run_id: str) -> dict[str, Any] | None:
-        """按 id 取回完整报告。带 `user_id` 过滤，越权与不存在同为 None（由调用方翻 404）。"""
+        """按 id 取回完整报告。带 `user_id` 过滤，越权与不存在同为 None（由调用方翻 404）。
+
+        `strategy_id` / `code_sha256` 一并带出（M4c）：前端拿它与策略**当前**的 hash 比对，
+        得出「已非当次运行的代码」。服务端不做这个判断——事实给出去，结论由读取方下。
+        """
         row = await self._one(
-            "SELECT id, created_at, request, report FROM backtest_runs "
+            "SELECT id, created_at, request, report, strategy_id, code_sha256 FROM backtest_runs "
             "WHERE id = %s::uuid AND user_id = %s",
             (run_id, user_id),
         )
-        return {**row, "id": str(row["id"])} if row is not None else None
+        if row is None:
+            return None
+        return {
+            **row,
+            "id": str(row["id"]),
+            "strategy_id": str(row["strategy_id"]) if row["strategy_id"] else None,
+        }
 
     # ── 内部 ────────────────────────────────────────────────
 
@@ -305,6 +443,15 @@ class Database:
     async def _exec(self, sql: str, params: tuple) -> None:
         async with self.pool.connection() as conn:
             await conn.execute(sql, params)
+
+
+def _strategy_row(row: dict[str, Any]) -> dict[str, Any]:
+    """`id` 是 UUID，`params` 是 Jsonb——在数据层就转成 JSON 契约里的形状。
+
+    同 `_watchlist_row` 的理由：让 `UUID` / `Jsonb` 这类驱动类型止步于数据层，
+    端点与离线替身拿到的都是普通 dict。
+    """
+    return {**row, "id": str(row["id"]), "params": dict(row["params"] or {})}
 
 
 def _watchlist_row(row: dict[str, Any]) -> dict[str, Any]:

@@ -19,11 +19,23 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 #: 用户策略在 `BacktestConfig.strategy` 里的占位名（真名在 `strategy_name` 里）。
 #: 放进这里是为了让 API 层（M4c）、CLI 与沙箱共用同一个常量，不各写一份字面量。
 USER_STRATEGY = "user"
+
+
+def code_sha256(source: str) -> str:
+    """策略源码的 sha256（十六进制）。
+
+    回测记录存它，与策略**当前**代码的同一个 hash 比对，就能如实标注「已非当次运行的代码」
+    （M4c 运行契约）。两处必须用同一个函数算——各写一份必然漂移。
+    """
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 class StrategyError(RuntimeError):
@@ -39,6 +51,27 @@ class StrategyRejected(StrategyError):
     def __init__(self, message: str, *, line: int | None = None) -> None:
         super().__init__(message)
         self.line = line
+
+
+class _HasSeverity(Protocol):
+    severity: str
+
+
+class StrategyCheckFailed(StrategyError):
+    """静态检查有 `error`：拒绝执行（M4c 在回测提交前的闸门）。
+
+    `findings` 随异常一起带出去、由 API 层放进 422 响应体——编辑器与检查面板直接吃它。
+        `Finding` 的完整定义在 `static_check.py`，这里只按 `severity` 鸭子类型判，不反向依赖。
+    """
+
+    def __init__(self, findings: Sequence[_HasSeverity]) -> None:
+        errors = sum(1 for item in findings if item.severity == "error")
+        others = len(findings) - errors
+        super().__init__(
+            f"策略未通过前视静态检查：{errors} 个 error"
+            + (f"（另有 {others} 个 warning）" if others else "")
+        )
+        self.findings = list(findings)
 
 
 class SandboxError(StrategyError):
@@ -64,7 +97,8 @@ class SandboxLimits:
 
     wall_seconds: float = 20.0
     cpu_seconds: int = 15
-    memory_mb: int = 512
+    #: 子进程**总** RSS 上限（含引擎读数据的开销，真数据实测峰值 300–400MB，见 SPEC §5 M4a）
+    memory_mb: int = 1024
     output_bytes: int = 2_000_000
     stderr_bytes: int = 16_384
 
@@ -73,6 +107,8 @@ __all__ = [
     "USER_STRATEGY",
     "SandboxError",
     "SandboxLimits",
+    "StrategyCheckFailed",
     "StrategyError",
     "StrategyRejected",
+    "code_sha256",
 ]

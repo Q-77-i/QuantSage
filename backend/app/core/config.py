@@ -83,7 +83,10 @@ class Settings(BaseSettings):
     # 20s 墙钟不误杀正常策略，又能兜住死循环。
     strategy_wall_seconds: float = 20.0
     strategy_cpu_seconds: int = 15
-    strategy_memory_mb: int = 512
+    # 内存上限是**子进程总 RSS**，含引擎自己读全市场 Parquet 的开销——真数据实测峰值
+    # 300–400MB（M4c 量的），所以 512MB 只剩 1.3–1.7× 余量，合法策略也可能被误判超限。
+    # 提到 1024MB：看门狗的职责是可用性（拦住失控增长），1GB 仍是有界的。
+    strategy_memory_mb: int = 1024
     strategy_output_bytes: int = 2_000_000  # 报告 JSON 上限（1,636 根 bar 的报告约 0.2MB）
 
     # ── 模型（T3 使用）──

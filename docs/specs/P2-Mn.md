@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.12 ｜ 2026-10-08 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库），M4c 待开工**；M5–M10 随各功能开工滚动过审
+> 版本 v1.13 ｜ 2026-10-08 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库）**；**M4c 已细化并开工（M4c-1：Monaco spike 已过、持久化与端点待落地；M4c-2：前端工作台）**；M5–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -351,6 +351,7 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 
 - 源码经 **stdin** 传（不进 argv——`ps` 可见），报告经 **stdout** JSON 出；stderr 截断保留作诊断
 - 配额（**规划期实测定档**）：**CPU 用 `RLIMIT_CPU`**（macOS 实测生效：2s 硬限下 SIGXCPU 如期送达）；**内存不用 rlimit**（macOS 实测设不下去：Python 内 `setrlimit` 报 `current limit exceeds maximum limit`，`sh -c 'ulimit -v/-d'` 亦 `cannot modify limit`，且设 512MB 后子进程照样分配 1GB）→ 改**子进程内 `ru_maxrss` 峰值自监控线程**（macOS 返回字节、Linux 返回 KB，单位须归一），超限即 `os._exit`；**不按平台分叉**——Linux 上虚拟地址空间动辄 >2GB，照 512MB 设 `RLIMIT_AS` 会在 import 期就自杀；**墙钟由父进程 `wait_for` + 杀进程组兜底**；输出与 stderr 各有上限。耗时实测：全期 1,636 bars 的 `build_report` 仅 0.25s（含解释器启动整次运行 1.0s）→ 阈值给到 20s 级不误杀
+- **内存上限的含义与定档（2026-10-08 M4c 实测订正）**：它量的是**子进程总 RSS**，而引擎自己读全市场 Parquet 就要 300–400MB（实测：上限 300MB 时正常模板也被判超限、400MB 通过）→ 原定 512MB 只剩 1.3–1.7× 余量，**合法策略可能被误判**。默认改为 **1024MB**：看门狗的职责是可用性（拦住失控增长）而不是给策略定预算，1GB 仍是有界的。（如实记录：M4c 的 HTTP 矩阵最初按 200MB 收紧，导致**每条用例含好策略都以「内存超限」告终**——那是假证据，改成只收紧 CPU / 墙钟 / 输出）
 - 引擎接线：`run_backtest(config, strategy=None)` **一个注入点**；报告仍由 `build_report` 同一份代码产出，前端整套报告 UI 零改动
 - **威胁模型如实写**：目标是**可用性**（坏代码不拖垮服务）与**阻断无意/半有意绕行**，不是对抗恶意作者——同机同用户、无容器，真正的隔离留 **P3-E8**；`fork` 炸弹、文件写入、C 扩展长跑等残余风险在 SPEC 列明，不假装已解决
 
@@ -388,36 +389,55 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 
 ### 持久化与契约（M4c）
 
+> 切片：**M4c-1** Monaco spike + 持久化 + 端点 + 闸门（本段）→ **M4c-2** design brief + 前端工作台 + 证据。
+
 | 表 | 要点 |
 |---|---|
-| `strategies` | `id UUID PK` / `user_id FK→users ON DELETE CASCADE` / `name TEXT` / `code TEXT` / `params JSONB`（最近一次保存的参数值） / `created_at` / `updated_at`；`UNIQUE(user_id, name)` |
-| `backtest_runs` | **增列** `strategy_id UUID NULL`——`CREATE TABLE IF NOT EXISTS` 不会给既有表加列，须 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（沿用 M1a 幂等 DDL 机制） |
+| `strategies` | `id UUID PK` / `user_id FK→users ON DELETE CASCADE` / `name TEXT`（去首尾空白后 1–60 字符、不得含控制字符，超限 422） / `code TEXT`（≤ 64KB，超限 422） / `params JSONB`（最近一次保存的参数值） / `created_at` / `updated_at`（PUT 时刷新）；`UNIQUE(user_id, name)` → 撞名 **409** |
+| `backtest_runs` | **增列** `strategy_id UUID NULL` + `code_sha256 TEXT NULL`——`CREATE TABLE IF NOT EXISTS` 不会给既有表加列，须 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（沿用 M1a 幂等 DDL 机制）。`strategy_id` **不设外键**：策略删了记录仍在（报告 JSONB 自足） |
 
-- **运行契约（2026-10-08 拍板）：先保存才能跑**。回测记录存 `strategy_id` + `code_sha256`；「我的回测」重开与 M7 复现成立，改码后 hash 不匹配即如实标注「已非当次运行的代码」。不做内联源码试跑
+- **运行契约（2026-10-08 拍板）：先保存才能跑**。回测记录存 `strategy_id` + `code_sha256`（**当次**运行的源码 sha256）；「我的回测」重开与 M7 复现成立，改码后 hash 不匹配即如实标注「已非当次运行的代码」——**两个 hash 都由服务端给出、由前端比对**（`GET /backtest/runs/{id}` 给当次的、`GET /strategies/{id}` 给**当前**的），服务端不造派生布尔值。不做内联源码试跑
 - **保存不因 findings 被拒**（存的是草稿，响应随带 findings），**运行前强制 `error`=0**——闸门设在回测提交前（PRD 口径），不在保存时
-- `POST /api/v1/backtest` 增量：`strategy="user"` 时必带 `strategy_id`（互斥校验，缺一或同给即 422）；报告 `meta` **增** `strategy_kind`（`builtin|user`）与 `strategy_name`，其余结构不动（M1c 信封 `{run_id, report}` 不变）
+- `POST /api/v1/backtest` 增量（**additive**，信封 `{run_id, report}` 与报告结构不动）：请求体增 `strategy_id`；`strategy="user"` 时必带它，**缺一或与非 user 策略同给即 422**。user 分支**不走 `resolve_window` + 同步 `build_report`** 那条路，改走 `run_user_strategy`（沙箱子进程）；`compare_pit` 判据由「策略名 = event_driven」泛化为 **`USES_EVENTS`**（用户策略取自源码声明）；`resolve_window` 传 `uses_events=`。报告 `meta` 的 `strategy_kind`（`builtin|user`）与 `strategy_name` 是 M4a 已落地的既有字段，此处只记前端消费
+- **闸门顺序（HTTP 侧，环环不可省）**：鉴权 → 请求体（pydantic）→ 互斥校验 → 归属 404 → **静态检查 `error`=0** → 参数校验 → 沙箱执行
+
+| 情形 | 码 | 响应体 |
+|---|---|---|
+| 静态检查有 `error` | **422** | `{detail, findings}`（`findings` 与 `Finding.to_dict()` 同形，编辑器直接标注） |
+| 参数校验不过（键 / 类型 / 值域 / 跨字段） | **422** | `{detail}` |
+| 运行期被拒（`StrategyRejected`：运行期异常 / 返回值形态 / 装载失败） | **422** | `{detail, line}` |
+| 沙箱终止（`SandboxError`：`cpu` / `wall` / `memory` / `output` / `crash`） | **400** | `{detail, kind}`（与既有 `BacktestError → 400` 同档：请求合法，是这次运行没能完成） |
+| 撞名 / 越权·不存在 / 未登录 | 409 / 404 / 401 | 同 M1c |
 
 **端点**（`app/api/strategies.py`，全部 `require_user` + 归属 404，同 M1c 口径）：
 
 | 端点 | 行为 |
 |---|---|
-| `GET /api/v1/strategies` | 本人全部策略（列表摘要） |
-| `POST /api/v1/strategies` | 建；`UNIQUE(user_id, name)` 撞名 409 |
-| `GET /api/v1/strategies/{id}` | 单条（含 code） |
-| `PUT /api/v1/strategies/{id}` | 改（同样允许草稿）；越权 / 不存在 404 |
-| `DELETE /api/v1/strategies/{id}` | 200；不存在 404；已跑过的回测记录不受影响（报告 JSONB 自足，`strategy_id` 悬空即可，不级联删） |
-| `POST /api/v1/strategies/check` | 源码 → findings（编辑器标注用；纯函数，不落库） |
-| `GET /api/v1/strategies/templates` | 5 个模板源码 |
+| `GET /api/v1/strategies` | 本人全部，`ORDER BY updated_at DESC`：`[{id, name, created_at, updated_at}]`（摘要**不带 code**——列表不为每行拖一份源码） |
+| `POST /api/v1/strategies` | `{name, code, params?}` → **201** `{id, name, code, params, code_sha256, created_at, updated_at, findings}`（草稿也 201）；撞名 409 |
+| `GET /api/v1/strategies/{id}` | 单条：`{id, name, code, params, code_sha256（当前代码的 hash）, created_at, updated_at}`；非 UUID 422；越权 / 不存在 404 |
+| `PUT /api/v1/strategies/{id}` | `{name?, code?, params?}` → 200（形状同 POST，含 findings）；404 同上 |
+| `DELETE /api/v1/strategies/{id}` | 200 `{id, deleted: true}`；不存在 404；已跑过的回测记录不受影响（`strategy_id` 悬空即可，不级联删） |
+| `POST /api/v1/strategies/check` | `{code}` → 200 **`{findings, meta}`**；`meta = {params: {名: {type, default, min, max, label}}, uses_events}`，**`PARAMS` 解析失败时 `meta` 为 null**（问题由 R4 findings 承载）。纯函数：不落库、不 spawn、不执行代码 |
+| `GET /api/v1/strategies/templates` | `[{key, title, summary, builtin, source}]`（5 个，服务端为唯一真源） |
+
+- **路由顺序**：`/check` 与 `/templates` 必须声明在 `/{id}` **之前**，否则会被当成 UUID 解析（422）
+- **回测记录侧增量**：`GET /backtest/runs` 摘要增 `strategy_name`（取 `report.meta.strategy_name`，内置策略为 null）——列表里用户策略显示「用户策略 · 名称」；`GET /backtest/runs/{id}` 增返 `strategy_id` / `code_sha256`（供前端比对，见上）
 
 ### 前端（M4c）
 
-- 新开工作台 `app/(app)/strategies/`：左列表（我的策略 + 模板，模板「另存为我的」）｜ 右编辑器 + 参数表单 + 检查结果面板 + 「保存并运行」
-- 编辑器 **Monaco**，**走本地资源**（拷贝 `monaco-editor/min/vs` 到 `public/` + loader 指本地，**不用 CDN**——与弃用 `next/font/google` 同一条理由）；开工前 spike 定集成方式，**不过则回落 CodeMirror 6**（届时同步改 PRD 措辞）
-- findings → 编辑器行号标注（`setModelMarkers`）；参数表单由 `PARAMS` 生成，前端只做即时反馈，**值域规则不重复造**（后端 M4 起已校验）
-- 跑完跳 `/backtest?run=<id>` 复用整套报告 UI；`/space?tab=strategies` 从占位改为列表 + 入口
+- 新开工作台 `app/(app)/strategies/`：左列表（我的策略 + 模板，模板「另存为我的」→ 内联输入名字）｜ 右编辑器 + 参数表单 + 检查结果面板 + 「保存并运行」；`?id=` 深链直达某条策略
+- 编辑器 **Monaco**，**走本地资源**（**2026-10-08 spike 已执行，五项判据全过，回落条件未触发**）：加 `monaco-editor` 依赖 + `scripts/sync-monaco.mjs` 把 `min/vs` 拷到 `public/monaco/vs`（`pnpm dev` / `pnpm build` **前置自动跑**、按版本戳幂等、`public/monaco/` 与依赖都不入库），页面用官方 **AMD loader** 按需加载——资产**不经过打包器**、next 配置零改动、**零外部请求**（spike 把非本机请求全部 abort，编辑器照常工作）。**实测**：磁盘 24.4MB（0.57 是分块布局，含全语言与四个语言 worker；不入库）；`/strategies` 路由包 **3.26 kB**（Monaco 不进 bundle）；编辑器实际加载 19 个文件 / **线上 1.17MB**（gzip，解压 1.98MB）
+  - 两条实现期事实：① 0.57 的 `editor.main` **自己赋值** `self.MonacoEnvironment`（blob worker + 同目录 `assets/*.worker-*.js`），预设 `getWorkerUrl` 是无效代码；② `eslint.config.mjs` 必须忽略 `public/monaco/**`，否则 vendored 压缩产物进 lint（实测 25894 条）
+  - 依赖用 **pnpm** 装（`pnpm add monaco-editor`）：仓库是 pnpm 工程（`pnpm-lock.yaml` + `node_modules/.pnpm`），用 `npm install` 会撞 arborist 的 `Link.matches` 报错
+- findings → 编辑器行号标注（`setModelMarkers`，error / warning 两档、整行波浪线）；参数表单由 `PARAMS` 生成（bool → 开关，数字 → 输入框 + min/max 提示），前端只做即时反馈，**值域规则不重复造**（后端 M4 起已校验）
+- **标注与表单同源**：编辑内容防抖后打 `POST /strategies/check`，一次拿到 `{findings, meta}`——面板列表与编辑器标注吃同一份 findings，参数表单的 schema 来自同一次响应的 `meta`（不会出现「标注说改了、表单还是旧的」）
+- 「保存并运行」= 先 `PUT` 存草稿（回显 findings）→ 有 `error` 就停在面板、不提交 → 否则 `POST /backtest`（带 `strategy_id` + 表单参数值）→ 跳 `/backtest?run=<id>` 复用整套报告 UI。运行条**只有**标的 + 区间（可留空）+ 「PIT / 非 PIT 对比」开关（按 `USES_EVENTS` 出现），费用与滑点走缺省（要调去回测页）
+- `/space?tab=strategies` 从占位改为列表 + 入口；「我的回测」列表的策略列显示策略名
+- **回测页仍只跑内置策略**（2026-10-08 拍板）：`/backtest?run=` 打开一条用户策略记录时报告照常渲染、表单只回填标的 / 区间 / 费用，并出提示条——当次用的策略名 + 代码是否已变（比对两个 hash）+ 「去工作台重跑」入口。**`lib/backtest-form.ts` 的字面量联合必须显式处置 `"user"`**：`formFromRequest` 里的 `PARAMS[strategy]` 查表会 TypeError（打开一条用户策略的旧回测即触发）
 - 开工前出 **design brief**（沿用 T6 口径，与 P2-M4c 同目录）
 
-**验收**：① 在线写策略可成功回测（模板与自写各一条端到端证据）；② 坏代码不拖垮服务（故障注入矩阵：死循环 / 大内存 / 语法错 / 缺 `on_bar` / 超长输出 / 数据绕行——各给明确错误码且 API 存活）；③ 注入含 `shift(-1)` / `bfill` 的策略被拦截并提示行号（编辑器标注截图 + API 422 findings）。**分工**：③ 的检查器本体与 CLI/矩阵证据属 **M4b**，编辑器标注与回测提交前的 422 闸门属 **M4c**。
+**验收**：① 在线写策略可成功回测（模板与自写各一条端到端证据）；② 坏代码不拖垮服务（**HTTP 层**故障注入矩阵：死循环 / 大内存 / 语法错 / 缺 `on_bar` / 超长输出 / 数据绕行——各给明确错误码，且每条之后 `/health` 200、正常策略仍跑通）；③ 注入含 `shift(-1)` / `bfill` 的策略被拦截并提示行号（编辑器标注截图 + API 422 findings）。**分工**：③ 的检查器本体与 CLI/矩阵证据属 **M4b**，编辑器标注与回测提交前的 422 闸门属 **M4c**。
 
 **本轮不做**：并发队列与批量回测（M5）；在线装包；策略分享/市场；用户策略调 RAG（M8）；容器级隔离（P3-E8）；编辑器高级能力（补全 / 跳转 / 实时 lint 之外的特性）。
 
@@ -489,13 +509,16 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 - M3 增量：**离线用例不下载模型**——编码器是协议，测试注入假实现（返回确定性向量）；文本构造（空字段不写标签）、point id 稳定、filter 构造（`as_of` 必带）、RRF 融合排序、NDCG 计算（对已知排序手算）、长度分桶、增量判据（sha 变 / 不变）、`RagNotReady` 降级各一组。检索层的 PIT 边界在**内存向量库替身**上离线跑（替身必须照抄「服务端过滤」语义，否则边界用例是假的，同 M1 内存业务库口径），另在集成侧对**真实 Qdrant** 跑 upsert → 检索 → 按日重建幂等
 - M4 增量：**AST 规则样例矩阵**——每条规则正/负样例成对，断言行号与 severity 与 `message` 关键词；`PARAMS` 校验矩阵（未知键 / 类型不符 / 越界 / 跨字段）；入口解析（缺 `on_bar` / 语法错 / 运行期异常 / 返回值非 Signal 列表）；**沙箱故障注入**（死循环撞 CPU 与墙钟、超大分配撞内存看门狗、超长输出被截断、`sys.exit` 与 `os._exit`、导入白名单外模块）逐条断言「明确错误 + 父进程存活」；**模板等价性**——双均线与事件驱动模板经沙箱跑出的报告与注册表策略逐点一致（离线，真实 Parquet 小窗口）。集成侧对**真实 Postgres** 跑策略 CRUD 与归属矩阵（越权 404 / 撞名 409），并跑一条「保存 → 检查 → 沙箱回测 → 落库 → 重开」端到端
 - M4b 增量：负样例必须**零命中**：`[-1]`、`i-1`、`ctx.history[a+1:b+1]` 切片（双均线模板原样）、`for i in ...: closes[i+1]` 相邻比较、字符串与注释里的 `shift(-1)`、名为 `bfill` 的变量、`fillna(method="ffill")`、生成器 `on_bar` 的裸 `return`、嵌套函数里的 `return 1`；**元测试**断言规则表每条规则都在样例矩阵里有正/负样例；**一致性测试**双跑——① R1 用的白名单与运行时 `api.ALLOWED_MODULES` 是同一对象 ② 同一批入口/签名样例上「R5 命中 ⟺ `api.load_strategy` 抛 `StrategyRejected`」（AST 与 `inspect` 两套判据不许漂移）；模板库 5 个各自 `check_source == []` + `load_strategy` 装载成功，3 个新模板各配一条**合成触发序列**断言至少 1 笔成交
-- 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验；M4 增：findings → 编辑器标注映射、`PARAMS` schema → 表单状态与请求体），不引组件测试框架（沿用 P1 口径）
+- M4c 增量（离线）：**CRUD 矩阵**（未登录 401 门 / 建读改删 / 撞名 409 / 越权与不存在同为 404 / 草稿可存——语法错的 code 也 201 且 findings 随响应 / 列表按 `updated_at` 倒序）；`/check` 形状（`{findings, meta}`，`meta.params` 与 `parse_meta` 同源，`PARAMS` 坏掉时 `meta` 为 null 且 findings 有 R4）；**闸门**（`strategy="user"` 缺 `strategy_id` → 422、带 `strategy_id` 而 `strategy != "user"` → 422、库里含 `shift(-1)` 的策略跑 → 422 带 findings、参数越界 → 422、运行期异常 → 422 带 line）；**沙箱路径**（5 个模板各跑通并断言 `meta.strategy_kind == "user"`；`USES_EVENTS=True` 的模板在 `pit_mode="both"` 下真的产出 `pit_comparison`；落库 `request` 可 JSON 序列化且带 `strategy_id`；`code_sha256` = 源码 sha256）；**HTTP 层故障矩阵**（6 条坏法 × 明确错误码 + 每条之后 `/health` 200 且正常策略仍跑通；配额由 monkeypatch 压低，同 M4a 口径，不让用例真等 20s）；`FakeDatabase` 必须照抄 `UNIQUE(user_id, name)` 与归属过滤语义（否则矩阵是假的，同 M1c 口径）
+- M4c 增量（集成，真实 Postgres）：建表与**增列的幂等**（连跑两次 lifespan 不报错）；策略 CRUD 与归属矩阵双跑；「保存 → 检查 → 沙箱回测 → 落库 → 重开」端到端一条；删除策略后旧回测记录仍可打开（`strategy_id` 悬空）
+- 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验；M4c 增：findings → 编辑器标注映射、`PARAMS` schema → 表单状态与请求体、`strategy="user"` 旧记录的处置函数），不引组件测试框架（沿用 P1 口径）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
 ## 13. 变更记录
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.13 | 2026-10-08 | M4c | **M4c 细化为可执行规格（开工前，用户已拍板 D1–D6）**：① §5 持久化补 `strategies` 表约束（名字 1–60 字符、code ≤64KB、撞名 409）与 `backtest_runs` **两个**增列（`strategy_id` + `code_sha256`，不设外键）；② 写死 **HTTP 闸门顺序**（鉴权 → 请求体 → 互斥 → 归属 → 静态检查 error=0 → 参数 → 沙箱）与**错误码映射表**（检查未过 422 带 findings / 参数 422 / 运行期被拒 422 带 line / 沙箱终止 400 带 kind）；③ 七个端点补响应形状，`POST /strategies/check` 定为 **`{findings, meta}`**（meta = 参数 schema + `USES_EVENTS`，`PARAMS` 坏掉时为 null）——表单与标注同源；④ 记录 `POST /backtest` 的 additive 增量（`strategy_id` 互斥校验、user 分支走沙箱、`compare_pit` 判据泛化为 `USES_EVENTS`）与 runs 摘要/详情的两个新字段（`strategy_name` / `code_sha256`，后者由**前端比对**得出「已非当次代码」，服务端不造派生布尔）；⑤ 前端补齐：工作台结构、**Monaco spike 实测结论**（本地资源 + AMD loader，零外部请求；磁盘 24.4MB 不入库、路由包 3.26 kB、编辑器首屏 1.17MB gzip；两条实现期事实 + pnpm 装依赖）、「保存并运行」流程、运行条最小面、回测页**只跑内置**与 `"user"` 的显式处置（`formFromRequest` 查表会 TypeError）；⑥ §12 补 M4c 离线（CRUD / 检查 / 闸门 / 沙箱路径 / HTTP 故障矩阵）与集成（DDL 幂等 / 归属矩阵 / 全链路 / 删策略后旧记录可开）两段。规划与落地记录见 `docs/private/Pn-n/P2-Mn/P2-M4c.md` |
 | v1.12 | 2026-10-08 | M4b | **M4b 落地回填**：§5 M4b 补三处实现期定死的契约——① `Rule` 增 `message` 字段（规则自身的一句话说明），并写明**同一条规则可拆成多条 `Rule`**（R3 双档、R1 两臂），`Finding.rule` 仍是同一个规则号；② **行号归属**（M4c 的编辑器标注直接吃）：节点规则指命中节点行，R4 的「读了事件却没声明」指**第一处**事件读取行（不刷屏）、「声明了却不读」指 `USES_EVENTS` 行；③ 模板**装载 API** 形状（`TEMPLATES` / `get_template` / `template_source`，未知 key 抛 `KeyError`；源码只读文本、不作模块导入）。落地物：`app/strategy/static_check.py`（规则表 R0–R5 + 单遍遍历器，`check_source` 从不抛异常）+ `app/strategy/templates/`（5 份源码 + 装载 API）+ `scripts/check_strategy.py`。**证据**（`logs/m4/`）：规则矩阵 35 正样例全命中本规则、29 负样例全零命中（含切片、`closes[i+1]` 相邻比较、生成器裸 `return`、变量名 `bfill`）；CLI 在一份「从别的框架搬来」的样例上一行一条拦下 6 个 error（R1/R2×2/R3/R5×2，带行号，退出码 1），干净样例零命中退出码 0；R3 双档实测——`ctx.history[i+1]` 只 warning 且退出码 0（不拦运行）；与运行时一致性（白名单同对象、禁用名与 `_SAFE_BUILTINS` 无交集、15 条入口形态上 R5 与 `load_strategy` 结论一致）；**模板等价性真数据逐点一致**（ma_cross 1,636 点 / 50 笔、event_driven 55 点 / 3 笔，去掉三个身份键后整份报告相等）；全量回归 616 passed（新增 109，既有 507 零改动） |
 | v1.11 | 2026-10-08 | M4b | **M4b 细化为可执行规格**（开工前，用户已拍板）：§5 M4b 从 9 行扩为规则表——**新增 R0 语法**（`check_source` **从不抛异常**：语法错也是一条 finding，否则编辑器没得标）、R1 数据绕行（白名单**读运行时那一份** `api.ALLOWED_MODULES` 不复制，禁用名补 `__builtins__`；`os`/`subprocess`/`socket`/`duckdb`/`pandas` 由 import 臂自然覆盖）、R2 未来函数（`ffill`/`pad` 与 `.shift(正数)` 不拦）、**R3 定档为双档**（`error` 只留给「明说当前 + n」的 `ctx.index + 正数` / `len(ctx.history) + 正数`，`ctx.history[i+1]` 一类降 warning——理由：R3 拦不住真实泄漏，而 `error` 档会让**合法**策略在「运行前强制 error=0」下跑不起来；切片一律放行，自有列表不判，覆盖边界如实写进 docstring）、R4 兼收 `parse_meta` 的拒绝（`PARAMS` 非字面量等归**声明**类）、R5 订正为「形参必须是 `(ctx)` 或 `(ctx, p)`」并增拦 `async def on_bar` 与 `return Signal(...)`（生成器 `on_bar` 的裸 `return` 豁免）；findings 契约定为 `{rule, line, severity, message, snippet}`（**增 `message`**），`Rule.match(node, ctx) -> str \| None` 返回详情串、由遍历器统一组装；§5 模板库补 `Template{key,…,builtin}` 结构与**遍历 `TEMPLATES` 自动配对**的等价性测试（断言恰好 2 个带 `builtin`）、3 个新模板的合成触发序列证据、模板头注释三段（含「故意不给 pandas」的产品立场）、**模板不进内置注册表**（两处真源）；§12 补 M4b 测试增量（负样例清单 + 元测试 + 白名单同源与 AST/`inspect` 判据一致性双跑）；§5 验收写明 ③ 的检查器本体属 M4b、编辑器标注与 422 闸门属 M4c。规划与落地记录见 `docs/private/Pn-n/P2-Mn/P2-M4b.md` |
 | v1.10 | 2026-10-08 | M4a | **M4a 落地回填**：§5「用户策略 API」补两处实现期定死的契约——① `on_bar` 的形参是 **(ctx) 或 (ctx, p)**，参数取值走第二个形参而非注入全局名（父侧校验为了不 spawn 给 422、子侧再确认保证字典完整）；② 内存配额**不按平台分叉**（Linux 上虚拟地址空间动辄 >2GB，照 512MB 设 `RLIMIT_AS` 会在 import 期自杀），一律走 `ru_maxrss` 看门狗。落地物：`app/strategy/{api,params,sandbox,worker}.py` + 引擎注入点 `run_backtest(config, strategy=None)` + 报告 `strategy_kind`/`strategy_name` 两键 + 内置策略 `validate_params`（**关闭待办「后端不校验策略参数的值」**）+ `scripts/{run_user_strategy,sandbox_fault_matrix}.py`；证据见 `logs/m4/`（故障矩阵 11 条全处置且每条之后服务可用、用户源码版双均线与内置 ma_cross 在 1,636 根 bar 上逐点一致） |
