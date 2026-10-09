@@ -130,6 +130,63 @@ def test_bars_data_not_ready_is_503(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert client.get(f"/api/v1/market/{SYMBOL}/bars").status_code == 503
 
 
+# ── GET /api/v1/market/{symbol}/probe（代码体检，2026-10-09）─────────────────
+
+
+def test_probe_reports_local_data(data_dir: Path) -> None:
+    """「有」这一档：最近交易日与收盘价，且与 K 线端点取的是同一根 bar。
+
+    一致性单独断言一次：前端拿它跟用户说「按下去会记这个价」，与图表/回测
+    显示的不是同一个数就白搭。
+    """
+    response = client.get(f"/api/v1/market/{SYMBOL}/probe")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["symbol"] == SYMBOL
+    assert body["has_data"] is True
+    assert body["latest_trade_date"] == (START + timedelta(days=BAR_COUNT - 1)).isoformat()
+    assert body["latest_close"] == 100.5 + BAR_COUNT - 1
+
+    last_bar = client.get(f"/api/v1/market/{SYMBOL}/bars").json()["bars"][-1]
+    assert body["latest_trade_date"] == last_bar["time"]
+    assert body["latest_close"] == last_bar["close"]
+
+
+def test_probe_absent_symbol_is_200_not_404(data_dir: Path) -> None:
+    """**「没有」是答案不是错误。**
+
+    `/bars` 那边同一种情况回 404——那里问的是「序列给不给得出」；这里问的是
+    「这个代码在不在本地」，答案就是 no。回 404 的话前端只能走 catch，与
+    「后端挂了」混成一条路径，而那两件事的界面反应完全不同（一个禁加、一个不拦）。
+    """
+    response = client.get("/api/v1/market/000001/probe")
+    assert response.status_code == 200
+    assert response.json() == {
+        "symbol": "000001",
+        "has_data": False,
+        "latest_trade_date": None,
+        "latest_close": None,
+    }
+
+
+@pytest.mark.parametrize("symbol", ["60051", "6005199", "abcdef"])
+def test_probe_malformed_symbol_is_422(data_dir: Path, symbol: str) -> None:
+    assert client.get(f"/api/v1/market/{symbol}/probe").status_code == 422
+
+
+def test_probe_data_not_ready_is_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """行情层整体不可用与「这个代码没有」必须分开：前者前端**不拦**。
+
+    数据未落盘时每个代码都查不到，若把它当 `has_data: false` 返回，自选股表单会
+    对所有输入禁用——行情依赖把自选股拖死，正是 SPEC 那条降级口径要防的事。
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: empty)
+    assert client.get(f"/api/v1/market/{SYMBOL}/probe").status_code == 503
+
+
 # ── GET /api/v1/events ──────────────────────────────────────────────────────
 
 

@@ -49,3 +49,63 @@ export function groupItems(items: WatchlistItem[]): WatchlistGroup[] {
 export function groupNames(items: WatchlistItem[]): string[] {
   return groupItems(items).map((group) => group.name);
 }
+
+/**
+ * 代码体检的状态（`GET /market/{symbol}/probe` 的界面侧）。
+ *
+ * 每个变体都带 `code`：**结果属于哪个代码**。输入改一位就是另一个问题了，陈旧响应
+ * 贴到新输入上会给出一个看似合理、其实答非所问的提示——带上 code 让这种错配在
+ * 纯函数里就没法发生，不必让组件再维护一套序号。
+ */
+export type Probe =
+  | { status: "idle" }
+  | { status: "checking"; code: string }
+  | { status: "found"; code: string; date: string | null; close: number | null }
+  | { status: "missing"; code: string }
+  | { status: "unknown"; code: string };
+
+/** 加自选表单此刻该说什么。`missing` 是唯一会禁用「加自选」的一档。 */
+export type AddHint =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "duplicate"; group: string }
+  | { kind: "missing" }
+  | { kind: "found"; date: string | null; close: number | null }
+  | { kind: "unknown" };
+
+/**
+ * 输入 → 提示。
+ *
+ * 三处口径：
+ *   * **没输满六位一律不吭声**——正在打字时弹出「应是 6 位数字」只是噪音，校验仍留给提交那一下；
+ *   * **判重在前，体检在后**：已在自选时列表本身就是答案，体检结果再准也无关（列表还在加载
+ *     `null` 时不判重，照常体检——宁可多显示一次「有数据」，也不能凭空说「已在自选」）；
+ *   * **`unknown` 与 `missing` 分开**：行情层不可用时每个代码都查不到，当成 `missing`
+ *     会让表单对所有输入禁用（行情依赖把自选股拖死）——那一档不禁用。
+ */
+export function addFormHint(
+  raw: string,
+  items: WatchlistItem[] | null,
+  probe: Probe,
+): AddHint {
+  const code = raw.trim();
+  if (validateSymbol(code) !== null) return { kind: "idle" };
+
+  const tracked = items?.find((row) => row.symbol === code);
+  if (tracked) return { kind: "duplicate", group: tracked.group_name };
+
+  switch (probe.status) {
+    case "found":
+      return probe.code === code
+        ? { kind: "found", date: probe.date, close: probe.close }
+        : { kind: "checking" };
+    case "missing":
+      return probe.code === code ? { kind: "missing" } : { kind: "checking" };
+    case "unknown":
+      return probe.code === code ? { kind: "unknown" } : { kind: "checking" };
+    case "checking":
+      return { kind: "checking" };
+    default:
+      return { kind: "idle" };
+  }
+}

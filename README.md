@@ -101,7 +101,7 @@ flowchart LR
 | 功能 | 内容 |
 |---|---|
 | 用户系统（M1a / M1b） | 注册 / 登录 / 退出 / 当前用户（bcrypt 哈希 + HS256 JWT，httpOnly + SameSite=Lax cookie）；**用户数据隔离**：会话归属过滤，越权与不存在同返 404、未登录 401；前端受保护路由组与登录守卫 |
-| 自选股（M1c） | 加自选 / 分组增删改 / **加自选以来涨幅**（加入时记最近可得收盘价，取不到即留空显示「—」） |
+| 自选股（M1c） | 加自选 / 分组增删改 / **加自选以来涨幅**（加入时记最近可得收盘价，取不到即留空显示「—」）；加自选表单**边输边给结果**——已在自选就报出分组并把按钮换成「移出」，代码在本地行情里查不到就禁用按钮（输错一位当场拦住） |
 | 个人空间（M1c） | 「我的自选 / 我的回测 / 会话历史 / 我的策略」四页签（`/space?tab=`） |
 | 我的回测（M1c） | 每次回测落库；摘要列表 + **重开**（`/backtest?run=<id>` 载入完整报告并回填表单） |
 
@@ -172,7 +172,7 @@ uv run python scripts/run_report.py --symbol 600519 --strategy event_driven --pi
 ### 测试
 
 ```bash
-cd backend && uv run pytest                    # 离线 652 项
+cd backend && uv run pytest                    # 离线 665 项
 cd backend && uv run pytest -m integration     # 集成 80 项（需容器与真实密钥）
 cd frontend && pnpm test && pnpm typecheck && pnpm lint
 ```
@@ -200,6 +200,7 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 | PATCH · DELETE | `/api/v1/watchlist/groups/{name}` 🔒 | 重命名分组（撞名即合并）/ 删除分组（组内标的回落默认分组） |
 | GET | `/api/v1/market/freshness` | 本地数据最新时点（页头「数据截至 X」的数据源） |
 | GET | `/api/v1/market/{symbol}/bars` | 单标的日线（`adjust=qfq\|raw`） |
+| GET | `/api/v1/market/{symbol}/probe` | 6 位代码体检（自选股表单边输边查）：本地有没有它、最近交易日与收盘价。**「本地没有」是 200 + `has_data:false`，不是 404** |
 | GET | `/api/v1/events` | 事件语料（`event_time` 与 `available_at` 并列，含来源三元组） |
 | GET | `/api/v1/etl/status` 🔒 | 语料覆盖 / 缺口 / 最近一次运行 / 调度器状态 |
 | POST | `/api/v1/etl/run` 🔒 | 手动触发一次日增量（后台执行，已在跑返回 409） |

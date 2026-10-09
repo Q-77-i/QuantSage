@@ -1,14 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { TableShell, Cell, Row } from "@/components/backtest/table";
 import { api, describeError } from "@/lib/api";
 import { EMPTY, dayStamp, num, pct } from "@/lib/format";
-import { DEFAULT_GROUP, groupItems, groupNames, validateSymbol } from "@/lib/watchlist";
+import { DEFAULT_GROUP, addFormHint, groupItems, groupNames, validateSymbol } from "@/lib/watchlist";
+import type { AddHint, Probe } from "@/lib/watchlist";
 import type { WatchlistItem } from "@/lib/types";
+
+/** 体检防抖：输满六位后停手 300ms 才发（逐位发会在集群查询上白烧三次） */
+const PROBE_DEBOUNCE_MS = 300;
 
 /**
  * 我的自选：加自选、分组管理、加自选以来涨幅。
@@ -19,6 +23,10 @@ import type { WatchlistItem } from "@/lib/types";
  *
  * 写操作统一走 `act()`：成功后重拉整表。服务端是唯一真源，本地拼状态省下的那点
  * 往返，换来的是一堆「删了还在、移了没变」的错位。
+ *
+ * 加自选表单**边输边给反馈**（2026-10-09 加）：原来要提交才知道结果——重复加等一次
+ * 409、代码打错一位也照样加得进去，之后价格永远显示「—」。判据与文案在
+ * `addFormHint`（纯函数，有单测），这里只管发请求与渲染。
  */
 export function WatchlistPanel() {
   const [items, setItems] = useState<WatchlistItem[] | null>(null);
@@ -26,6 +34,9 @@ export function WatchlistPanel() {
   const [busy, setBusy] = useState(false);
   const [symbol, setSymbol] = useState("");
   const [group, setGroup] = useState("");
+  const [probe, setProbe] = useState<Probe>({ status: "idle" });
+  // 存代码而不是布尔：输入一改，这个确认就自动失效（与体检结果同一个防错口径）
+  const [removing, setRemoving] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
   const [dropping, setDropping] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -43,6 +54,36 @@ export function WatchlistPanel() {
     void load();
   }, [load]);
 
+  const code = symbol.trim();
+  // 判重是本地事实：列表本来就全量加载，已在自选里就不必再问服务端（零往返）
+  const tracked = items?.some((row) => row.symbol === code) ?? false;
+
+  useEffect(() => {
+    if (validateSymbol(code) !== null || tracked) {
+      setProbe({ status: "idle" });
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setProbe({ status: "checking", code });
+      api
+        .probe(code)
+        .then((body) =>
+          setProbe(
+            body.has_data
+              ? { status: "found", code, date: body.latest_trade_date, close: body.latest_close }
+              : { status: "missing", code },
+          ),
+        )
+        // 503（行情层没就绪）与断网都落这里：**查不了不等于没有**，界面上不禁用
+        .catch(() => setProbe({ status: "unknown", code }));
+    }, PROBE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [code, tracked]);
+
+  const hint = addFormHint(symbol, items, probe);
+  const confirmRemove = removing === code && hint.kind === "duplicate";
+  const hintText = hintLine(hint, code, confirmRemove);
+
   async function act(work: () => Promise<unknown>, fallback: string) {
     setBusy(true);
     try {
@@ -55,16 +96,30 @@ export function WatchlistPanel() {
     }
   }
 
-  function handleAdd(event: FormEvent) {
+  function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const problem = validateSymbol(symbol);
     if (problem) {
       setError(problem);
       return;
     }
+    // 已在自选：这个按钮此刻的职责变成「移出」，且要点两下——删掉再加会把
+    // added_price（加入时的历史事实）重置，「加自选以来涨幅」的起点跟着变
+    if (hint.kind === "duplicate") {
+      if (!confirmRemove) {
+        setRemoving(code);
+        return;
+      }
+      void act(async () => {
+        await api.removeWatchlist(code);
+        setSymbol("");
+        setRemoving(null);
+      }, "移出自选失败。");
+      return;
+    }
     const target = group.trim();
     void act(async () => {
-      await api.addWatchlist(symbol.trim(), target || undefined);
+      await api.addWatchlist(code, target || undefined);
       setSymbol("");
       setGroup("");
     }, "加自选失败：后端未启动或网络不通。");
@@ -75,7 +130,7 @@ export function WatchlistPanel() {
 
   return (
     <section>
-      <form onSubmit={handleAdd} className="flex flex-wrap items-center gap-2">
+      <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2">
         <input
           value={symbol}
           onChange={(event) => setSymbol(event.target.value)}
@@ -95,10 +150,36 @@ export function WatchlistPanel() {
             <option key={name} value={name} />
           ))}
         </datalist>
-        <Button type="submit" size="sm" disabled={busy}>
-          加自选
+        <Button
+          type="submit"
+          size="sm"
+          variant={hint.kind === "duplicate" ? "outline" : "default"}
+          disabled={busy || hint.kind === "missing"}
+        >
+          {buttonLabel(hint, confirmRemove)}
         </Button>
+        {confirmRemove && (
+          <button
+            type="button"
+            onClick={() => setRemoving(null)}
+            className="rounded-[var(--radius)] px-1.5 py-0.5 text-xs text-ink-2 hover:bg-muted"
+          >
+            取消
+          </button>
+        )}
       </form>
+
+      {hintText && (
+        <p
+          className={
+            hint.kind === "missing" || confirmRemove
+              ? "mt-2 text-xs text-destructive"
+              : "mt-2 text-xs text-ink-3"
+          }
+        >
+          {hintText}
+        </p>
+      )}
 
       {error && (
         <p role="alert" className="mt-3 text-sm text-destructive">
@@ -287,6 +368,34 @@ export function WatchlistPanel() {
       )}
     </section>
   );
+}
+
+/** 提交键此刻是干什么的：默认加自选；已在自选里就变成移出（要点两下）。 */
+function buttonLabel(hint: AddHint, confirming: boolean): string {
+  if (hint.kind !== "duplicate") return "加自选";
+  return confirming ? "确认移出" : "移出";
+}
+
+/**
+ * 表单下方那行提示。`idle` 与 `unknown` 都返回 null，但理由不同：前者没得说
+ * （还没输满六位），后者是**不拦人的降级**（行情层没就绪，说一句「查不了」只会
+ * 添乱，加自选照旧）。
+ */
+function hintLine(hint: AddHint, code: string, confirming: boolean): ReactNode {
+  switch (hint.kind) {
+    case "checking":
+      return "查行情…";
+    case "found":
+      return `最近交易日 ${hint.date ?? EMPTY} 收盘 ${num(hint.close)}`;
+    case "duplicate":
+      return confirming
+        ? `把 ${code} 移出？「加自选以来」的起点会一并清掉。`
+        : `已在自选 · 分组「${hint.group}」`;
+    case "missing":
+      return `本地行情数据里没有 ${code}，核对一下代码。`;
+    default:
+      return null;
+  }
 }
 
 /** 涨跌色：A 股口径红涨绿跌（token 在 `globals.css` 的 `--up` / `--down`）。 */

@@ -59,6 +59,20 @@ export interface BarsResponse {
   bars: Bar[];
 }
 
+/**
+ * `GET /api/v1/market/{symbol}/probe`（代码体检，2026-10-09）。
+ *
+ * **「本地没有」是 200 + `has_data: false`，不是 404**——所以这一档走正常返回，
+ * 与「行情层整体不可用」（503）落在两条完全不同的路径上，界面反应也不同：
+ * 前者禁加，后者不拦。
+ */
+export interface SymbolProbe {
+  symbol: string;
+  has_data: boolean;
+  latest_trade_date: string | null;
+  latest_close: number | null;
+}
+
 // ── GET /api/v1/events ──────────────────────────────────────────────────────
 
 export interface MarketEvent {

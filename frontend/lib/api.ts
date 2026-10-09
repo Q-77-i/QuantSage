@@ -24,6 +24,7 @@ import type {
   StrategySummary,
   StrategyTemplate,
   StrategyWriteBody,
+  SymbolProbe,
   ThreadMessagesResponse,
   ThreadSummary,
   User,
@@ -143,6 +144,9 @@ export const api = {
 
   bars: (symbol: string, params: { start?: string; end?: string; adjust?: string } = {}) =>
     request<BarsResponse>(`/api/v1/market/${symbol}/bars${query(params)}`),
+
+  /** 6 位代码体检（自选股表单边输边查）。无数据是 200 `has_data: false`，不是 404 */
+  probe: (symbol: string) => request<SymbolProbe>(`/api/v1/market/${symbol}/probe`),
 
   events: (symbol: string, params: { start?: string; end?: string } = {}) =>
     request<EventsResponse>(`/api/v1/events${query({ symbol, ...params })}`),

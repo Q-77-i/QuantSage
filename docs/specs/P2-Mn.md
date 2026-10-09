@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.14 ｜ 2026-10-08 ｜ 状态：M1 已落地（M1a / M1b / M1c）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库）**；**M4c 已落地并验收（M4c-1 持久化与端点 / M4c-2 前端工作台）——M4 整段完成**；M5–M10 随各功能开工滚动过审
+> 版本 v1.15 ｜ 2026-10-09 ｜ 状态：M1 已落地（M1a / M1b / M1c；**M1c 补「加自选表单的即时反馈」——判重 + 代码体检**）；M2a / M2b 已落地；M2c 第一段已交付（待 10-09/10 回填三天台账证据）；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库）**；**M4c 已落地并验收（M4c-1 持久化与端点 / M4c-2 前端工作台）——M4 整段完成**；M5–M10 随各功能开工滚动过审
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -117,6 +117,21 @@ frontend/components/        # + auth-provider.tsx space/ strategies/（编辑器
 | `DELETE /api/v1/watchlist/{symbol}` | 200 `{symbol, deleted: true}`；不存在 → 404 |
 | `PATCH /api/v1/watchlist/groups/{name}` | `{name}` 重命名分组；**撞名即合并**（`UPDATE ... SET group_name` 的自然语义，不设 409）；原名不存在 → 404 |
 | `DELETE /api/v1/watchlist/groups/{name}` | 组内标的回落「默认分组」（一条 UPDATE）；原名不存在 → 404 |
+| `GET /api/v1/market/{symbol}/probe` | **代码体检**（2026-10-09 增，路由在行情层、消费方是自选股表单）：`{symbol, has_data, latest_trade_date, latest_close}`。**「没有」是答案不是错误**，故无数据回 **200 `has_data: false`**（与 `/{symbol}/bars` 无数据 404 的区别：那里是「你要的序列给不出」，这里是「这个代码在不在本地」）；行情层整体不可用仍由 `DataNotReady` → 503。复用 `latest_closes`（实测热 34ms / 冷 311ms），不落缓存 |
+
+- **加自选表单的即时反馈**（2026-10-09，用户反馈「现状是提交才知道」；两项都不引第二数据源）：
+
+  | 输入满 6 位后的状态 | 判据 | 界面 | 按钮 |
+  |---|---|---|---|
+  | 已在自选 | 前端已加载的列表（**不走服务端**，零往返） | 「已在自选 · 分组「X」」 | 变「移出」（**带一步确认**） |
+  | 本地行情里没有这个代码 | probe 200 且 `has_data: false` | 「本地行情数据里没有 600519，核对一下代码」 | **禁用** |
+  | 行情层不可用 / 请求失败 | probe 503 或网络错 | 不显示体检结果 | **不禁用**，照旧可加 |
+  | 有数据 | probe 200 且 `has_data: true` | 「最近交易日 2026-09-30 收盘 1258.62」 | 照旧 |
+
+  - 输入即查（**防抖 300ms**，输满 6 位才发），不必用户再点一次「查一下」
+  - 「已在自选」时的「移出」要确认：`added_price` 是**加入时**的历史事实，删掉再加重来会把它重置，「加自选以来涨幅」跟着变——与行内「移出」的既有确认同口径
+  - **无数据禁加**只针对「行情层可用 + 这个代码查不到」。本地覆盖面 5,798 只 A 股，代码打错一位即落这一档；提示里**不重复数据截止日**——页头那枚「数据截至 X」是全站常驻的，本地再说一遍只是同一条信息换个地方（也省掉一次查询）；**行情层整体不可用时不拦**——沿用下面那条降级口径，行情依赖不该把自选股拖死
+  - 前端判重与体检结果都只是**提示**：真正的裁决仍是 `POST` 的 409 与 `UNIQUE(user_id, symbol)`，不因为前端拦了就改后端语义
 
 - 分组名去首尾空白后 1–24 字符，**不得含 `/`**（`%2F` 在路由层被解码成路径分隔符 → 404）与控制字符，否则 422
 - **「默认分组」是回落目标**：重命名与删除它一律 **400**（改名会让回落目标与建表默认值脱节）
@@ -509,6 +524,7 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 - 集成：auth 注册登录流与 A/B 隔离矩阵（M1，真实 Postgres；用唯一邮箱前缀 + teardown 清理，不污染 dev 库）；ETL 幂等重跑（M2）；模拟盘全链路（M6）；研报导出与重放一致（M7）；深路径降级（M8）
 - 归属校验是**双跑**的：越权矩阵在离线（内存实现，快反馈）与集成（真实 SQL 过滤，验真）各跑一遍——过滤逻辑写在 SQL 里，离线实现无法证明真库行为
 - M1c 增量：自选股离线用例注入内存业务库（未登录 401 门 / 重复 409 / 越权 404 / 分组 UPDATE 语义 / 涨幅与 NULL 口径 / 行情层不可用时的降级），**内存替身必须照抄 `UNIQUE(user_id, symbol)` 语义**，否则 409 用例是假的；回测落库用例验信封形状、列表只列本人、越权 404
+- M1c 增量（2026-10-09，代码体检）：probe 的三态各一条——有数据 / 无数据（200 且 `has_data: false`，**不是 404**）/ 行情层不可用（503，用空数据目录）；外加一组**加自选表单提示口径**的前端纯函数用例（没输满六位不吭声 / 判重压过体检 / 四种体检状态各自的落点 / 结果属于旧代码时不贴到新输入上 / 列表未加载完不判重）
 - M1c 回归：`POST /api/v1/backtest` 改信封与加鉴权后，P1 既有的 12 个离线回测用例统一挂 `signed_in` 夹具并改读 `body["report"]`；集成侧两个回测用例改为跑 lifespan + 真实注册（裸 `TestClient` 没有 `app.state.db`），账号在 teardown 里清（`users` 级联清 `watchlist` 与 `backtest_runs`）
 - M2b 增量：交易日历纯函数（长假边界 + 与行情 `trade_date` 的全期双向对账脚本）；`symbols` 归一化矩阵（`code` 为 null / 带 `.SZ/.SH` 后缀 / 多标的 / 无标的）；归档分片合并的**幂等**（同日重跑逐字节一致、中途 kill 后重跑与干净运行逐字节一致）；`list_contains` 按标的过滤；事件驱动窗口收口（显式越界 400、缺省仍取语料起点）。集成侧对真实归档分片跑一次小窗口回填，回归 P1 的 **353 条包含性**
 - M3 增量：**离线用例不下载模型**——编码器是协议，测试注入假实现（返回确定性向量）；文本构造（空字段不写标签）、point id 稳定、filter 构造（`as_of` 必带）、RRF 融合排序、NDCG 计算（对已知排序手算）、长度分桶、增量判据（sha 变 / 不变）、`RagNotReady` 降级各一组。检索层的 PIT 边界在**内存向量库替身**上离线跑（替身必须照抄「服务端过滤」语义，否则边界用例是假的，同 M1 内存业务库口径），另在集成侧对**真实 Qdrant** 跑 upsert → 检索 → 按日重建幂等
@@ -516,7 +532,7 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 - M4b 增量：负样例必须**零命中**：`[-1]`、`i-1`、`ctx.history[a+1:b+1]` 切片（双均线模板原样）、`for i in ...: closes[i+1]` 相邻比较、字符串与注释里的 `shift(-1)`、名为 `bfill` 的变量、`fillna(method="ffill")`、生成器 `on_bar` 的裸 `return`、嵌套函数里的 `return 1`；**元测试**断言规则表每条规则都在样例矩阵里有正/负样例；**一致性测试**双跑——① R1 用的白名单与运行时 `api.ALLOWED_MODULES` 是同一对象 ② 同一批入口/签名样例上「R5 命中 ⟺ `api.load_strategy` 抛 `StrategyRejected`」（AST 与 `inspect` 两套判据不许漂移）；模板库 5 个各自 `check_source == []` + `load_strategy` 装载成功，3 个新模板各配一条**合成触发序列**断言至少 1 笔成交
 - M4c 增量（离线）：**CRUD 矩阵**（未登录 401 门 / 建读改删 / 撞名 409 / 越权与不存在同为 404 / 草稿可存——语法错的 code 也 201 且 findings 随响应 / 列表按 `updated_at` 倒序）；`/check` 形状（`{findings, meta}`，`meta.params` 与 `parse_meta` 同源，`PARAMS` 坏掉时 `meta` 为 null 且 findings 有 R4）；**闸门**（`strategy="user"` 缺 `strategy_id` → 422、带 `strategy_id` 而 `strategy != "user"` → 422、库里含 `shift(-1)` 的策略跑 → 422 带 findings、参数越界 → 422、运行期异常 → 422 带 line）；**沙箱路径**（5 个模板各跑通并断言 `meta.strategy_kind == "user"`；`USES_EVENTS=True` 的模板在 `pit_mode="both"` 下真的产出 `pit_comparison`；落库 `request` 可 JSON 序列化且带 `strategy_id`；`code_sha256` = 源码 sha256）；**HTTP 层故障矩阵**（6 条坏法 × 明确错误码 + 每条之后 `/health` 200 且正常策略仍跑通；配额由 monkeypatch 压低，同 M4a 口径，不让用例真等 20s）；`FakeDatabase` 必须照抄 `UNIQUE(user_id, name)` 与归属过滤语义（否则矩阵是假的，同 M1c 口径）
 - M4c 增量（集成，真实 Postgres）：建表与**增列的幂等**（连跑两次 lifespan 不报错）；策略 CRUD 与归属矩阵双跑；「保存 → 检查 → 沙箱回测 → 落库 → 重开」端到端一条；删除策略后旧回测记录仍可打开（`strategy_id` 悬空）
-- 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验；M4c 增：findings → 编辑器标注映射、`PARAMS` schema → 表单初值与请求体、运行请求体只在非空时带区间、**错误体还原**（422 的 `findings` / 沙箱的 `kind`，畸形响应不当崩）、`strategy="user"` 旧记录的处置函数），不引组件测试框架（沿用 P1 口径）
+- 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验 + 加自选表单提示口径；M4c 增：findings → 编辑器标注映射、`PARAMS` schema → 表单初值与请求体、运行请求体只在非空时带区间、**错误体还原**（422 的 `findings` / 沙箱的 `kind`，畸形响应不当崩）、`strategy="user"` 旧记录的处置函数），不引组件测试框架（沿用 P1 口径）
 - M4c 界面验证（**不属于自动化层，单列一节**）：`frontend/scripts/capture-strategies.mjs` 驱动 Playwright 走一遍真浏览器——断言波浪线出现、面板报「会拦住运行」、点「保存并运行」被 422 拦下、参数表单按 schema 生成，并出四张截图（`logs/m4c/workbench-ui.md`）。**这一层抓到的问题自动化层结构上看不见**：CORS 预检（TestClient 不走 CORS）、浏览器路由时序（深链与列表选择竞争）、编辑器事件语义（`setValue` 的回声）、sticky 遮挡（只有窄屏真看一眼才发现）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
@@ -524,6 +540,7 @@ backend/app/strategy/params.py    # PARAMS schema 校验与类型归一（纯函
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.15 | 2026-10-09 | M1c | **M1c 补「加自选表单的即时反馈」**（用户反馈「现状是提交才知道」：重复加要等 409、代码打错一位也照样加得进、之后价格永远显示「—」）。① §2 M1c 新增 `GET /api/v1/market/{symbol}/probe`（路由在行情层、消费方是自选股表单）——**「没有」是答案不是错误**，无数据回 200 `has_data: false`，与 `/{symbol}/bars` 的 404 分开；复用 `latest_closes`（实测热 34ms / 冷 311ms），故支持**输满 6 位即查（防抖 300ms）**；② 定死四态界面口径与按钮行为表——**已在自选**（判据取前端已加载列表，不走服务端）按钮变「移出」且**要确认**（`added_price` 是加入时的事实，删掉再加重来会重置涨幅基点）；**本地无此代码**则禁加（覆盖面 5,798 只 A 股，提示带数据截止日）；**行情层不可用时不拦**——沿用既有降级口径；③ 写明前端判重只是**提示**，裁决权仍在 `POST` 的 409 与 `UNIQUE(user_id, symbol)`；④ §12 补 probe 三态与表单提示口径的纯函数矩阵。**不做**：按名称搜索（数据源无名称数据集，见待办；「不引第二数据源」是红线） |
 | v1.14 | 2026-10-08 | M4c | **M4c 落地回填**（M4c-1 后端 + M4c-2 前端两段）。① §5 前端补三处实现期定死的点：**Monaco 主题与全站 token 同源**（自定义 `quantsage-light/dark`，取值全来自既有 token；`editorWarning` 必须覆盖——Monaco 默认的 warning 是绿色，与本项目语义冲突）；**新增语义色 `--warn`**（浅 `#B45309` / 深 `#E0A030`，对比度实测 5.02 / 4.68 / 7.88 全过 AA）——此前没有 warning 色，检查面板若借 `--destructive` 会让用户分不出哪几条会拦运行；语法高亮是**第三层色**（与 UI 语义、图表序列并列，代码里的琥珀色不代表警告）。② `--warn` 是 M4c 唯一一处动全站配色的改动。③ 记录两处界面验收才暴露的问题：**CORS 的 `allow_methods` 漏了 `PUT`**（策略更新走 PUT，浏览器预检直接拦掉，TestClient 与 HTTP 矩阵都看不见——同类坑第二次，已补 `tests/test_api_endpoints.py` 的 PUT 预检断言）与**sticky 运行条遮住末段内容**（已加底部留白）。④ §12 补前端纯函数增量（`lib/strategy-form.ts`：findings → 标注、schema → 表单、运行请求体、错误体还原）。落地物：`app/api/strategies.py` + `app/core/db.py`（`strategies` 表 / `backtest_runs` 两列）+ `app/api/backtest.py` user 分支 + `app/main.py` 四个处理器 + `frontend/{components/strategies/*, lib/{strategy-form,monaco-theme}.ts, app/(app)/strategies/}`；证据：`logs/m4c/{http_fault_matrix,workshop,workbench-ui}.md` + `docs/images/{strategies,strategy-markers}.png`；回归：离线 652 / 集成 80 / 前端 148 + `pnpm build` 全绿 |
 | v1.13 | 2026-10-08 | M4c | **M4c 细化为可执行规格（开工前，用户已拍板 D1–D6）**：① §5 持久化补 `strategies` 表约束（名字 1–60 字符、code ≤64KB、撞名 409）与 `backtest_runs` **两个**增列（`strategy_id` + `code_sha256`，不设外键）；② 写死 **HTTP 闸门顺序**（鉴权 → 请求体 → 互斥 → 归属 → 静态检查 error=0 → 参数 → 沙箱）与**错误码映射表**（检查未过 422 带 findings / 参数 422 / 运行期被拒 422 带 line / 沙箱终止 400 带 kind）；③ 七个端点补响应形状，`POST /strategies/check` 定为 **`{findings, meta}`**（meta = 参数 schema + `USES_EVENTS`，`PARAMS` 坏掉时为 null）——表单与标注同源；④ 记录 `POST /backtest` 的 additive 增量（`strategy_id` 互斥校验、user 分支走沙箱、`compare_pit` 判据泛化为 `USES_EVENTS`）与 runs 摘要/详情的两个新字段（`strategy_name` / `code_sha256`，后者由**前端比对**得出「已非当次代码」，服务端不造派生布尔）；⑤ 前端补齐：工作台结构、**Monaco spike 实测结论**（本地资源 + AMD loader，零外部请求；磁盘 24.4MB 不入库、路由包 3.26 kB、编辑器首屏 1.17MB gzip；两条实现期事实 + pnpm 装依赖）、「保存并运行」流程、运行条最小面、回测页**只跑内置**与 `"user"` 的显式处置（`formFromRequest` 查表会 TypeError）；⑥ §12 补 M4c 离线（CRUD / 检查 / 闸门 / 沙箱路径 / HTTP 故障矩阵）与集成（DDL 幂等 / 归属矩阵 / 全链路 / 删策略后旧记录可开）两段。规划与落地记录见 `docs/private/Pn-n/P2-Mn/P2-M4c.md` |
 | v1.12 | 2026-10-08 | M4b | **M4b 落地回填**：§5 M4b 补三处实现期定死的契约——① `Rule` 增 `message` 字段（规则自身的一句话说明），并写明**同一条规则可拆成多条 `Rule`**（R3 双档、R1 两臂），`Finding.rule` 仍是同一个规则号；② **行号归属**（M4c 的编辑器标注直接吃）：节点规则指命中节点行，R4 的「读了事件却没声明」指**第一处**事件读取行（不刷屏）、「声明了却不读」指 `USES_EVENTS` 行；③ 模板**装载 API** 形状（`TEMPLATES` / `get_template` / `template_source`，未知 key 抛 `KeyError`；源码只读文本、不作模块导入）。落地物：`app/strategy/static_check.py`（规则表 R0–R5 + 单遍遍历器，`check_source` 从不抛异常）+ `app/strategy/templates/`（5 份源码 + 装载 API）+ `scripts/check_strategy.py`。**证据**（`logs/m4/`）：规则矩阵 35 正样例全命中本规则、29 负样例全零命中（含切片、`closes[i+1]` 相邻比较、生成器裸 `return`、变量名 `bfill`）；CLI 在一份「从别的框架搬来」的样例上一行一条拦下 6 个 error（R1/R2×2/R3/R5×2，带行号，退出码 1），干净样例零命中退出码 0；R3 双档实测——`ctx.history[i+1]` 只 warning 且退出码 0（不拦运行）；与运行时一致性（白名单同对象、禁用名与 `_SAFE_BUILTINS` 无交集、15 条入口形态上 R5 与 `load_strategy` 结论一致）；**模板等价性真数据逐点一致**（ma_cross 1,636 点 / 50 笔、event_driven 55 点 / 3 笔，去掉三个身份键后整份报告相等）；全量回归 616 passed（新增 109，既有 507 零改动） |

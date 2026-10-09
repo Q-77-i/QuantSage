@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { WatchlistItem } from "./types";
-import { DEFAULT_GROUP, groupItems, groupNames, validateSymbol } from "./watchlist";
+import {
+  DEFAULT_GROUP,
+  addFormHint,
+  groupItems,
+  groupNames,
+  validateSymbol,
+} from "./watchlist";
 
 function item(symbol: string, group: string, addedAt: string): WatchlistItem {
   return {
@@ -62,5 +68,68 @@ describe("groupItems —— 默认分组置顶，其余按最早加入时间", (
         item("300750", DEFAULT_GROUP, "2026-07-02T00:00:00Z"),
       ]),
     ).toEqual([DEFAULT_GROUP, "长线"]);
+  });
+});
+
+describe("addFormHint —— 加自选表单边输边给的提示", () => {
+  const rows = [item("600519", "核心", "2026-07-01T00:00:00Z")];
+
+  it("没输满六位不打扰：正在打字不该挨骂", () => {
+    for (const raw of ["", "6", "60051", "abcdef"]) {
+      expect(addFormHint(raw, rows, { status: "idle" }).kind).toBe("idle");
+    }
+  });
+
+  it("前后空白不算输错", () => {
+    expect(addFormHint("  600519  ", rows, { status: "idle" }).kind).toBe("duplicate");
+  });
+
+  it("已在自选 → 报分组，且压过体检结果", () => {
+    const hint = addFormHint("600519", rows, {
+      status: "found",
+      code: "600519",
+      date: "2026-09-30",
+      close: 1258.62,
+    });
+    expect(hint).toEqual({ kind: "duplicate", group: "核心" });
+  });
+
+  it("有数据 → 带最近交易日与收盘价", () => {
+    expect(
+      addFormHint("600036", rows, {
+        status: "found",
+        code: "600036",
+        date: "2026-09-30",
+        close: 41.5,
+      }),
+    ).toEqual({ kind: "found", date: "2026-09-30", close: 41.5 });
+  });
+
+  it("本地没有这个代码 → missing（按钮据此禁用）", () => {
+    expect(addFormHint("123456", rows, { status: "missing", code: "123456" })).toEqual({
+      kind: "missing",
+    });
+  });
+
+  it("行情层不可用 → unknown，与 missing 分开（前者不禁用）", () => {
+    expect(addFormHint("600036", rows, { status: "unknown", code: "600036" })).toEqual({
+      kind: "unknown",
+    });
+  });
+
+  it("结果属于旧代码 → 当作还在查，不贴到新输入上", () => {
+    // 输 600519 → 改成 600036，而 600519 的响应刚回来：那是别人的答案
+    expect(addFormHint("600036", rows, { status: "missing", code: "600519" })).toEqual({
+      kind: "checking",
+    });
+    expect(
+      addFormHint("600036", rows, { status: "checking", code: "600036" }),
+    ).toEqual({ kind: "checking" });
+  });
+
+  it("列表还没加载完（null）时不判重，照常走体检", () => {
+    expect(
+      addFormHint("600036", null, { status: "found", code: "600036", date: null, close: null }),
+    ).toEqual({ kind: "found", date: null, close: null });
   });
 });

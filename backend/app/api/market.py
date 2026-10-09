@@ -49,6 +49,27 @@ async def get_freshness() -> dict[str, object]:
     return await asyncio.to_thread(dc.latest_dates)
 
 
+@router.get("/{symbol}/probe")
+async def probe_symbol(
+    symbol: Annotated[str, Path(pattern=SYMBOL_PATTERN)],
+) -> dict[str, Any]:
+    """6 位代码体检：本地有没有这个标的的行情（自选股表单边输边查）。
+
+    **「没有」是答案不是错误**，故无数据回 200 `has_data: false`——`/{symbol}/bars`
+    那边同一种情况是 404，因为那里问的是「序列给不给得出」。行情层整体不可用
+    （`DataNotReady`）照旧 → 503：那是「依赖没就绪」，前端据此**不拦**用户。两者必须
+    分得开——数据没落盘时每个代码都查不到，当成「没有」会让自选股表单对所有输入禁用，
+    正是自选股那条降级口径要防的事。
+    """
+    latest = (await asyncio.to_thread(dc.latest_closes, [symbol])).get(symbol)
+    return {
+        "symbol": symbol,
+        "has_data": latest is not None,
+        "latest_trade_date": latest["trade_date"].isoformat() if latest else None,
+        "latest_close": latest["close"] if latest else None,
+    }
+
+
 @router.get("/{symbol}/bars")
 async def get_bars(
     symbol: Annotated[str, Path(pattern=SYMBOL_PATTERN)],
