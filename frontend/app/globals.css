@@ -100,6 +100,15 @@
      validate_palette.js，六项检查全 PASS（浅 CVD ΔE 24.7 / 深 26.2，均远高于 8 的目标线） */
   --series-3: #8a5cd6;
 
+  /* 因子分层（M5c）：5 档**单色相蓝阶**——分位是**有序**类别，用 ordinal ramp 而不是
+     五个任意色相（dataviz：有序类别用 ramp；`--ordinal` 全 PASS：单调 L / 相邻 ΔL ≥ 0.06 /
+     最浅步对底色 2.06:1 / 单色相 3°） */
+  --chart-group-1: #86b6ef;
+  --chart-group-2: #5598e7;
+  --chart-group-3: #2a78d6;
+  --chart-group-4: #1c5cab;
+  --chart-group-5: #104281;
+
   /* 警告档（M4c 的检查结果面板）：对比度 5.02（面板底）/ 4.68（页面底），过 AA。
      在此之前没有 warning 色，「样本量提示」是借 --destructive 写的——检查面板若照抄，
      用户分不出一屏同色里哪几条会**拦住运行**（error 才拦），而那正是工作台的核心交互 */
@@ -176,6 +185,14 @@
   --series-1: #3987e5;
   --series-2: #d95926;
   --series-3: #9b7ce8;
+
+  /* 深色不是浅色的翻转：暗底上「越亮 = 越高」，故 Q5 取最亮档；整体避开 #3987e5
+     （那是 IC 负极的深色值，同页不撞色）。`--ordinal` 全 PASS：光端 2.21:1 / 单色相 3° */
+  --chart-group-1: #184f95;
+  --chart-group-2: #256abf;
+  --chart-group-3: #5598e7;
+  --chart-group-4: #86b6ef;
+  --chart-group-5: #b7d3f6;
 
   /* 深色底上重选过：对比度 7.88（面板底 #131722），过 AA */
   --warn: #e0a030;

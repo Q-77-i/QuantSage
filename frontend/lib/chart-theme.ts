@@ -38,6 +38,12 @@ export interface ChartTokens {
    * 推导与四个臂各自的 `validateOrdinal` 读数见 `P2-M5b-design-brief.md` §二。
    */
   diverge: string[];
+  /**
+   * 因子分层曲线的 5 档蓝阶：**有序**类别（Q1 最低 → Q5 最高）用 ordinal ramp，
+   * 不是五个任意色相。深色不是浅色的翻转——暗底上「越亮 = 越高」。
+   * 两套各自跑过 `validate_palette.js --ordinal` 全 PASS（读数见 `P2-M5c-design-brief.md` §二）。
+   */
+  group: string[];
 }
 
 export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
@@ -53,6 +59,7 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     up: "#d03b3b",
     down: "#0e8f6b",
     diverge: ["#a00011", "#c2635b", "#dda7a1", "#f0efec", "#a1b6d3", "#5e82b5", "#184f95"],
+    group: ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281"],
   },
   dark: {
     surface: "#131722",
@@ -67,6 +74,7 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     down: "#26a69a",
     // 深色不是浅色的自动翻转：极色更亮（暗底上「越亮越大」），中点是另一个灰
     diverge: ["#f69b95", "#ba7e79", "#80615f", "#4a4b52", "#5c6b80", "#7492ba", "#8dbaf7"],
+    group: ["#184f95", "#256abf", "#5598e7", "#86b6ef", "#b7d3f6"],
   },
 };
 

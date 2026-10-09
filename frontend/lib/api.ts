@@ -12,6 +12,9 @@
 
 import { streamPost } from "./sse";
 import type { PostStreamOptions } from "./sse";
+import { factorQuery } from "./factor-report";
+import type { FactorQueryInput } from "./factor-report";
+import { query } from "./query";
 import type {
   BacktestRequest,
   BacktestResponse,
@@ -25,6 +28,7 @@ import type {
   StrategySaved,
   StrategySummary,
   StrategyTemplate,
+  FactorReport,
   OptimizeRunDetail,
   OptimizeRunSummary,
   StrategyWriteBody,
@@ -120,15 +124,6 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body),
 });
-
-function query(params: Record<string, string | number | undefined | null>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
-  }
-  const text = search.toString();
-  return text ? `?${text}` : "";
-}
 
 export const api = {
   // ── 认证（M1）─────────────────────────────────────────────────────────
@@ -254,6 +249,11 @@ export const api = {
   /** 重开一次优化：`request` + 完整 `summary`（含每格矩阵） */
   optimizeRun: (runId: string) =>
     request<OptimizeRunDetail>(`/api/v1/optimize/runs/${encodeURIComponent(runId)}`),
+
+  // ── 因子分析（M5c）─────────────────────────────────────────────────────
+  /** 因子报告：**同步一次返回**（公开端点、不落库）；`costs=false` 时净曲线为 null */
+  factorReport: (params: FactorQueryInput) =>
+    request<FactorReport>(`/api/v1/factor/report${factorQuery(params)}`),
 };
 
 /**

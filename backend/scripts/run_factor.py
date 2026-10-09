@@ -112,15 +112,17 @@ def source_report(
 
 
 def cost_drag_bps(report: dict) -> float:
-    """日均费用拖累：**毛/净曲线的日收益之差**取均值——从报告自身算出来的，不是估的。"""
+    """日均费用拖累：**毛/净曲线的日收益之差**取均值——从报告自身算出来的，不是估的。
+
+    曲线首点是 1.0（初始净值），故收益序列要**把 1.0 补在头上**——否则首日（全新建仓、
+    买 100%）那一笔费用被漏掉，读数会比报告 `notes` 里的那个略高（实测 19.33 vs 19.1 bps）。
+    """
     drags = []
     for group in report["groups"]:
-        gross = [point["level"] for point in group["gross"]["curve"]]
-        net = [point["level"] for point in group["net"]["curve"]]
+        gross = [1.0, *[point["level"] for point in group["gross"]["curve"]]]
+        net = [1.0, *[point["level"] for point in group["net"]["curve"]]]
         for i in range(1, len(gross)):
-            drags.append(
-                (gross[i] / gross[i - 1] - 1.0) - (net[i] / net[i - 1] - 1.0)
-            )
+            drags.append((gross[i] / gross[i - 1] - 1.0) - (net[i] / net[i - 1] - 1.0))
     return fmean(drags) * 1e4 if drags else 0.0
 
 

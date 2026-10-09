@@ -620,3 +620,114 @@ export interface BatchRequest {
   costs?: Partial<CostOptions>;
   pit_mode?: "pit" | "non_pit";
 }
+
+// ── 因子分析（M5c）────────────────────────────────────────────────────────
+
+/** 逐日 RankIC：一天一个读数，`n` 是当日池内样本数 */
+export interface FactorICPoint {
+  date: string;
+  ic: number;
+  n: number;
+}
+
+export interface FactorIC {
+  per_day: FactorICPoint[];
+  /** 无有效信号日时为 null（**不是 0**：没有读数与读数为 0 是两回事） */
+  mean: number | null;
+  std: number | null;
+  icir: number | null;
+  t_stat: number | null;
+  positive_days: number;
+  days: number;
+}
+
+export interface FactorCurvePoint {
+  date: string;
+  level: number;
+}
+
+/** 与回测同源的四个指标（复用后端 `metrics.py`） */
+export interface FactorMetrics {
+  total_return: number;
+  annual_return: number;
+  max_drawdown: number;
+  sharpe: number | null;
+}
+
+export interface FactorTrack {
+  curve: FactorCurvePoint[];
+  metrics: FactorMetrics;
+}
+
+export interface FactorTurnoverPoint {
+  date: string;
+  buy: number;
+  sell: number;
+}
+
+export interface FactorGroup {
+  quantile: number;
+  label: string;
+  turnover_avg: number;
+  turnover: FactorTurnoverPoint[];
+  gross: FactorTrack;
+  /** `costs=false` 时为 null（毛/净切换据此禁用） */
+  net: FactorTrack | null;
+}
+
+export interface FactorLongShort {
+  gross: FactorTrack;
+  net: FactorTrack | null;
+  t_stat: number | null;
+  /** **恒为 false**：A 股不可做空，多空价差是统计量不是组合 */
+  tradable: boolean;
+}
+
+export interface FactorParams {
+  source: "event" | "price";
+  factor: string;
+  quantiles: number;
+  min_pool: number;
+  aggregation: string;
+  horizon: string;
+  adjust: string;
+  costs: { fees: boolean; slippage: boolean; slippage_bps: number; note: string };
+}
+
+export interface FactorWindow {
+  start: string;
+  end: string;
+  first_signal_day: string | null;
+  last_signal_day: string | null;
+  signal_days: number;
+  skipped_no_window: number;
+  skipped_thin_pool: number;
+  corpus: { start: string | null; end: string | null; rows: number };
+  bars_end: string;
+}
+
+export interface FactorUniverse {
+  pool_avg: number;
+  pool_min: number;
+  pool_max: number;
+  dropped_no_price: number;
+  dropped_untradeable: number;
+  symbols_seen: number;
+  /** 事件源才有 */
+  rows_seen?: number;
+  dropped_no_value?: number;
+  dropped_no_day?: number;
+  /** 价格源才有 */
+  lookback?: number;
+}
+
+export interface FactorReport {
+  params: FactorParams;
+  window: FactorWindow;
+  universe: FactorUniverse;
+  ic: FactorIC;
+  groups: FactorGroup[];
+  long_short: FactorLongShort;
+  /** 服务端给的**必填清单**（前端不自己拼免责文案） */
+  notes: string[];
+}

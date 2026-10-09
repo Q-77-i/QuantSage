@@ -32,7 +32,7 @@ export function AppHeader() {
         </Link>
 
         {/* 导航：桌面单行（设计规范）。窄屏放不下时**自己横向滚**——
-            加第 5 项「优化」后 390px 下页头会横溢出 140px（界面验证逮到），
+            加第 5 项「优化」后 390px 下页头会横溢出 140px（第 6 项「因子」沿用同一条自滚策略）（界面验证逮到），
             而挤走的若是品牌或用户区，损失比让导航滚一下大得多 */}
         <nav className="flex min-w-0 items-center gap-1 overflow-x-auto text-sm whitespace-nowrap">
           <Link
@@ -58,6 +58,12 @@ export function AppHeader() {
             className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             优化
+          </Link>
+          <Link
+            href="/factor"
+            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            因子
           </Link>
           <Link
             href="/space"

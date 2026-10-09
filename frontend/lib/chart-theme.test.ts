@@ -48,6 +48,32 @@ describe.each([
 });
 
 /**
+ * 分层色阶是**数组**，条数也要对得上：CSS 变量少一档时下面的循环只会少跑一轮、
+ * 静默通过，故先钉长度。
+ */
+describe.each([
+  ["light", ":root"],
+  ["dark", ".dark"],
+] as const)("因子分层色阶与 CSS 变量一致（%s）", (mode, selector) => {
+  it("5 档逐一对应 --chart-group-1..5", () => {
+    expect(CHART_TOKENS[mode].group).toHaveLength(5);
+    CHART_TOKENS[mode].group.forEach((value, index) => {
+      expect(value).toBe(valueIn(selector, `chart-group-${index + 1}`));
+    });
+  });
+
+  it("单色相蓝阶：每一档的 B 分量都高于 R（防手滑换进别的色族）", () => {
+    for (const value of CHART_TOKENS[mode].group) {
+      expect(parseInt(value.slice(5, 7), 16)).toBeGreaterThan(parseInt(value.slice(1, 3), 16));
+    }
+  });
+});
+
+it("深色分层色阶不是浅色的翻转（各自选步）", () => {
+  expect(CHART_TOKENS.dark.group).not.toEqual(CHART_TOKENS.light.group);
+});
+
+/**
  * `diverge` 不参与上面的 CSS 一致性校验：它**不是**从 CSS 变量来的，而是按 dataviz
  * 方法现推的一支 diverging 色阶（两臂各自过 `validateOrdinal`，推导与读数见
  * `P2-M5b-design-brief.md` §二）。这里钉住的是它的**结构**——结构错了色阶就不表示正负。
