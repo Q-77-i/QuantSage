@@ -316,3 +316,27 @@ def test_grid_overfit_on_a_real_curve_is_reproducible() -> None:
     first = grid_overfit(**args)
     assert first["dsr"] is not None  # 真数据形态下必须出得来数，不是一路退化
     assert first == grid_overfit(**args)
+
+
+def test_every_reason_code_travels_with_its_display_text() -> None:
+    """码与文案**同行**（同 `rejects` 的姿态）：前端直接显示，不各写一份中文字面量。
+
+    五个分支逐条验——一条漏了 `reason_text` 就会让 UI 显示空白，
+    而那正是「前端自己能拼一句」的开始。
+    """
+    cases = [
+        (dict(sharpes=[annualized(0.08), None], best_index=0, best_skew=-0.5, best_kurt=4.0, observations=101), "insufficient_trials"),
+        (dict(sharpes=[None, None], best_index=None, best_skew=None, best_kurt=None, observations=None), "best_sharpe_undefined"),
+        (dict(sharpes=[annualized(0.05), annualized(0.08)], best_index=1, best_skew=None, best_kurt=None, observations=101), "moments_undefined"),
+        (dict(sharpes=[annualized(0.05), annualized(0.08)], best_index=1, best_skew=-0.5, best_kurt=4.0, observations=1), "insufficient_observations"),
+        (dict(sharpes=[annualized(0.5), annualized(0.6)], best_index=0, best_skew=10.0, best_kurt=1.0, observations=101), "degenerate_denominator"),
+    ]
+    for kwargs, code in cases:
+        out = grid_overfit(**kwargs)
+        assert out["reason"] == code
+        assert out["reason_text"] == OVERFIT_REASONS[code]
+        assert out["reason_text"]  # 非空串
+
+    # 出数时没有原因，两者都必须是 None（不留下半句解释）
+    ok = grid_overfit(sharpes=FIXED_SHARPES, **FIXED_CELLS)
+    assert ok["reason"] is None and ok["reason_text"] is None

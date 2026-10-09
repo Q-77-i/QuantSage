@@ -174,6 +174,9 @@ def grid_overfit(
     out: dict[str, Any] = {
         "dsr": None,
         "reason": None,
+        # 文案与码**同行**（同 `reports._rejects` 的姿态）：前端直接显示它，不各写一份
+        # 中文字面量——本项目里「两处各写一份必然漂移」已经反复出现过
+        "reason_text": None,
         "note": CONSERVATIVE_NOTE,
         "n_trials": len(sharpes),
         "n_valid": len(valid),
@@ -189,6 +192,7 @@ def grid_overfit(
     best = sharpes[best_index] if best_index is not None and 0 <= best_index < len(sharpes) else None
     if best is None:
         out["reason"] = "best_sharpe_undefined"
+        out["reason_text"] = OVERFIT_REASONS["best_sharpe_undefined"]
         return out
 
     per_period = [s / sqrt(TRADING_DAYS_PER_YEAR) for s in valid]
@@ -199,23 +203,28 @@ def grid_overfit(
 
     if len(valid) < 2:
         out["reason"] = "insufficient_trials"
+        out["reason_text"] = OVERFIT_REASONS["insufficient_trials"]
         return out
     if best_skew is None or best_kurt is None:
         out["reason"] = "moments_undefined"
+        out["reason_text"] = OVERFIT_REASONS["moments_undefined"]
         return out
     if observations is None or observations < 2:
         out["reason"] = "insufficient_observations"
+        out["reason_text"] = OVERFIT_REASONS["insufficient_observations"]
         return out
 
     sr0 = expected_max_sharpe(variance, len(valid))
     out["sr0"] = sr0
     if sr0 is not None and 1.0 - best_skew * sr + (best_kurt - 1.0) / 4.0 * sr * sr <= 0:
         out["reason"] = "degenerate_denominator"
+        out["reason_text"] = OVERFIT_REASONS["degenerate_denominator"]
         return out
 
     out["dsr"] = deflated_sharpe(sr, sr0, best_skew, best_kurt, observations)
     if out["dsr"] is None:  # pragma: no cover - 上面的前置检查已覆盖全部分支
         out["reason"] = "degenerate_denominator"
+        out["reason_text"] = OVERFIT_REASONS["degenerate_denominator"]
     return out
 
 

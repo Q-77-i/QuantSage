@@ -286,11 +286,12 @@ def _detach(task: asyncio.Task[None]) -> None:
     task.add_done_callback(_done)
 
 
-def streaming_headers(run_kind: str) -> dict[str, str]:
+def streaming_headers() -> dict[str, str]:
+    """SSE 响应的两条头。**不回传运行号**——本端点断连即断、不续传（SPEC §6 M5b），
+    没有「靠响应头兜底」的用法（那是 chat 的会话号才需要的）。"""
     return {
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",  # 反代下禁用缓冲
-        "X-Optimize-Kind": run_kind,
     }
 
 
@@ -447,7 +448,7 @@ async def run_grid(
             ),
         ),
         media_type="text/event-stream",
-        headers=streaming_headers("grid"),
+        headers=streaming_headers(),
     )
 
 
@@ -502,7 +503,7 @@ async def run_batch(
             stored_request=_stored_request(body, None, kind="batch"),
         ),
         media_type="text/event-stream",
-        headers=streaming_headers("batch"),
+        headers=streaming_headers(),
     )
 
 

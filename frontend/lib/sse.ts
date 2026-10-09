@@ -52,6 +52,56 @@ function parseFrame(block: string): SseFrame | null {
   return { event, data: data.join("\n") };
 }
 
+export interface PostStreamOptions {
+  signal?: AbortSignal;
+  onFrame: (frame: SseFrame) => void;
+}
+
+/**
+ * 通用的 POST + SSE 逐帧读取（M5b）。
+ *
+ * 与 `streamChat` 是**同一套帧解析**（都用上面的 `parseFrames`，SPEC §12 要求
+ * 「不新写一套」），差别只在请求体与响应头回调。没有把 `streamChat` 改成它的薄壳——
+ * 那是已经上线且被 T6b/T3 的用例钉住的路径，M5b 没必要碰它。
+ */
+export async function streamPost(
+  path: string,
+  body: unknown,
+  options: PostStreamOptions,
+): Promise<void> {
+  const response = await fetch(`${apiBase()}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: options.signal,
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    // 后端在**开流之前**判死的请求级错误都走这条路（422 / 404），detail 才是可行动的
+    throw new ApiError(response.status, await errorMessage(response));
+  }
+  if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const { frames, rest } = parseFrames(buffer);
+      buffer = rest;
+      for (const frame of frames) options.onFrame(frame);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export interface ChatStreamOptions {
   message: string;
   threadId?: string | null;

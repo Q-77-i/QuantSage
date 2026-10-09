@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import type { DataFreshness } from "@/lib/types";
 
 /**
- * 全站页头：品牌 + 四项导航 + 当前用户 + 主题切换。导航在桌面必须单行（设计规范）。
+ * 全站页头：品牌 + 五项导航 + 当前用户 + 主题切换。导航在桌面必须单行（设计规范）。
  *
  * 只在受保护路由组内渲染，所以 `user` 必然非空（守卫已挡在前面）。
  */
@@ -27,11 +27,14 @@ export function AppHeader() {
   return (
     <header className="border-b border-border">
       <div className="mx-auto flex h-14 max-w-[1400px] items-center gap-6 px-4">
-        <Link href="/" className="font-heading text-lg font-semibold tracking-tight">
+        <Link href="/" className="shrink-0 font-heading text-lg font-semibold tracking-tight">
           知策 <span className="text-muted-foreground">QuantSage</span>
         </Link>
 
-        <nav className="flex items-center gap-1 text-sm whitespace-nowrap">
+        {/* 导航：桌面单行（设计规范）。窄屏放不下时**自己横向滚**——
+            加第 5 项「优化」后 390px 下页头会横溢出 140px（界面验证逮到），
+            而挤走的若是品牌或用户区，损失比让导航滚一下大得多 */}
+        <nav className="flex min-w-0 items-center gap-1 overflow-x-auto text-sm whitespace-nowrap">
           <Link
             href="/"
             className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -51,6 +54,12 @@ export function AppHeader() {
             策略
           </Link>
           <Link
+            href="/optimize"
+            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            优化
+          </Link>
+          <Link
             href="/space"
             className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -58,7 +67,7 @@ export function AppHeader() {
           </Link>
         </nav>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex shrink-0 items-center gap-3">
           {freshness?.latest_trade_date ? (
             <span
               className="num hidden text-xs text-ink-3 md:inline"

@@ -46,3 +46,32 @@ describe.each([
     });
   }
 });
+
+/**
+ * `diverge` 不参与上面的 CSS 一致性校验：它**不是**从 CSS 变量来的，而是按 dataviz
+ * 方法现推的一支 diverging 色阶（两臂各自过 `validateOrdinal`，推导与读数见
+ * `P2-M5b-design-brief.md` §二）。这里钉住的是它的**结构**——结构错了色阶就不表示正负。
+ */
+describe("网格热力图的 diverging 色阶", () => {
+  it("负 → 0 → 正的 7 档，中点是对称中心", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const ramp = CHART_TOKENS[mode].diverge;
+      expect(ramp).toHaveLength(7);
+      expect(ramp[3]).toBe(mode === "light" ? "#f0efec" : "#4a4b52"); // 中灰就在第 4 档
+    }
+  });
+
+  it("两端的色相是相反的（红端与蓝端不是同一族）", () => {
+    const ramp = CHART_TOKENS.light.diverge;
+    const red = ramp[0];
+    const blue = ramp[6];
+    // 红端 R 分量显著高于 B，蓝端相反——写死这条是为了防「有人手滑把一端替换成同族色」
+    expect(parseInt(red.slice(1, 3), 16)).toBeGreaterThan(parseInt(red.slice(5, 7), 16));
+    expect(parseInt(blue.slice(5, 7), 16)).toBeGreaterThan(parseInt(blue.slice(1, 3), 16));
+  });
+
+  it("深色不是浅色的自动翻转（各自选步）", () => {
+    expect(CHART_TOKENS.dark.diverge).not.toEqual(CHART_TOKENS.light.diverge);
+    expect(CHART_TOKENS.dark.diverge[0]).not.toBe(CHART_TOKENS.light.diverge[0]);
+  });
+});

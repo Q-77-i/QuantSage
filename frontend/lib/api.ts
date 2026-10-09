@@ -10,6 +10,8 @@
  * 前端跑 3001 而不是 3000：3000 被 Langfuse 自托管 UI 占用。
  */
 
+import { streamPost } from "./sse";
+import type { PostStreamOptions } from "./sse";
 import type {
   BacktestRequest,
   BacktestResponse,
@@ -23,6 +25,8 @@ import type {
   StrategySaved,
   StrategySummary,
   StrategyTemplate,
+  OptimizeRunDetail,
+  OptimizeRunSummary,
   StrategyWriteBody,
   SymbolProbe,
   SymbolSearchResponse,
@@ -242,4 +246,26 @@ export const api = {
       `/api/v1/chat/threads/${encodeURIComponent(threadId)}`,
       { method: "DELETE" },
     ),
+
+  /** 我的优化（摘要，**不含每格矩阵**）：最近在前 */
+  optimizeRuns: (limit = 20) =>
+    request<OptimizeRunSummary[]>(`/api/v1/optimize/runs?limit=${limit}`),
+
+  /** 重开一次优化：`request` + 完整 `summary`（含每格矩阵） */
+  optimizeRun: (runId: string) =>
+    request<OptimizeRunDetail>(`/api/v1/optimize/runs/${encodeURIComponent(runId)}`),
 };
+
+/**
+ * 发起一次网格 / 批量（SSE 逐格推送）。
+ *
+ * 独立于 `api.*`：那个对象是「一进一出」的 request/response，而这里是一串帧。
+ * 帧解析复用 `lib/sse.ts` 的既有纯函数，**不新写一套**（SPEC §12）。
+ */
+export function streamOptimize(
+  kind: "grid" | "batch",
+  body: unknown,
+  options: PostStreamOptions,
+): Promise<void> {
+  return streamPost(`/api/v1/optimize/${kind}`, body, options);
+}

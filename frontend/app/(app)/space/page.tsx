@@ -3,15 +3,16 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
+import { OptimizationsPanel } from "@/components/space/optimizations-panel";
 import { RunsPanel } from "@/components/space/runs-panel";
 import { StrategiesPanel } from "@/components/space/strategies-panel";
 import { ThreadsPanel } from "@/components/space/threads-panel";
 import { WatchlistPanel } from "@/components/space/watchlist-panel";
 
 /**
- * 个人空间（M1c）：我的自选 / 我的回测 / 会话历史 / 我的策略。
+ * 个人空间（M1c / M5b）：我的自选 / 我的回测 / 会话历史 / 我的策略 / 我的优化。
  *
- * 页签做成一页，是因为这四块都是「这个账号有什么」——分开摆会让人以为它们是四个功能。
+ * 页签做成一页，是因为这几块都是「这个账号有什么」——分开摆会让人以为它们是几个功能。
  * 页签状态放地址栏（`?tab=`）：刷新与分享都能回到同一格，返回键也能退回上一格。
  *
  * 整个页签体包在 Suspense 里：`useSearchParams` 在生产构建下要求边界，而这一页的内容
@@ -22,6 +23,7 @@ const TABS = [
   { key: "runs", label: "我的回测" },
   { key: "threads", label: "会话历史" },
   { key: "strategies", label: "我的策略" },
+  { key: "optimizations", label: "我的优化" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -73,6 +75,7 @@ function SpaceTabs() {
         {active === "runs" && <RunsPanel />}
         {active === "threads" && <ThreadsPanel />}
         {active === "strategies" && <StrategiesPanel />}
+        {active === "optimizations" && <OptimizationsPanel />}
       </div>
     </main>
   );

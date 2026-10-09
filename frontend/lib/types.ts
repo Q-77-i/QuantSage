@@ -468,3 +468,155 @@ export interface ThreadMessagesResponse {
   /** 服务端此刻正在为这个会话跑图（刷新断流后回答还在路上）——前端据此轮询 */
   running: boolean;
 }
+
+// ── 批量 / 网格 / 过拟合检验（M5b）─────────────────────────────────────────
+
+/** 一条参数轴。`values` 的顺序即展开顺序，热力图的行列跟着它走 */
+export interface OptimizeAxis {
+  param: string;
+  values: number[];
+}
+
+/** 一格：跑的是「这个标的 + 这套参数」。失败格**也在数组里**，以 `error` 说明 */
+export interface OptimizeCell {
+  /** 在整批里的下标；网格按参数展开序，批量按「标的在外、策略在内」 */
+  index: number;
+  symbol: string;
+  strategy: string;
+  /** 用户策略才有（内置为 null） */
+  strategy_id: string | null;
+  strategy_name: string | null;
+  params: Record<string, number>;
+  ok: boolean;
+  duration_ms: number;
+  /** 仅 `ok` 时存在 */
+  metrics?: Metrics;
+  /** 最优格做 DSR 要用的收益矩；仅 `ok` 时存在 */
+  moments?: { skew: number | null; kurt: number | null; n: number };
+  /** 该格**实际**跑的区间（批量里逐格不同），仅 `ok` 时存在 */
+  window?: { start: string | null; end: string | null; bars: number };
+  /** 仅 `!ok` 时存在。`kind` 与沙箱的错误码同源（wall / cpu / memory / output / crash …） */
+  error?: { kind: string; message: string };
+}
+
+/**
+ * 过拟合检验块：DSR **与它的全部输入**（重开时不必回算就能复核）。
+ *
+ * `reason` 为原因码、`reason_text` 为它的展示文案——两者同行（与 `rejects` 同姿态），
+ * 前端直接显示文案，**不自己拼一句**（两处各写一份必然漂移）。
+ */
+export interface OverfitBlock {
+  dsr: number | null;
+  reason: string | null;
+  reason_text: string | null;
+  /** 「N 取全网格格数、未做试验间相关性校正——保守估计」，照抄服务端 */
+  note: string;
+  n_trials: number;
+  n_valid: number;
+  best_index: number | null;
+  /** 每期口径（未年化）：进公式的是它，年化值已 /√252 */
+  sr: number | null;
+  sr0: number | null;
+  sr_variance: number | null;
+  skew: number | null;
+  /** **原始**峰度（正态 = 3），不是超额峰度 */
+  kurt: number | null;
+  observations: number | null;
+}
+
+/** 落库的汇总（`summary`）。`cells` 只在重开详情里有，列表页被 SQL 投影掉了 */
+export interface OptimizeSummary {
+  kind: "grid" | "batch";
+  cells: OptimizeCell[];
+  cells_total: number;
+  cells_ok: number;
+  best_index: number | null;
+  overfit: OverfitBlock;
+  /** 全体格共用的窗口；逐格不同（批量）时为 null——**不挑一格冒充全体** */
+  window: { start: string | null; end: string | null; bars: number } | null;
+  costs: string;
+  pit_mode: PitMode;
+  adjust: Adjust;
+  duration_s: number;
+}
+
+/** `GET /optimize/runs` 的摘要项：`summary` **不含每格矩阵**（SQL 投影 `summary - 'cells'`） */
+export interface OptimizeRunSummary {
+  id: string;
+  created_at: string;
+  request: StoredOptimizeRequest;
+  summary: Omit<OptimizeSummary, "cells">;
+}
+
+/** `GET /optimize/runs/{id}` 的详情 */
+export interface OptimizeRunDetail {
+  id: string;
+  created_at: string;
+  request: StoredOptimizeRequest;
+  summary: OptimizeSummary;
+}
+
+/** 落库的请求（网格与批量共用一套字段，按 `kind` 区分用哪些） */
+export interface StoredOptimizeRequest {
+  kind: "grid" | "batch";
+  strategy?: Strategy;
+  strategy_id?: string | null;
+  strategy_name?: string | null;
+  symbol?: string;
+  symbols?: string[];
+  strategies?: { strategy: Strategy; strategy_id?: string | null; params?: Record<string, number> }[];
+  axes?: OptimizeAxis[];
+  params?: Record<string, number>;
+  start: string | null;
+  end: string | null;
+  adjust: Adjust;
+  pit_mode: PitMode;
+  costs: CostOptions;
+}
+
+/** `start` 帧：先把总数与坐标轴给出去，客户端据此画空的热力图与进度 */
+export interface OptimizeStartFrame {
+  kind: "grid" | "batch";
+  total: number;
+  symbol?: string;
+  strategy?: Strategy;
+  strategy_name?: string | null;
+  symbols?: string[];
+  strategies?: { strategy: Strategy; strategy_name: string | null }[];
+  axes?: OptimizeAxis[];
+  window?: { start: string; end: string };
+  pit_mode: PitMode;
+}
+
+/** `done` 帧：落库后的运行号与收尾读数（**每格矩阵不重发**，客户端已经有了） */
+export interface OptimizeDoneFrame {
+  run_id: string;
+  kind: "grid" | "batch";
+  cells_total: number;
+  cells_ok: number;
+  best_index: number | null;
+  overfit: OverfitBlock;
+  duration_s: number;
+}
+
+export interface GridRequest {
+  strategy: Strategy;
+  strategy_id?: string;
+  symbol: string;
+  start?: string;
+  end?: string;
+  costs?: Partial<CostOptions>;
+  /** 网格**不收 `both`**：那等于把每格工作量翻倍 */
+  pit_mode?: "pit" | "non_pit";
+  params?: Record<string, number>;
+  axes: OptimizeAxis[];
+}
+
+export interface BatchRequest {
+  symbols: string[];
+  strategies: { strategy: Strategy; strategy_id?: string; params?: Record<string, number> }[];
+  start?: string;
+  end?: string;
+  costs?: Partial<CostOptions>;
+  pit_mode?: "pit" | "non_pit";
+}

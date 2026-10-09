@@ -250,6 +250,9 @@ def test_grid_streams_start_cells_then_done(signed_in: Any, data_dir: Path) -> N
     assert done["cells_ok"] == 3 and done["cells_total"] == 3
     assert done["overfit"]["n_trials"] == 3
     assert done["best_index"] is not None
+    # 原因码与展示文案**同行**出到帧里（M5b-2 起）：前端直接显示，不自己拼一句。
+    # 出数时两者都必须是 None，不留下半句解释
+    assert done["overfit"]["reason"] is None and done["overfit"]["reason_text"] is None
 
 
 def test_grid_saves_the_summary_when_the_stream_completes(

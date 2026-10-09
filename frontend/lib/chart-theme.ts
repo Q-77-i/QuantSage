@@ -30,6 +30,14 @@ export interface ChartTokens {
   up: string;
   /** 跌（A 股口径绿） */
   down: string;
+  /**
+   * 网格热力图的 diverging 色阶：**负 → 0 → 正**，7 档（M5b）。
+   *
+   * 为什么不是 `up`/`down` 那对红绿：跑 CVD 模拟实测它们的 ΔE 只有 **7.6**（deutan），
+   * 落在 6–8 的 floor 带（配次级编码才合法）；蓝↔红是 **20.9 / 13.9**，远高于目标线 8。
+   * 推导与四个臂各自的 `validateOrdinal` 读数见 `P2-M5b-design-brief.md` §二。
+   */
+  diverge: string[];
 }
 
 export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
@@ -44,6 +52,7 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     series3: "#8a5cd6",
     up: "#d03b3b",
     down: "#0e8f6b",
+    diverge: ["#a00011", "#c2635b", "#dda7a1", "#f0efec", "#a1b6d3", "#5e82b5", "#184f95"],
   },
   dark: {
     surface: "#131722",
@@ -56,6 +65,8 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     series3: "#9b7ce8",
     up: "#ef5350",
     down: "#26a69a",
+    // 深色不是浅色的自动翻转：极色更亮（暗底上「越亮越大」），中点是另一个灰
+    diverge: ["#f69b95", "#ba7e79", "#80615f", "#4a4b52", "#5c6b80", "#7492ba", "#8dbaf7"],
   },
 };
 
