@@ -29,6 +29,7 @@ from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
 from app.api.etl import router as etl_router
 from app.api.events import router as events_router
+from app.api.factor import router as factor_router
 from app.api.market import router as market_router
 from app.api.optimize import router as optimize_router
 from app.api.strategies import router as strategies_router
@@ -187,6 +188,7 @@ for router in (
     watchlist_router,
     strategies_router,
     optimize_router,
+    factor_router,
     etl_router,
 ):
     app.include_router(router)

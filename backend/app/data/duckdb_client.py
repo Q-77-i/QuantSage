@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -285,6 +285,112 @@ def latest_dates(data_dir: Path | None = None) -> dict[str, object]:
             "rows": int(row.get("rows") or 0),
         },
     }
+
+
+#: 价格动量 / 反转因子的回看长度（**有价 bar 数**，M5c 固定 20）。
+FACTOR_LOOKBACK = 20
+
+#: 价格面板向前多扫的自然日 = 3 × lookback。窗口首日的 `close_lag` 需要更早的 bar 才存在；
+#: 补窗不足时那是**保守缺失**（NULL 而非错值）。实测（2026-07-07 起 60 个交易日窗口）：
+#: 补 60 天与全史扫描相比，331,372 个 (标的, 日) 键里只差 7 个（都是停牌稀疏标的），
+#: 耗时 0.15s vs 0.60s。
+FACTOR_PADDING_DAYS = FACTOR_LOOKBACK * 3
+
+
+def factor_event_rows(data_dir: Path | None = None) -> list[dict]:
+    """因子面板的事件原料：有向事件按标的摊平，只取三列（M5c）。
+
+    - 只收 `direction_norm ∈ {bullish, bearish}`：方向是因子值的符号来源。中性/未映射
+      **不是「无方向」而是「类别不等于方向」**（公告的 `direction_norm` 为 NULL 是设计，
+      见 `etl/store.py`），一律不进面板。
+    - **`unnest(symbols)`**：一条事件挂多只股票只存一行（M2b），不摊平就没法按标的排序。
+      实测 70.5% 的有向事件一个标的都没挂，那些行摊平后自然消失——面板原料因此比事件数
+      小得多（21,318 vs 57,403），池子口径如实写进报告 `notes`。
+    - `factor_value` 原样带出（实测覆盖 100%）；为空的行由面板层剔除并计数。
+    - 不做 PIT 过滤——按 `available_at` 设卡是面板层的职责（复用 `bar_cutoff`），同 `events()`。
+    """
+    con = connect(data_dir)
+    try:
+        return _fetch(
+            con,
+            f"""
+            SELECT unnest(symbols) AS symbol, available_at, factor_value
+            FROM {EVENTS_VIEW}
+            WHERE direction_norm IN ('bullish', 'bearish')
+            ORDER BY available_at, symbol
+            """,
+            [],
+        )
+    finally:
+        con.close()
+
+
+def factor_market_days(
+    start: str, end: str, *, adjust: str = "qfq", data_dir: Path | None = None
+) -> list[date]:
+    """**补窗内**的市场交易日（升序），供因子面板做事件归属（M5c）。
+
+    为什么单独一条查询：归属日必须能落在**窗口之前**的交易日上——否则「窗口前可得的事件」
+    会被 `bucket_day` 的首日兜底吸进窗口第一天（`EventFilter` 的语义就是首根 bar 放行全部积压，
+    见 `factor/panel.py`）。而价格行只取窗口内即可（`close_lag` 由 SQL 在补窗上算完），
+    把补窗的 33 万行整段搬进内存纯属浪费——这里只取「有哪些日子」，几十行。
+
+    只返回**有价 bar 出现过**的日子（与 `cross_section` / `bars()` 同口径：无价不算交易日）。
+    """
+    first = date.fromisoformat(start) - timedelta(days=int(FACTOR_PADDING_DAYS))
+    con = connect(data_dir)
+    try:
+        rows = _fetch(
+            con,
+            f"""
+            SELECT DISTINCT trade_date FROM {BARS_VIEW}
+            WHERE adjustment = ? AND trade_date BETWEEN ? AND ?
+              AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
+            ORDER BY trade_date
+            """,
+            [adjust, first, end],
+        )
+    finally:
+        con.close()
+    return [row["trade_date"] for row in rows]
+
+
+def factor_price_rows(
+    start: str, end: str, *, adjust: str = "qfq", data_dir: Path | None = None
+) -> list[dict]:
+    """价格面板原料：窗口内每根**有价** bar 的开盘 / 收盘 + `lookback` 根之前的收盘（M5c）。
+
+    一条窗口函数查询出全市场面板——**禁止逐标的调 `bars()`**（那是 154ms/次的全史扫描，
+    5,798 只就是分钟级）。`close_lag` 供动量 / 反转因子用（`close / close_lag - 1`）；
+    它按**该标的自己的有价 bar** 回看，停牌空洞因此被跳过，即「20 个有价交易日」。
+
+    向前多扫 `FACTOR_PADDING_DAYS` 个自然日**只为把 `close_lag` 算准**，返回的仍是
+    窗口内（`start` / `end` 含端点，与 `bars()` 同口径）的行；补窗里的**日子**由
+    `factor_market_days()` 单独给（事件归属要用，但不值得把 33 万行搬进内存）。
+    无价 bar 与 `bars()` 同口径剔除。
+    """
+    first = date.fromisoformat(start) - timedelta(days=int(FACTOR_PADDING_DAYS))
+    con = connect(data_dir)
+    try:
+        return _fetch(
+            con,
+            f"""
+            WITH p AS (
+                SELECT symbol, trade_date, open, close,
+                       lag(close, {FACTOR_LOOKBACK}) OVER w AS close_lag
+                FROM {BARS_VIEW}
+                WHERE adjustment = ? AND trade_date BETWEEN ? AND ?
+                  AND open IS NOT NULL AND high IS NOT NULL
+                  AND low IS NOT NULL AND close IS NOT NULL
+                WINDOW w AS (PARTITION BY symbol ORDER BY trade_date)
+            )
+            SELECT symbol, trade_date, open, close, close_lag FROM p
+            WHERE trade_date >= ? ORDER BY trade_date, symbol
+            """,
+            [adjust, first, end, start],
+        )
+    finally:
+        con.close()
 
 
 def events(

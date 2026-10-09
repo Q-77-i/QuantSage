@@ -21,13 +21,14 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from app.backtest.metrics import EXCLUDE_ABS_CHANGE_PCT
 from app.data import duckdb_client as dc
 
 #: 基准类型标识。UI 与报告据此显示口径文案，**不显示成指数名**。
 MARKET_KIND = "market_equal_weight"
 
-#: 剔除阈值：超出任何板别的涨跌停幅度（北交所 30% 为最宽）
-EXCLUDE_ABS_CHANGE_PCT = 30.0
+# `EXCLUDE_ABS_CHANGE_PCT`（剔除阈值）定义在 `metrics.py`（纯口径层，M5c 的因子面板同引），
+# 这里再导出一次，`describe()` 与既有消费方照旧从本模块取。
 
 NOTE = (
     "数据源不覆盖指数（M2a 已核）；本基准为全市场等权组合代理，日频再平衡、"

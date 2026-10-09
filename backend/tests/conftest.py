@@ -63,6 +63,9 @@ EVENTS_SCHEMA = pa.schema(
         ("available_at", pa.timestamp("us", tz=CN_TZ)),
         ("direction_norm", pa.string()),
         ("factor_scores", pa.string()),
+        # M5c 因子面板吃的就是这一列（带符号的因子值，实测覆盖 100%）：
+        # 面板不解析 `factor_scores` 的 JSON，两个字段同源（|factor_value| = score / 100）
+        ("factor_value", pa.float64()),
         # 来源三元组：生产数据本就有，T6 的 events 端点必须原样带出（PRD §5 硬性要求），
         # 夹具缺这几列就没法在离线测试里验这条映射
         ("source", pa.string()),
@@ -124,8 +127,10 @@ def write_events_parquet(
     records = [
         {
             "event_id": row["event_id"],
-            # 传了 `symbols` 就按它写（多标的场景），否则单标的
-            "symbols": list(row.get("symbols") or [symbol]),
+            # 传了 `symbols` 就按它写（多标的场景），否则单标的。
+            # **空数组是「传了」**：生产数据里 70.5% 的有向事件一个标的都没挂（M5c 实测），
+            # 用 `or` 兜底会把 `[]` 静默换成单标的，那种形状就再也测不出来了
+            "symbols": list(row["symbols"]) if row.get("symbols") is not None else [symbol],
             "stocks": row.get("stocks"),
             "event_type": row.get("event_type", "news"),
             "title": str(row.get("title", "")),
@@ -133,6 +138,7 @@ def write_events_parquet(
             "available_at": row.get("available_at", row["event_time"]),
             "direction_norm": row.get("direction_norm"),
             "factor_scores": row.get("factor_scores", encode_factor_scores(row.get("score"))),
+            "factor_value": row.get("factor_value"),
             "source": row.get("source"),
             "original_source": row.get("original_source"),
             "content_hash": row.get("content_hash"),

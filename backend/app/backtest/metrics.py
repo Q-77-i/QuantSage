@@ -23,6 +23,12 @@ TRADING_DAYS_PER_YEAR = 252
 #: 少于该 bar 数时报告标注样本量不足：年化与夏普按 252 折算会显著放大噪声。
 SHORT_WINDOW_BARS = 120
 
+#: 样本剔除阈值：超出任何板别的涨跌停幅度（北交所 30% 为最宽）⇒ 只可能是新股首日 / 复牌 /
+#: 数据异常，而这些在回测里本就不可投资。全市场等权基准（M5a）与因子面板（M5c）**共用同一个数**。
+#: 住在纯口径层（同 `SHORT_WINDOW_BARS`）而不是 `benchmark.py`：后者带 I/O 依赖，消费方不该
+#: 为了一个阈值被拖进数据层。
+EXCLUDE_ABS_CHANGE_PCT = 30.0
+
 
 @dataclass(frozen=True, slots=True)
 class Metrics:

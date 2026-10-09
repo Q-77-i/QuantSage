@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
 import pytest
 
 from app.data import duckdb_client as dc
-from tests.conftest import write_events_parquet
+from tests.conftest import ts, write_bars_parquet, write_events_parquet
 
 
 @pytest.fixture
@@ -174,3 +174,117 @@ def test_event_coverage_reads_from_data(sample_data_dir: Path) -> None:
     """覆盖区间必须查出来：起点固化、终点随日增前移，写死「最近 3 个月」会骗人。"""
     coverage = dc.event_coverage(data_dir=sample_data_dir)
     assert coverage == {"start": "2026-07-10", "end": "2026-08-10", "rows": 4}
+
+
+# ── M5c：因子面板的两条取数 ──────────────────────────────────
+
+#: 25 根连续 bar：够 lookback=20 回看，窗口首日就能有 `close_lag`
+FACTOR_DAYS = [date(2026, 6, 1) + timedelta(days=i) for i in range(25)]
+
+
+def _write_factor_dir(tmp_path: Path) -> Path:
+    """一只够长的标的 + 一只稀疏标的（补窗内不足 lookback+1 根 bar）。"""
+    write_bars_parquet(
+        tmp_path / "bars",
+        "600519",
+        [
+            {"trade_date": day, "open": float(100 + i), "close": float(100 + i)}
+            for i, day in enumerate(FACTOR_DAYS)
+        ],
+    )
+    write_bars_parquet(
+        tmp_path / "bars",
+        "000001",
+        [{"trade_date": day, "open": 10.0, "close": 10.0} for day in FACTOR_DAYS[-3:]],
+    )
+    write_events_parquet(
+        tmp_path / "events",
+        "panel",
+        [
+            {
+                "event_id": "news:1",
+                "symbols": ["600519"],
+                "direction_norm": "bullish",
+                "factor_value": 0.5,
+                "event_time": ts("2026-06-22 09:30:00"),
+            },
+            {
+                "event_id": "news:2",
+                "symbols": ["600519", "000001"],
+                "direction_norm": "bearish",
+                "factor_value": -0.4,
+                "event_time": ts("2026-06-23 16:00:00"),
+            },
+            {
+                "event_id": "news:3",
+                "symbols": ["600519"],
+                # 中性不进面板：方向是因子值的符号来源
+                "direction_norm": "neutral",
+                "factor_value": 0.1,
+                "event_time": ts("2026-06-24 09:30:00"),
+            },
+            {
+                "event_id": "news:4",
+                # 一个标的都没挂（实测占全部有向事件的 70.5%）——摊平后自然消失
+                "symbols": [],
+                "direction_norm": "bullish",
+                "factor_value": 0.9,
+                "event_time": ts("2026-06-24 09:30:00"),
+            },
+        ],
+    )
+    return tmp_path
+
+
+def test_factor_event_rows_unnest_and_direction_filter(tmp_path: Path) -> None:
+    data_dir = _write_factor_dir(tmp_path)
+
+    rows = dc.factor_event_rows(data_dir=data_dir)
+
+    assert [(row["symbol"], row["factor_value"]) for row in rows] == [
+        ("600519", 0.5),
+        ("000001", -0.4),
+        ("600519", -0.4),
+    ]
+
+
+def test_factor_price_rows_lag_is_per_symbol_and_window_only(tmp_path: Path) -> None:
+    """`close_lag` 按**该标的有价 bar 数**回看；只返回窗口内的日子（补窗只为算 lag）。"""
+    data_dir = _write_factor_dir(tmp_path)
+
+    rows = dc.factor_price_rows(
+        FACTOR_DAYS[20].isoformat(), FACTOR_DAYS[24].isoformat(), data_dir=data_dir
+    )
+
+    by_key = {(row["symbol"], row["trade_date"]): row for row in rows}
+    assert [row["trade_date"] for row in rows if row["symbol"] == "600519"] == FACTOR_DAYS[20:]
+    assert by_key[("600519", FACTOR_DAYS[20])]["close_lag"] == 100.0  # 20 根之前 = 第 0 天
+    assert by_key[("600519", FACTOR_DAYS[24])]["close"] == 124.0
+    # 稀疏标的补窗内不足 21 根 bar：**保守缺失**（None），不是错值
+    assert by_key[("000001", FACTOR_DAYS[22])]["close_lag"] is None
+
+
+def test_factor_price_rows_excludes_bars_without_prices(tmp_path: Path) -> None:
+    """无价 bar 与 `bars()` 同口径剔除——留它进来会被算成 0 元的价格。"""
+    (tmp_path / "bars").mkdir()
+    (tmp_path / "events").mkdir()
+    con = duckdb.connect()
+    try:
+        con.execute(
+            "COPY (SELECT * FROM (VALUES"
+            " ('600519', 'qfq', DATE '2026-06-01', 10.0, 10.0, 10.0, 10.0),"
+            " ('600519', 'qfq', DATE '2026-06-02', NULL, NULL, NULL, NULL),"
+            " ('600519', 'qfq', DATE '2026-06-03', 11.0, 11.0, 11.0, 11.0)"
+            ") t(symbol, adjustment, trade_date, open, high, low, close))"
+            f" TO '{tmp_path / 'bars' / 'x.parquet'}' (FORMAT PARQUET)"
+        )
+        con.execute(
+            "COPY (SELECT * FROM (VALUES ('600519', 'news:1'))"
+            f" t(symbol, event_id)) TO '{tmp_path / 'events' / 'x.parquet'}' (FORMAT PARQUET)"
+        )
+    finally:
+        con.close()
+
+    rows = dc.factor_price_rows("2026-06-01", "2026-06-03", data_dir=tmp_path)
+
+    assert [row["trade_date"] for row in rows] == [date(2026, 6, 1), date(2026, 6, 3)]
