@@ -301,9 +301,28 @@ def test_events_cover_the_same_window_as_p1_and_more() -> None:
         f"本地语料止于 {coverage['end']}，归档已发布到 {archive_last}——漏拉了，跑 download_events.py"
     )
 
+    # 样本标的的 K 线：起点要早于语料窗口（能追溯到语料之前），末端要与本地行情持平
+    # （这几只的历史没被截断）。
+    #
+    # **末端那句原来写的是 `dates[-1] >= coverage["end"]`（M2c 收口当天改为现在的形式）**：
+    # 行情与事件是**两条各自推进的通道**——事件日更（进程内调度器 + 归档按日发布），行情是
+    # 年度整片的重下载（21 次会话 / ~99MB 一天，见待办「行情刷新进调度器」）。事件领先行情
+    # 是常态而非缺陷（收口当天差 8 天），旧形式要求 K 线追平语料，是「日更 ETL 一跑起来就
+    # 必然失效」的假设。「语料漏拉」由上面那条 `coverage["end"] == archive_last` 单独守着——
+    # 那条方向更准（比的是**归档**，不是另一条通道的进度），且已用它抓到过真实缺口。
+    #
+    # 附注：`bars()` 剔除无价 bar，所以某只样本股**恰好在本地行情最后一天停牌**时这里的等号
+    # 会失败。基线里这种行全期只有 49 只（体检 B4 盯着），概率极低；真撞上，报错文案会直接
+    # 指向那只标的与两个日期，不至于误读成「数据被截断」。
+    latest_bar = dc.latest_dates()["latest_trade_date"]
     for symbol in SAMPLE_SYMBOLS:
         dates = [row["trade_date"].isoformat() for row in dc.bars(symbol, adjust="qfq")]
-        assert dates[0] <= coverage["start"] and dates[-1] >= coverage["end"]
+        assert dates[0] <= coverage["start"], (
+            f"{symbol} 的 K 线起点 {dates[0]} 晚于语料起点 {coverage['start']}"
+        )
+        assert dates[-1] == latest_bar, (
+            f"{symbol} 的 K 线止于 {dates[-1]}，本地行情已到 {latest_bar}——这只的历史被截断了"
+        )
 
 
 def test_events_keep_spec_fields_and_nested_shapes() -> None:
