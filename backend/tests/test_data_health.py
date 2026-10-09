@@ -519,3 +519,110 @@ def test_script_strict_turns_warn_into_failure(health_dir: Path) -> None:
     refresh_manifest(health_dir)
     assert main(["--data-dir", str(health_dir)]) == 0  # 只有 warn
     assert main(["--data-dir", str(health_dir), "--strict"]) == 1
+
+
+# ── X4 / X5 / X6：四通道的新鲜度（M2c 补口，2026-10-09）────────
+#
+# 这三项的共同点：它们**不是数据正确性问题，是「落后了没人知道」**。收口当天两次缺口
+# 都是手工撞见的，所以判据的重点不在阈值，而在**每个「查不到」都要与「没问题」分开**：
+# 依赖不可达一律降级 info，绝不静默成「一致」。
+
+
+def test_x4_flags_days_missing_from_the_index(health_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """索引少了一天 → warn。**这是本项存在的唯一理由**：补嵌是后台动作，它没跟上必须有人喊。"""
+    from app.rag import collection as rag
+
+    monkeypatch.setattr(rag, "get_client", lambda *a, **k: object())
+    monkeypatch.setattr(rag, "count_by_day", lambda *a, **k: {})  # 一天都没嵌
+    check = run_one(health_dir, "X4")
+
+    assert check.level == "warn"
+    assert check.data["missing"] == ["2026-09-01"]
+    assert "2026-09-01" in check.detail
+
+
+def test_x4_is_quiet_when_the_index_matches(health_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.rag import collection as rag
+
+    monkeypatch.setattr(rag, "get_client", lambda *a, **k: object())
+    monkeypatch.setattr(rag, "count_by_day", lambda *a, **k: {"2026-09-01": 1})
+    check = run_one(health_dir, "X4")
+
+    assert check.level == "info"
+    assert check.data["missing"] == []
+
+
+def test_x4_dependency_down_is_info_not_error(health_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Qdrant 不可达 → **info**。索引是语料的派生物，它没跟上不该把整份体检判失败；
+    但文案必须挡住「查不到 = 没落后」这个误读——那正是本项要防的事。"""
+    from app.rag import collection as rag
+
+    def boom(*_a, **_k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(rag, "get_client", boom)
+    check = run_one(health_dir, "X4")
+
+    assert check.level == "info"
+    assert "Qdrant 不可达" in check.title
+    assert "别把「查不到」读成「没落后」" in check.detail
+
+
+def test_x5_flags_bars_behind_the_calendar(health_dir: Path) -> None:
+    """夹具的行情停在 2026-09-05，今天远在其后 → 落后远超阈值。"""
+    check = run_one(health_dir, "X5")
+
+    assert check.level == "warn"
+    assert check.data["latest_bar"] == str(cal.sessions(date(2026, 9, 1), date(2026, 10, 31))[:5][-1])
+    assert check.data["behind_trading_days"] > dh.BARS_STALE_TRADING_DAYS
+    # 「不是日更」这句必须在文案里，否则读者会以为坏了
+    assert "不是日更" in check.detail
+
+
+def test_x5_is_quiet_when_bars_reach_the_last_session(tmp_path: Path) -> None:
+    """阈值按**交易日**给：行情写到「今天及以前最后一个交易日」就是干净的。"""
+    last = cal.last_session_on_or_before(date.today())
+    write_bars(tmp_path, [bar("600519", last)])
+    write_event_day(tmp_path, last, [event("news:1", last)])
+    (tmp_path / "_meta").mkdir(parents=True, exist_ok=True)
+    _write_manifests(tmp_path)
+
+    check = run_one(tmp_path, "X5")
+    assert check.level == "info"
+    assert check.data["behind_trading_days"] == 0
+
+
+def test_x6_flags_a_stalled_archive(tmp_path: Path) -> None:
+    """归档上界停在很久以前 → warn。抓的是「源侧不发了」，与 E7 的「源侧有、本地无」互补。"""
+    stalled = date.today() - timedelta(days=dh.ARCHIVE_STALL_DAYS + 2)
+    (tmp_path / "_meta").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "_meta" / "etl_runs.jsonl").write_text(
+        json.dumps({"scope": "daily", "archive_last": str(stalled), "started_at": "x"}) + "\n",
+        encoding="utf-8",
+    )
+    last = cal.last_session_on_or_before(date.today())
+    write_bars(tmp_path, [bar("600519", last)])
+    write_event_day(tmp_path, last, [event("news:1", last)])
+    _write_manifests(tmp_path)
+
+    check = run_one(tmp_path, "X6")
+    assert check.level == "warn"
+    assert check.data["archive_last"] == str(stalled)
+    # 停更期间 gap 一直是 0，这条提示是给人看的出路
+    assert "--backfill" in check.detail
+
+
+def test_x6_missing_key_is_unknown_not_stalled(tmp_path: Path) -> None:
+    """台账里没有 `archive_last`（老 schema）→ **无从判断**，不能当成停更。"""
+    (tmp_path / "_meta").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "_meta" / "etl_runs.jsonl").write_text(
+        json.dumps({"scope": "manual", "days": [], "result": "ok"}) + "\n", encoding="utf-8"
+    )
+    last = cal.last_session_on_or_before(date.today())
+    write_bars(tmp_path, [bar("600519", last)])
+    write_event_day(tmp_path, last, [event("news:1", last)])
+    _write_manifests(tmp_path)
+
+    check = run_one(tmp_path, "X6")
+    assert check.level == "info"
+    assert "无从判断" in check.detail

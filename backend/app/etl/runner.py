@@ -15,12 +15,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from app.core.config import get_settings
+from app.core.config import REPO_ROOT, get_settings
 from app.data import calendar as cal
 from app.data import naming
 from app.etl import archive, store
@@ -71,6 +74,9 @@ class RunReport:
     #: 名称字典重建的一句话状态（M5a）：`「5610 只 / 5615 行」` 或 `「失败：…」`。
     #: 字典是**派生物**，建失败不该让一整天的语料白拉，故失败也照常收尾、只记在这里。
     names: str = ""
+    #: 向量索引增量补嵌的一句话状态（M2c 补口）：`「已补嵌，用时 41s」` / `「跳过：无新物化」` /
+    #: `「失败：…」`。同 `names` 的口径——索引也是**派生物**。
+    embed: str = ""
 
     def summary(self) -> str:
         counted = {status: sum(1 for day in self.days if day.status == status) for status in
@@ -176,8 +182,10 @@ def run(
     finally:
         report.finished_at = datetime.now(timezone.utc).isoformat()
         _LOCK.release()
-    # 字典在语料落定之后重建；状态写进台账（`_append_ledger` 读的就是 report）
+    # 语料落定之后重建两个**派生物**（名称字典 / 向量索引）；状态写进台账
+    # （`_append_ledger` 读的就是 report）。两件都吞异常——见各自 docstring。
     report.names = refresh_names(paths_)
+    report.embed = refresh_index(paths_, report)
     _append_ledger(paths_, report)
     store.write_manifest(
         paths_.meta_dir,
@@ -203,6 +211,54 @@ def refresh_names(paths_: Paths) -> str:
     except Exception as exc:  # noqa: BLE001 - 见 docstring：字典失败不拖垮 ETL
         return f"失败：{type(exc).__name__}: {exc}"[:200]
     return f"{len(naming.primary_names(rows))} 只 / {len(rows)} 行"
+
+
+def refresh_index(paths_: Paths, report: RunReport) -> str:
+    """把新落地的语料增量嵌进向量库（M2c 补口）。返回一句话状态，**从不抛异常**。
+
+    **走子进程，不在 API 进程里跑**。批量嵌入是 CPU 活，而 API 进程里的检索用的是
+    **同一个 CPU 编码器**——同一个 FlagEmbedding 对象被两个线程并发调用，正是
+    2026-10-09 那次 SIGABRT 的同类风险（当时在 MPS 上；`_run_on_device` 刻意不给
+    CPU 加锁）。子进程还额外买到「崩了不拖垮 API」；代价是多一份模型内存（~1GB）
+    与每次重载模型（~30s），一天一次。
+
+    三条与 `refresh_names` 同源的口径：
+      * **失败不改变 ETL 的成败**——索引是派生物，状态进台账即可；
+      * **没有新物化就不跑**（全 `skipped` 的日子没什么可嵌，省掉一次白载模型）；
+      * **本函数吞掉一切异常**，绝不把 ETL 整轮判失败。
+
+    索引**实际落后**由体检 X4 兜底（本地日分区 ↔ Qdrant `day` 分区逐日对账）——
+    台账只记「这一跑干了什么」，对不对账得上由 X4 说话。
+    """
+    settings = get_settings()
+    if not settings.etl_embed_after_run:
+        return "未启用"
+    if not any(day.status == "ok" for day in report.days):
+        return "跳过：本次无新物化的日分区"
+
+    script = REPO_ROOT / "backend" / "scripts" / "embed_events.py"
+    log_path = paths_.meta_dir / "embed_runs.log"
+    started = time.monotonic()
+    try:
+        with log_path.open("a", encoding="utf-8") as sink:
+            sink.write(f"\n=== {datetime.now(timezone.utc).isoformat()} 由 ETL {report.scope} 触发 ===\n")
+            sink.flush()
+            proc = subprocess.run(
+                [sys.executable, str(script), "--data-dir", str(paths_.data_dir)],
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                timeout=settings.etl_embed_timeout_seconds,
+                cwd=str(REPO_ROOT / "backend"),
+                check=False,
+            )
+    except subprocess.TimeoutExpired:
+        return f"失败：超过 {settings.etl_embed_timeout_seconds}s 未完成（子进程已终止）"
+    except Exception as exc:  # noqa: BLE001 - 见 docstring：索引失败不拖垮 ETL
+        return f"失败：{type(exc).__name__}: {exc}"[:200]
+    took = time.monotonic() - started
+    if proc.returncode != 0:
+        return f"失败：子进程退出码 {proc.returncode}（用时 {took:.0f}s，详见 {log_path.name}）"
+    return f"已补嵌，用时 {took:.0f}s"
 
 
 def is_running() -> bool:

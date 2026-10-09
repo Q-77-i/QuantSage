@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     etl_minute: int = 10
     etl_trailing_days: int = 7  # 回落窗口（自然日）：吸收迟到事件与平台修订
     etl_catchup_on_start: bool = True  # 启动时对一次缺口（关机/长假后自动对齐）
+    # 语料落定后拉起**增量嵌入**子进程（M2c 补口）——不补的话向量库每天落后一天，
+    # 且落后无人知（收口当天两次缺口都是手工撞见的）。默认关，与 etl_enabled 同风格。
+    etl_embed_after_run: bool = False
+    # 补嵌的上限：实测一天语料（1k–6k 行）约 1–8 分钟，8 天积压 18 分钟，留足余量
+    etl_embed_timeout_seconds: int = 1800
 
     # ── RAG（M3）：本地嵌入与检索 ──
     # 权重目录放仓库内 .tools/（已 gitignore），不散落到 ~/.cache；模型各约 2.3GB

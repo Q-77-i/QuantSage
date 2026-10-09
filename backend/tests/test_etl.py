@@ -586,3 +586,100 @@ def test_run_records_the_name_status_in_the_ledger(tmp_path: Path, monkeypatch: 
         (tmp_path / "_meta" / "etl_runs.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
     )
     assert ledger["names"] == "写入桩：1 只 / 1 行"
+
+
+# ── 自动补嵌（M2c 补口，2026-10-09）──────────────────────────
+#
+# 三条口径各一组：**没有新物化就不跑**（省一次白载模型）、**子进程失败不改变 ETL 的成败**
+# （索引是派生物）、**开关关着一次都不拉**。不 mock 子进程本身的存在，但一律换成假的
+# `subprocess.run`——真拉一次要载 1GB 模型，用例不该干那件事；真跑的证据在 `logs/m2c/`。
+
+
+class _Proc:
+    def __init__(self, returncode: int = 0) -> None:
+        self.returncode = returncode
+
+
+def _paths(tmp_path: Path) -> runner.Paths:
+    (tmp_path / "_meta").mkdir(parents=True, exist_ok=True)
+    return runner.paths(tmp_path)
+
+
+def _report(*statuses: str) -> runner.RunReport:
+    return runner.RunReport(
+        scope="daily",
+        started_at="x",
+        days=[runner.DayOutcome(date=f"2026-10-0{i + 1}", status=s) for i, s in enumerate(statuses)],
+    )
+
+
+def test_embed_after_run_is_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认关：与 `etl_enabled` 同一个姿态——会对外拉模型、吃内存的事不默认开。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "etl_embed_after_run", False)
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: pytest.fail("不该拉子进程"))
+    assert runner.refresh_index(_paths(tmp_path), _report("ok")) == "未启用"
+
+
+def test_embed_after_run_skips_when_nothing_was_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全 `skipped` 的日常一跑占多数（回落窗口里绝大多数日子本地已有）——别白载一次模型。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "etl_embed_after_run", True)
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: pytest.fail("不该拉子进程"))
+    assert "无新物化" in runner.refresh_index(_paths(tmp_path), _report("skipped", "skipped"))
+
+
+def test_embed_after_run_spawns_a_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "etl_embed_after_run", True)
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return _Proc(0)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    status = runner.refresh_index(_paths(tmp_path), _report("ok"))
+
+    assert status.startswith("已补嵌")
+    assert seen["argv"][1].endswith("scripts/embed_events.py")
+    assert "--data-dir" in seen["argv"]
+    assert seen["kwargs"]["timeout"] == get_settings().etl_embed_timeout_seconds
+    assert seen["kwargs"]["check"] is False
+    # 子进程的输出得落盘，否则失败时无从查起
+    assert (tmp_path / "_meta" / "embed_runs.log").exists()
+
+
+def test_embed_failure_never_breaks_the_etl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """索引是**派生物**：它失败不该让一整天的语料白拉——状态进台账即可（同字典那条口径）。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "etl_embed_after_run", True)
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: _Proc(3))
+    status = runner.refresh_index(_paths(tmp_path), _report("ok"))
+    assert status.startswith("失败") and "退出码 3" in status
+
+    def blow_up(*_a, **_k):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(runner.subprocess, "run", blow_up)
+    assert runner.refresh_index(_paths(tmp_path), _report("ok")).startswith("失败：OSError")
+
+
+def test_embed_timeout_is_reported_not_raised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "etl_embed_after_run", True)
+
+    def timeout(*_a, **_k):
+        raise runner.subprocess.TimeoutExpired(cmd="embed_events.py", timeout=1)
+
+    monkeypatch.setattr(runner.subprocess, "run", timeout)
+    status = runner.refresh_index(_paths(tmp_path), _report("ok"))
+    assert status.startswith("失败") and "未完成" in status

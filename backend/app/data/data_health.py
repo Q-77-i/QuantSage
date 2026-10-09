@@ -38,6 +38,12 @@ Level = Literal["error", "warn", "info"]
 
 #: 冻结日历余量低于此天数即告警——到期 `CalendarOutOfRange` 会硬停 ETL 与回测
 CALENDAR_RUNWAY_WARN_DAYS = 90
+#: X5 行情落后折算成「交易日」的上限。行情是年度整片的**重下载**（21 会话 / ~99MB 一天），
+#: 不是日更，所以阈值按交易日给（自然日的周末与长假不该把它顶红）。超了才说，别天天喊。
+BARS_STALE_TRADING_DAYS = 5
+#: X6 归档上界停滞的自然日上限。源侧滚动窗口会停更（实测停过 9 天），停多久算异常由人定，
+#: 这里只负责让它**看得见**——与 E7 的「源侧有、本地无」互补
+ARCHIVE_STALL_DAYS = 3
 #: B5 自洽性容差（百分点）：close 环比与 `change_pct` 的允许偏差。**必须写死**——
 #: 容差取 0 时实测命中 762 万条，判据就不可复现了。
 STEP_TOLERANCE_PP = 0.011
@@ -679,6 +685,124 @@ def check_x3_ledger(con, data_dir) -> Check:
     )
 
 
+def check_x4_index_lag(con, data_dir) -> Check:
+    """向量索引落后：本地事件日分区 ↔ Qdrant 的 `day` 分区（M2c 补口）。
+
+    **Qdrant 不可达降级为 info，不是 error**——索引是语料的派生物，它没跟上不该把整份体检
+    判失败（同 B3 对 `adj_factor` 的口径）；但也不能静默：2026-10-09 收口当天索引落后了
+    8 天，没有任何地方看得见，是手工对账才撞出来的。
+    """
+    base = _data_dir(data_dir)
+    local = {
+        path.name[len("cn-events_") : -len(".parquet")]
+        for path in (base / "events").glob("cn-events_*.parquet")
+    }
+    if not local:
+        return Check(id="X4", level="info", title="向量索引：无本地语料可对账", detail="events/ 下没有日分区")
+
+    try:
+        from app.rag import collection as rag_collection
+
+        by_day = rag_collection.count_by_day(rag_collection.get_client())
+    except Exception as exc:  # noqa: BLE001 - 见 docstring：依赖不可达不该判失败
+        return Check(
+            id="X4",
+            level="info",
+            title="向量索引：查不到（Qdrant 不可达）",
+            detail=(
+                f"本地 {len(local)} 天；{type(exc).__name__}: {exc}"[:200]
+                + "——索引是派生物，本项不参与成败；但**别把「查不到」读成「没落后」**"
+            ),
+            data={"local_days": len(local), "error": f"{type(exc).__name__}"},
+        )
+
+    missing = sorted(local - set(by_day))
+    empty = sorted(day for day in local & set(by_day) if not by_day[day])
+    behind = [day for day in missing if day <= max(local)]
+    return Check(
+        id="X4",
+        level="warn" if behind or empty else "info",
+        title=(
+            f"向量索引落后 {len(behind)} 天" if behind else "向量索引与语料一致"
+        ),
+        detail=(
+            f"本地 {len(local)} 天 ↔ 索引 {len(by_day)} 天；未嵌 {len(behind)} 天"
+            + (f"（{_brief(behind)}）" if behind else "")
+            + (f"；嵌了但为 0 点 {len(empty)} 天（{_brief(empty)}）" if empty else "")
+            + "。补嵌：`python scripts/embed_events.py`（ETL 之后自动跑，见 etl_embed_after_run）"
+        ),
+        data={"local_days": len(local), "index_days": len(by_day), "missing": behind, "empty": empty},
+    )
+
+
+def check_x5_bars_staleness(con, data_dir) -> Check:
+    """行情停更：本地行情末端 vs 日历上「今天及以前最后一个交易日」（M2c 补口）。
+
+    阈值按**交易日**给——行情不是日更（年度整片重下载），按自然日算会让每个周末都报一次。
+    detail 里明写「不是日更」，否则读者会以为坏了。
+    """
+    latest = _one(con, "SELECT max(trade_date) AS day FROM bars").get("day")
+    if latest is None:
+        return Check(id="X5", level="info", title="行情停更：无行情数据", detail="bars/ 下没有可读的分片")
+    expected = cal.last_session_on_or_before(date.today())
+    behind = len(cal.sessions(latest, expected)) - 1 if expected > latest else 0
+    return Check(
+        id="X5",
+        level="warn" if behind > BARS_STALE_TRADING_DAYS else "info",
+        title=f"行情落后 {behind} 个交易日" if behind else "行情与日历一致",
+        detail=(
+            f"本地行情止于 {latest}，日历上最近一个交易日是 {expected}（落后 {behind} 个交易日，"
+            f"阈值 {BARS_STALE_TRADING_DAYS}）。**行情是年度整片的重下载、不是日更**"
+            f"（21 会话 / ~99MB 一天，见待办「行情刷新进调度器」）——落后本身不是故障，"
+            "是本项要让它**看得见**"
+        ),
+        data={"latest_bar": str(latest), "expected": str(expected), "behind_trading_days": behind},
+    )
+
+
+def check_x6_archive_stall(con, data_dir) -> Check:
+    """归档自己停更：从 **ETL 台账**读最近一次的 `archive_last`（M2c 补口）。
+
+    **本地读，不联网**——E7 那条教训就是别去调 xiaoshi CLI 的 `coverage()`（需网络与密钥、
+    300s 超时，失败时静默把「查不到」显示成「缺口 0」）。台账每次运行都记了当时读到的
+    `archive_last`，够用。抓的是「源侧不发了」，与 E7 的「源侧有、本地无」互补。
+    """
+    path = _data_dir(data_dir) / "_meta" / "etl_runs.jsonl"
+    if not path.exists():
+        return Check(id="X6", level="info", title="归档停更：无台账可判", detail=f"{path} 不存在")
+    latest_run, latest_archive = None, None
+    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # 坏行交给 X3 报，这里只找能读的
+        if entry.get("archive_last"):
+            latest_archive, latest_run = entry["archive_last"], entry.get("started_at")
+            break
+    if not latest_archive:
+        return Check(
+            id="X6",
+            level="info",
+            title="归档停更：台账里没有 archive_last",
+            detail="老格式的台账行没有这个键（schema 演进过）——**无从判断**，不当成停更",
+        )
+    stalled = (date.today() - date.fromisoformat(latest_archive)).days
+    return Check(
+        id="X6",
+        level="warn" if stalled > ARCHIVE_STALL_DAYS else "info",
+        title=f"归档上界停在 {latest_archive}（{stalled} 天前）" if stalled > ARCHIVE_STALL_DAYS else "归档在正常推进",
+        detail=(
+            f"最近一次运行的 `archive_last` = {latest_archive}（{stalled} 天前，阈值 {ARCHIVE_STALL_DAYS} 天，"
+            f"读自 {latest_run}）。**源侧滚动窗口会停更**（实测停过 9 天，恢复后积压撞上 7 天回落窗口，"
+            "漏掉中间的交易日）——停更期间 `--status` 的 gap 会一直是 0，**不能据此以为一切正常**；"
+            "恢复发布那天先看 gap，>0 就跑 `--backfill`"
+        ),
+        data={"archive_last": latest_archive, "stalled_days": stalled, "last_run": latest_run},
+    )
+
+
 def check_g1_datanotready(con, data_dir) -> Check:
     """挂账（只报不修）：`DataNotReady` 判据仍是「目录里有没有 parquet」。"""
     return Check(
@@ -727,6 +851,9 @@ CHECKS: tuple[Callable[..., Check], ...] = (
     check_x1_calendar_runway,
     check_x2_legacy_files,
     check_x3_ledger,
+    check_x4_index_lag,
+    check_x5_bars_staleness,
+    check_x6_archive_stall,
     check_g1_datanotready,
     check_g2_fingerprint,
 )
