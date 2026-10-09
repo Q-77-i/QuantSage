@@ -30,8 +30,10 @@ from app.api.chat import router as chat_router
 from app.api.etl import router as etl_router
 from app.api.events import router as events_router
 from app.api.market import router as market_router
+from app.api.optimize import router as optimize_router
 from app.api.strategies import router as strategies_router
 from app.api.watchlist import router as watchlist_router
+from app.backtest.batch import BatchRequestError
 from app.backtest.types import BacktestError, NoDataError
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
@@ -184,6 +186,7 @@ for router in (
     events_router,
     watchlist_router,
     strategies_router,
+    optimize_router,
     etl_router,
 ):
     app.include_router(router)
@@ -239,6 +242,19 @@ async def _sandbox_error(_: Request, exc: SandboxError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={"detail": str(exc), "kind": exc.kind},
+    )
+
+
+@app.exception_handler(BatchRequestError)
+async def _batch_request_error(_: Request, exc: BatchRequestError) -> JSONResponse:
+    """批处理的请求级错误（M5b）：**422**——是请求本身不成立，且必须在开流之前判死。
+
+    典型是「网格里有一格参数非法」：SPEC §6 M5b 写的「任一格非法即整单 422」。
+    流一旦开始，状态码就改不了了（与 chat 同一条约束），所以这类判断全在端点的
+    `StreamingResponse` **之前**完成。
+    """
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(exc)}
     )
 
 

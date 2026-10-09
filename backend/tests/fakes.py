@@ -107,6 +107,9 @@ class FakeDatabase:
         self._run_order: list[str] = []  # 插入序，列表按它倒序给「最新在前」
         # 策略：(user_id, strategy_id) → 行（名字唯一性另按 user 判，见 create_strategy）
         self.strategies: dict[tuple[int, str], dict[str, Any]] = {}
+        # 批量/网格汇总：run_id → 行（顺序另记，列表倒序给「最新在前」）
+        self.optimizations: dict[str, dict[str, Any]] = {}
+        self._optimization_order: list[str] = []
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -315,6 +318,54 @@ class FakeDatabase:
             "report": row["report"],
             "strategy_id": row["strategy_id"],
             "code_sha256": row["code_sha256"],
+        }
+
+    # ── 批量 / 网格汇总（M5b）────────────────────────────────
+
+    async def save_optimization_run(
+        self, run_id: str, user_id: int, request: dict[str, Any], summary: dict[str, Any]
+    ) -> None:
+        self.optimizations[run_id] = {
+            "id": run_id,
+            "user_id": user_id,
+            "created_at": datetime.now(UTC),
+            "request": request,
+            "summary": summary,
+        }
+        self._optimization_order.append(run_id)
+
+    async def list_optimization_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
+        """**照抄真库的 `summary - 'cells'`**：摘要是「去掉每格矩阵之后的 summary」。
+
+        替身这里若图省事返回整份 summary，前端在离线态就能拿到 cells、在真库上却拿不到——
+        正是 M4c 那条「离线替身会骗人」的同类坑。
+        """
+        summaries: list[dict[str, Any]] = []
+        for run_id in reversed(self._optimization_order):
+            row = self.optimizations[run_id]
+            if row["user_id"] != user_id:
+                continue
+            summaries.append(
+                {
+                    "id": run_id,
+                    "created_at": row["created_at"],
+                    "request": row["request"],
+                    "summary": {k: v for k, v in row["summary"].items() if k != "cells"},
+                }
+            )
+            if len(summaries) == limit:
+                break
+        return summaries
+
+    async def get_optimization_run(self, user_id: int, run_id: str) -> dict[str, Any] | None:
+        row = self.optimizations.get(run_id)
+        if row is None or row["user_id"] != user_id:
+            return None
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "request": row["request"],
+            "summary": row["summary"],
         }
 
     def _touch(self, thread_id: str) -> None:

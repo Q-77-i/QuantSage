@@ -87,6 +87,21 @@ SCHEMA = (
     # `strategy_id` **不设外键**：策略删了记录仍在（报告 JSONB 自足，见 SPEC §5 M4c）。
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS strategy_id UUID",
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS code_sha256 TEXT",
+    # M5b：批量 / 网格的**汇总**（`request` + `summary`，**不落完整报告**）。
+    # `summary.cells` 只有每格的 `params → metrics` 与收益矩，没有净值曲线与逐笔——
+    # 一百格 × 上千点净值曲线会把这张表撑成 MB 级 JSONB，而要看某一格的完整报告，
+    # 从热力图点进去重跑一次即可（单格 70–350ms）。
+    """
+    CREATE TABLE IF NOT EXISTS optimization_runs (
+        id         UUID PRIMARY KEY,
+        user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        request    JSONB NOT NULL,
+        summary    JSONB NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS optimization_runs_user_created_idx "
+    "ON optimization_runs (user_id, created_at DESC)",
 )
 
 
@@ -427,6 +442,49 @@ class Database:
             "id": str(row["id"]),
             "strategy_id": str(row["strategy_id"]) if row["strategy_id"] else None,
         }
+
+    # ── 批量 / 网格汇总（M5b）────────────────────────────────
+
+    async def save_optimization_run(
+        self,
+        run_id: str,
+        user_id: int,
+        request: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> None:
+        """落一次批处理汇总。与 `save_backtest_run` 同形：dict 必须显式包 `Jsonb`。
+
+        与回测记录**分开存**是 SPEC §6 M5b 定的：网格落的是「每格一行摘要」，
+        与「我的回测」混流会让列表里一半是没法打开的残缺报告。
+        """
+        await self._exec(
+            "INSERT INTO optimization_runs (id, user_id, request, summary) "
+            "VALUES (%s::uuid, %s, %s, %s)",
+            (run_id, user_id, Jsonb(request), Jsonb(summary)),
+        )
+
+    async def list_optimization_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
+        """摘要列表（最近在前）。**取 `summary - 'cells'`**：去掉最大的那一块（每格矩阵），
+        其余整块原样带出。
+
+        比逐键抽字段好在两点：① 不会踩「`->>` 把数字变成 text」那个坑（见
+        `list_backtest_runs` 的注释）；② 新增汇总字段时列表页自动就有了，不必两处同步。
+        """
+        rows = await self._all(
+            "SELECT id, created_at, request, summary - 'cells' AS summary "
+            "FROM optimization_runs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+            (user_id, limit),
+        )
+        return [{**row, "id": str(row["id"])} for row in rows]
+
+    async def get_optimization_run(self, user_id: int, run_id: str) -> dict[str, Any] | None:
+        """按 id 取回完整汇总（含每格矩阵）。越权与不存在同为 None（调用方翻 404）。"""
+        row = await self._one(
+            "SELECT id, created_at, request, summary FROM optimization_runs "
+            "WHERE id = %s::uuid AND user_id = %s",
+            (run_id, user_id),
+        )
+        return {**row, "id": str(row["id"])} if row is not None else None
 
     # ── 内部 ────────────────────────────────────────────────
 
