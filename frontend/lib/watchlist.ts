@@ -10,6 +10,17 @@ import type { WatchlistItem, WatchlistGroup } from "./types";
 /** 与后端 `core/db.py` 的常量同名同值：删组时的回落目标，也是展示时的置顶组。 */
 export const DEFAULT_GROUP = "默认分组";
 
+/**
+ * 输入的是「按名称搜」还是「按代码查」（M5a）。
+ *
+ * 分流按**输入形状**而不是猜：含任何非数字字符就走名称搜索（代码永远是纯数字）。
+ * 纯函数且单独可测——它是这个表单两条路径的分岔口，判错的后果是「输中文时静默无反应」。
+ */
+export function isNameQuery(raw: string): boolean {
+  const value = raw.trim();
+  return value !== "" && /\D/.test(value);
+}
+
 /** 股票代码 = 六位数字。后端也会拒（422），这里先挡一道，省一次往返。 */
 export function validateSymbol(raw: string): string | null {
   const value = raw.trim();

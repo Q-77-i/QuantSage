@@ -96,6 +96,9 @@
   /* 图表序列：已过 dataviz 六项校验（CVD ΔE 24.7） */
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  /* M5a：净值曲线的第三条（全市场等权基准）。两种模式各跑过 dataviz 的
+     validate_palette.js，六项检查全 PASS（浅 CVD ΔE 24.7 / 深 26.2，均远高于 8 的目标线） */
+  --series-3: #8a5cd6;
 
   /* 警告档（M4c 的检查结果面板）：对比度 5.02（面板底）/ 4.68（页面底），过 AA。
      在此之前没有 warning 色，「样本量提示」是借 --destructive 写的——检查面板若照抄，
@@ -133,6 +136,7 @@
   --ring: var(--brand);
   --chart-1: var(--series-1);
   --chart-2: var(--series-2);
+  --chart-3: var(--series-3);
   --chart-3: var(--ink-3);
   --chart-4: var(--up);
   --chart-5: var(--down);
@@ -171,6 +175,7 @@
 
   --series-1: #3987e5;
   --series-2: #d95926;
+  --series-3: #9b7ce8;
 
   /* 深色底上重选过：对比度 7.88（面板底 #131722），过 AA */
   --warn: #e0a030;

@@ -22,6 +22,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.data import calendar as cal
+from app.data import naming
 from app.etl import archive, store
 
 #: 日任务的回落窗口：拉最近 N 个自然日，吸收迟到事件与平台修订
@@ -67,6 +68,9 @@ class RunReport:
     retry_after_seconds: int | None = None
     unattempted: int = 0
     note: str = ""
+    #: 名称字典重建的一句话状态（M5a）：`「5610 只 / 5615 行」` 或 `「失败：…」`。
+    #: 字典是**派生物**，建失败不该让一整天的语料白拉，故失败也照常收尾、只记在这里。
+    names: str = ""
 
     def summary(self) -> str:
         counted = {status: sum(1 for day in self.days if day.status == status) for status in
@@ -172,6 +176,8 @@ def run(
     finally:
         report.finished_at = datetime.now(timezone.utc).isoformat()
         _LOCK.release()
+    # 字典在语料落定之后重建；状态写进台账（`_append_ledger` 读的就是 report）
+    report.names = refresh_names(paths_)
     _append_ledger(paths_, report)
     store.write_manifest(
         paths_.meta_dir,
@@ -179,6 +185,24 @@ def run(
         coverage_last=report.archive_last or None,
     )
     return report
+
+
+def refresh_names(paths_: Paths) -> str:
+    """重建名称字典（M5a）。返回一句话状态，**从不抛异常**。
+
+    字典是行情与语料之外的**派生物**（`data/naming/symbol_names.parquet`），供展示、
+    名称搜索与 ST 判定用。它建失败不该让一整天的语料白拉——所以这里吞掉异常，
+    把状态写进台账，让人看得见，而不是把 ETL 整轮判失败。
+
+    每次跑完都重建（实测约 1.3s）：增量判据要比对「语料是否变过」，而重建本身就足够快，
+    多写一个判据只会多一个会漂移的地方。
+    """
+    try:
+        rows = naming.build_from_events(paths_.data_dir)
+        naming.write_dictionary(rows, paths_.data_dir)
+    except Exception as exc:  # noqa: BLE001 - 见 docstring：字典失败不拖垮 ETL
+        return f"失败：{type(exc).__name__}: {exc}"[:200]
+    return f"{len(naming.primary_names(rows))} 只 / {len(rows)} 行"
 
 
 def is_running() -> bool:
@@ -240,6 +264,8 @@ def rematerialize(data_dir: Path | None = None) -> RunReport:
     finally:
         report.finished_at = datetime.now(timezone.utc).isoformat()
         _LOCK.release()
+    # 重物化会改语料内容（口径变更），字典必须跟着重建，否则展示层停在旧名上
+    report.names = refresh_names(paths_)
     _append_ledger(paths_, report)
     store.write_manifest(
         paths_.meta_dir,

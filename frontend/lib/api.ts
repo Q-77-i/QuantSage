@@ -25,6 +25,7 @@ import type {
   StrategyTemplate,
   StrategyWriteBody,
   SymbolProbe,
+  SymbolSearchResponse,
   ThreadMessagesResponse,
   ThreadSummary,
   User,
@@ -147,6 +148,10 @@ export const api = {
 
   /** 6 位代码体检（自选股表单边输边查）。无数据是 200 `has_data: false`，不是 404 */
   probe: (symbol: string) => request<SymbolProbe>(`/api/v1/market/${symbol}/probe`),
+
+  /** 按代码前缀或名称子串搜标的（M5a）。名称来自事件语料抽出的字典，覆盖 96.7% */
+  symbols: (q: string, limit = 20) =>
+    request<SymbolSearchResponse>(`/api/v1/market/symbols${query({ q, limit })}`),
 
   events: (symbol: string, params: { start?: string; end?: string } = {}) =>
     request<EventsResponse>(`/api/v1/events${query({ symbol, ...params })}`),

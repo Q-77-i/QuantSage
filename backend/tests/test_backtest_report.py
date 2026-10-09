@@ -77,7 +77,17 @@ def build(
 def test_report_has_all_spec_sections(tmp_path: Path) -> None:
     report = build(tmp_path, flat_bars(6), {0: [Signal(Side.BUY, reason="入场")]})
 
-    assert set(report) == {"meta", "metrics", "equity_curve", "trades", "open_position", "pit_comparison"}
+    # `rejects` 是 M5a 新增的一块（拒单带原因码，SPEC §6 M5a 验收第 3 条）。
+    # 这里刻意保持**精确相等**而不是「包含」——报告结构的变更必须是有意识的那一种。
+    assert set(report) == {
+        "meta",
+        "metrics",
+        "equity_curve",
+        "trades",
+        "rejects",
+        "open_position",
+        "pit_comparison",
+    }
 
 
 def test_report_is_json_serializable(tmp_path: Path) -> None:
@@ -99,7 +109,7 @@ def test_equity_curve_is_point_wise_aligned_with_bars(tmp_path: Path) -> None:
     assert len(report["equity_curve"]) == len(bars)
     for point, raw in zip(report["equity_curve"], bars, strict=True):
         assert point["date"] == raw["trade_date"].isoformat()
-        assert set(point) == {"date", "equity", "benchmark"}
+        assert set(point) == {"date", "equity", "benchmark", "market"}
         # 无成交、成本关：净值恒为初始资金，基准随价格走（此处价格恒定故也等于初始资金）
         assert point["equity"] == pytest.approx(1_000_000.0)
         assert point["benchmark"] == pytest.approx(1_000_000.0)

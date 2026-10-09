@@ -27,6 +27,7 @@ import {
 } from "@/lib/chart-gesture";
 import type { IndexRange } from "@/lib/chart-gesture";
 import { amount } from "@/lib/format";
+import { hasMarket } from "@/lib/equity-curve";
 import type { EquityPoint } from "@/lib/types";
 
 // 按需引入。**漏注册任何一项都不抛错**——只会在控制台留一行 warning，然后图缺一块或空白，
@@ -41,11 +42,15 @@ echarts.use([
 ]);
 
 /**
- * 净值曲线：策略（实线）与基准（虚线）**同一条 y 轴**。
+ * 净值曲线：策略（实线）、同标的买入持有（虚线）、全市场等权（点线）**同一条 y 轴**。
  *
- * 绝不双轴——基准是同一尺度上的第二条线，不是第二个刻度。基准另用虚线做二次编码，
- * 不让色相单独承载识别。x 轴用 `category`（交易日等距），与 K 线的序数轴同口径：
- * 用时间轴会让周末与节假日被压缩，两张上下堆叠的图对同一天就落到不同的水平位置。
+ * 绝不双轴——两条基准都是同一尺度上的线，不是第二个刻度。三条线各有线型做二次编码，
+ * 不让色相单独承载识别（CVD 下三色也分得开，但线型是白送的一重保险）。
+ * x 轴用 `category`（交易日等距），与 K 线的序数轴同口径：用时间轴会让周末与节假日被
+ * 压缩，两张上下堆叠的图对同一天就落到不同的水平位置。
+ *
+ * 「全市场等权」是 M5a 新增的第三条，**旧报告里没有这个字段**（那时还没有这个基准），
+ * 故按「缺失即不画」处理——不补 0、不报错，图例项也跟着少一个。
  *
  * 缩放（T6d）：**手势与 K 线同一条路径**——捏合（触控板，即 ctrl + wheel）缩放、
  * 横向滚轮平移、拖拽平移，竖直滚动始终归还页面。另给一条常驻 slider 作为可发现的控件；
@@ -258,7 +263,7 @@ function buildOption(points: EquityPoint[], t: ChartTokens): EChartsCoreOption {
       itemWidth: 20,
       itemHeight: 2,
       textStyle: { color: t.ink2, fontSize: 12, fontFamily: CHART_FONT },
-      data: ["策略", "基准"],
+      data: hasMarket(points) ? ["策略", "买入持有", "全市场等权"] : ["策略", "买入持有"],
     },
     tooltip: {
       trigger: "axis",
@@ -298,16 +303,29 @@ function buildOption(points: EquityPoint[], t: ChartTokens): EChartsCoreOption {
         itemStyle: { color: t.series1 },
       },
       {
-        name: "基准",
+        name: "买入持有",
         type: "line",
         data: points.map((point) => point.benchmark),
         showSymbol: false,
         lineStyle: { width: 2, color: t.series2, type: "dashed" },
         itemStyle: { color: t.series2 },
       },
+      ...(hasMarket(points)
+        ? [
+            {
+              name: "全市场等权",
+              type: "line" as const,
+              data: points.map((point) => point.market ?? null),
+              showSymbol: false,
+              lineStyle: { width: 2, color: t.series3, type: "dotted" as const },
+              itemStyle: { color: t.series3 },
+            },
+          ]
+        : []),
     ],
   };
 }
+
 
 function axisMoney(value: number): string {
   if (Math.abs(value) < 10000) return String(value);
@@ -320,12 +338,16 @@ function tooltipHtml(params: unknown, points: EquityPoint[], t: ChartTokens): st
   const point = points[first?.dataIndex ?? -1];
   if (!point) return "";
 
-  return [
+  const lines = [
     `<div style="color:${t.ink2}">${point.date}</div>`,
     row("策略", amount(point.equity), t.series1),
-    row("基准", amount(point.benchmark), t.series2),
-    row("超额", amount(point.equity - point.benchmark, { signed: true }), null),
-  ].join("");
+    row("买入持有", amount(point.benchmark), t.series2),
+  ];
+  if (point.market !== undefined && point.market !== null) {
+    lines.push(row("全市场等权", amount(point.market), t.series3));
+  }
+  lines.push(row("超额", amount(point.equity - point.benchmark, { signed: true }), null));
+  return lines.join("");
 }
 
 /** 数值与序列名一律用墨色，识别靠左边的色块——文字不染序列色。 */

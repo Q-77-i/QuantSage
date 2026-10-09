@@ -250,7 +250,15 @@ def test_backtest_returns_envelope_around_spec_section5_shape(
     assert set(body) == {"run_id", "report"}
 
     report = body["report"]
-    assert set(report) == {"meta", "metrics", "equity_curve", "trades", "open_position", "pit_comparison"}
+    assert set(report) == {
+        "meta",
+        "metrics",
+        "equity_curve",
+        "trades",
+        "rejects",
+        "open_position",
+        "pit_comparison",
+    }
     assert report["meta"]["bars"] == BAR_COUNT
     assert len(report["equity_curve"]) == BAR_COUNT
 

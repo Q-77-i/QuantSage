@@ -31,6 +31,7 @@ const MAPPING = [
   ["ink2", "ink-2"],
   ["series1", "series-1"],
   ["series2", "series-2"],
+  ["series3", "series-3"],
   ["up", "up"],
   ["down", "down"],
 ] as const;

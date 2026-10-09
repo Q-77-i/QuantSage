@@ -6,6 +6,7 @@ import {
   addFormHint,
   groupItems,
   groupNames,
+  isNameQuery,
   validateSymbol,
 } from "./watchlist";
 
@@ -131,5 +132,25 @@ describe("addFormHint —— 加自选表单边输边给的提示", () => {
     expect(
       addFormHint("600036", null, { status: "found", code: "600036", date: null, close: null }),
     ).toEqual({ kind: "found", date: null, close: null });
+  });
+});
+
+describe("isNameQuery（M5a 名称搜索的分岔口）", () => {
+  it("代码一律走代码路径", () => {
+    expect(isNameQuery("600519")).toBe(false);
+    expect(isNameQuery("6005")).toBe(false); // 没输满也是代码路径
+    expect(isNameQuery(" 600519 ")).toBe(false);
+  });
+
+  it("含非数字就走名称搜索", () => {
+    expect(isNameQuery("茅台")).toBe(true);
+    expect(isNameQuery("贵州茅台")).toBe(true);
+    expect(isNameQuery("600519 ")).toBe(false);
+    expect(isNameQuery("60051a")).toBe(true); // 混了字母也算名称——按形状分流，不猜意图
+  });
+
+  it("空输入两条路径都不走", () => {
+    expect(isNameQuery("")).toBe(false);
+    expect(isNameQuery("   ")).toBe(false);
   });
 });

@@ -12,14 +12,19 @@ import asyncio
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.data import duckdb_client as dc
+from app.data import naming
 
 router = APIRouter(prefix="/api/v1/market", tags=["market"])
 
 #: 六位数字。校验它是为了让「路径写错」返回 422 而不是静默给个空集
 SYMBOL_PATTERN = r"^\d{6}$"
+
+#: 截面支持的排序键（与查询层白名单同源，见 `dc.CROSS_SECTION_SORTS`）
+SortKey = Literal["change_pct", "amount", "close", "turnover_pct", "symbol"]
+SortOrder = Literal["desc", "asc"]
 
 
 def _bar_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +72,91 @@ async def probe_symbol(
         "has_data": latest is not None,
         "latest_trade_date": latest["trade_date"].isoformat() if latest else None,
         "latest_close": latest["close"] if latest else None,
+    }
+
+
+def _match_symbols(query: str, primary: dict[str, str]) -> list[str]:
+    """按**代码或名称**匹配标的。代码按前缀（输「6005」能出 600519），名称按子串。
+
+    名称取字典的**当前名**（众数），不碰别名——别名里混着源侧错配的别家公司名
+    （实测 11 例一名多写里有 6 例是这种），拿来搜索会搜出不相干的标的。
+    """
+    needle = query.strip()
+    if not needle:
+        return []
+    return sorted(
+        symbol
+        for symbol, name in primary.items()
+        if symbol.startswith(needle) or needle in name
+    )
+
+
+@router.get("/cross-section")
+async def get_cross_section(
+    trade_date: Annotated[date | None, Query(alias="date")] = None,
+    adjust: Literal["qfq", "raw"] = "qfq",
+    sort: SortKey = "change_pct",
+    order: SortOrder = "desc",
+    q: Annotated[str | None, Query(max_length=40)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    """某交易日的全市场截面：收盘 / 涨跌幅 / 成交额 / 换手率，带排序与分页（M5a）。
+
+    `date` 缺省取行情里最后一个有价交易日（与 `/freshness` 同源）。`q` 走**代码前缀
+    或名称子串**——名称来自事件语料抽出的字典（覆盖 96.8%），没有名字的标的仍能按
+    代码搜到，此时 `name` 为 null。字典缺失时全部 `name` 为 null，**不是 500**。
+
+    实测全市场排序 6–12ms（5,572 只有价），不落缓存。
+    """
+    primary = await asyncio.to_thread(lambda: naming.primary_names(naming.load_dictionary()))
+    symbols = _match_symbols(q, primary) if q else None
+
+    page = await asyncio.to_thread(
+        dc.cross_section,
+        trade_date.isoformat() if trade_date else None,
+        adjust=adjust,
+        sort=sort,
+        order=order,
+        symbols=symbols,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        **page,
+        "adjust": adjust,
+        "sort": sort,
+        "order": order,
+        "items": [
+            {
+                "symbol": row["symbol"],
+                "name": primary.get(row["symbol"]),
+                "close": row["close"],
+                "change_pct": row["change_pct"],
+                "amount": row["amount"],
+                "turnover_pct": row["turnover_pct"],
+            }
+            for row in page["items"]
+        ],
+    }
+
+
+@router.get("/symbols")
+async def search_symbols(
+    q: Annotated[str, Query(min_length=1, max_length=40)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+) -> dict[str, Any]:
+    """按代码或名称搜标的（自选股表单与 M10 标的浏览用）。
+
+    与 `/cross-section` 共用同一套匹配口径，但**不依赖行情**——加的是一只还没看过
+    K 线的股票时，不该因为查不到当日行情就搜不出来。字典缺失时如实返回空列表。
+    """
+    primary = await asyncio.to_thread(lambda: naming.primary_names(naming.load_dictionary()))
+    matched = _match_symbols(q, primary)[:limit]
+    return {
+        "query": q,
+        "count": len(matched),
+        "items": [{"symbol": symbol, "name": primary[symbol]} for symbol in matched],
     }
 
 

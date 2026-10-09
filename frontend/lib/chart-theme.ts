@@ -22,8 +22,10 @@ export interface ChartTokens {
   ink2: string;
   /** 净值曲线：策略 */
   series1: string;
-  /** 净值曲线：基准 */
+  /** 净值曲线：同标的买入持有 */
   series2: string;
+  /** 净值曲线：全市场等权基准（M5a） */
+  series3: string;
   /** 涨（A 股口径红） */
   up: string;
   /** 跌（A 股口径绿） */
@@ -39,6 +41,7 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     ink2: "#5a6069",
     series1: "#2a78d6",
     series2: "#eb6834",
+    series3: "#8a5cd6",
     up: "#d03b3b",
     down: "#0e8f6b",
   },
@@ -50,6 +53,7 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     ink2: "#9aa4b2",
     series1: "#3987e5",
     series2: "#d95926",
+    series3: "#9b7ce8",
     up: "#ef5350",
     down: "#26a69a",
   },

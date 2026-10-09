@@ -40,6 +40,13 @@ BARS_SCHEMA = pa.schema(
         ("close", pa.float64()),
         ("volume", pa.float64()),
         ("is_suspended", pa.bool_()),
+        # M5a 起：全市场等权基准按 change_pct 聚合（源给的日涨跌幅，含除权调整），
+        # 夹具不写它时全为 None —— 基准那一段就没有样本，净值恒为初始资金
+        ("change_pct", pa.float64()),
+        # M5a 截面端点吃这两列（成交额 / 换手率）；换手率在源侧 2026-08 起逐步停更，
+        # 夹具不写即为 None —— 端点必须如实返回 null 而不是 0
+        ("amount", pa.float64()),
+        ("turnover_pct", pa.float64()),
     ]
 )
 
@@ -48,6 +55,8 @@ EVENTS_SCHEMA = pa.schema(
         ("event_id", pa.string()),
         # M2b 起一条事件一行、标的是数组（同一事件挂多只股票只存一行）
         ("symbols", pa.list_(pa.string())),
+        # M5a 名称字典的来源列：`[{code, name, reason}]` 的 JSON 文本
+        ("stocks", pa.string()),
         ("event_type", pa.string()),
         ("title", pa.string()),
         ("event_time", pa.timestamp("us", tz=CN_TZ)),
@@ -89,6 +98,9 @@ def write_bars_parquet(
             "close": float(row.get("close", row["open"])),
             "volume": float(row.get("volume", 1e5)),
             "is_suspended": bool(row.get("is_suspended", False)),
+            "change_pct": row.get("change_pct"),
+            "amount": row.get("amount"),
+            "turnover_pct": row.get("turnover_pct"),
         }
         for row in rows
     ]
@@ -114,6 +126,7 @@ def write_events_parquet(
             "event_id": row["event_id"],
             # 传了 `symbols` 就按它写（多标的场景），否则单标的
             "symbols": list(row.get("symbols") or [symbol]),
+            "stocks": row.get("stocks"),
             "event_type": row.get("event_type", "news"),
             "title": str(row.get("title", "")),
             "event_time": row["event_time"],

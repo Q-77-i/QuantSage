@@ -13,7 +13,9 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from app.data import naming
 from app.etl import archive, runner, store
+from tests.conftest import ts, write_bars_parquet, write_events_parquet
 
 CN = "Asia/Shanghai"
 
@@ -524,3 +526,63 @@ def _read_day(path: Path) -> dict:
         return con.execute(f"SELECT * FROM read_parquet('{path}')").to_arrow_table().to_pylist()[0]
     finally:
         con.close()
+
+
+# ── M5a：名称字典随 ETL 刷新 ────────────────────────────────
+
+
+def test_refresh_names_writes_the_dictionary(tmp_path: Path) -> None:
+    """字典是派生物：`stocks` 里的六位码要与同一事件的 `symbols` 对得上才收。"""
+    write_bars_parquet(
+        tmp_path / "bars", "600519", [{"trade_date": date(2026, 9, 29), "open": 10.0}]
+    )
+    write_events_parquet(
+        tmp_path / "events",
+        "600519",
+        [
+            {
+                "event_id": "n1",
+                "event_time": ts("2026-09-29 09:30:00"),
+                "stocks": '[{"code":"600519","name":"贵州茅台"}]',
+            }
+        ],
+    )
+
+    status = runner.refresh_names(runner.paths(tmp_path))
+
+    assert status == "1 只 / 1 行"
+    rows = naming.load_dictionary(tmp_path)
+    assert [(row.symbol, row.name) for row in rows] == [("600519", "贵州茅台")]
+
+
+def test_refresh_names_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**字典建失败不该让一整天的语料白拉**——状态写进台账，ETL 照常收尾。"""
+    monkeypatch.setattr(
+        naming, "build_from_events", lambda data_dir=None: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    status = runner.refresh_names(runner.paths(tmp_path))
+
+    assert status.startswith("失败：")
+    assert "boom" in status
+
+
+def test_run_records_the_name_status_in_the_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """接线点：`run()` 收尾时重建字典，状态进台账（否则「刷新过没有」无从查证）。"""
+    day = date(2026, 9, 29)
+    shard_path = write_shard(tmp_path / "src" / "news.parquet", [{"event_id": "n1"}])
+    monkeypatch.setattr(archive, "download_day", lambda d, data_dir=None: True)
+    monkeypatch.setattr(archive, "day_shards", lambda d, data_dir=None: {"news": shard_of(shard_path)})
+    monkeypatch.setattr(
+        archive, "coverage",
+        lambda data_dir=None: archive.ArchiveCoverage(last_day=day, files=1, rows=1, manifest_version="x"),
+    )
+    monkeypatch.setattr(runner, "refresh_names", lambda paths_: "写入桩：1 只 / 1 行")
+
+    report = runner.run("manual", days=[day], data_dir=tmp_path)
+
+    assert report.names == "写入桩：1 只 / 1 行"
+    ledger = json.loads(
+        (tmp_path / "_meta" / "etl_runs.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
+    )
+    assert ledger["names"] == "写入桩：1 只 / 1 行"

@@ -19,6 +19,7 @@ from typing import Any
 
 from collections.abc import Callable
 
+from app.backtest.benchmark import market_benchmark
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from app.backtest.metrics import SHORT_WINDOW_BARS, Metrics, benchmark_curve, compute_metrics
@@ -83,6 +84,30 @@ def _trades(result: BacktestResult) -> list[dict[str, Any]]:
         }
         for trade in result.trades
     ]
+
+
+def _rejects(result: BacktestResult) -> dict[str, Any]:
+    """被拒 / 未能成交的信号，**带原因码**（M5a）。
+
+    单列一块而不是塞进 `trades`：这些信号没有成交，不产生盈亏，混进去会污染胜率与笔数。
+    `by_code` 只统计带码的（A 股规则挡下的），`items` 里非规则原因（已持仓、最后一根
+    bar 等）`code` 为 `None`——如实分开，不编一个码给它们。
+    """
+    items = [
+        {
+            "date": _iso(dropped.trade_date),
+            "side": dropped.signal.side.value,
+            "code": dropped.code,
+            "reason": dropped.reason,
+            "signal_reason": dropped.signal.reason,
+        }
+        for dropped in result.dropped_signals
+    ]
+    by_code: dict[str, int] = {}
+    for item in items:
+        if item["code"]:
+            by_code[item["code"]] = by_code.get(item["code"], 0) + 1
+    return {"count": len(items), "by_code": dict(sorted(by_code.items())), "items": items}
 
 
 def _warnings(result: BacktestResult) -> list[str]:
@@ -257,6 +282,13 @@ def build_report(
     result = run_backtest(config, strategy=strategy_factory() if strategy_factory else None)
     metrics = compute_metrics(result.equity_curve, result.trades, config.initial_cash)
     benchmark = benchmark_curve(result.bars, config.initial_cash, config.costs)
+    # 全市场等权基准（M5a）：与净值曲线**逐点对齐**，故按同一串日期取
+    market = market_benchmark(
+        [point.trade_date for point in result.equity_curve],
+        config.initial_cash,
+        adjust=config.adjust,
+        data_dir=config.data_dir,
+    )
     strategy_uses_events = uses_events_of(config.strategy, uses_events)
 
     return {
@@ -280,13 +312,26 @@ def build_report(
             # 语料覆盖区间 + 窗口内事件数：让存下来的报告自证「这次看的是哪一段事件语料」
             "event_coverage": dc.event_coverage(config.data_dir),
             "events_in_window": _events_in_window(config, strategy_uses_events),
+            # A 股规则本次实际生效到哪一步（M5a）：`limit_check=skipped` 时报告要自证
+            # 「这次没做涨跌停判定」以及为什么，而不是让读者以为做了
+            "a_share_rules": result.a_share_rules.to_dict(),
+            # 基准口径自述（M5a）：**不写成「沪深 300」**，如实说是等权代理与剔除规则
+            "benchmark": market.describe(),
         },
         "metrics": _metrics_row(metrics, _benchmark_return(result, config)),
         "equity_curve": [
-            {"date": _iso(point.trade_date), "equity": point.equity, "benchmark": base}
-            for point, base in zip(result.equity_curve, benchmark, strict=True)
+            {
+                "date": _iso(point.trade_date),
+                "equity": point.equity,
+                "benchmark": base,
+                "market": level,
+            }
+            for point, base, level in zip(
+                result.equity_curve, benchmark, market.levels, strict=True
+            )
         ],
         "trades": _trades(result),
+        "rejects": _rejects(result),
         "open_position": _open_position(result),
         "pit_comparison": _pit_comparison(config, result, strategy_factory) if compare_pit else None,
     }

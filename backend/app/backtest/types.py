@@ -187,6 +187,11 @@ class DroppedSignal:
     trade_date: date
     signal: Signal
     reason: str
+    #: A 股规则的拒绝码（`a_share_rules.RejectCode` 的取值）。非规则原因——已持仓、
+    #: 最后一根 bar、被未成交的上一根信号顶掉——为 `None`。
+    #: 类型写 `str` 而不是枚举：本模块**不 import 包内任何其他模块**（见模块 docstring），
+    #: 反向依赖会与 a_share_rules → types 成环。
+    code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

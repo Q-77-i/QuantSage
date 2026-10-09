@@ -114,10 +114,40 @@ export interface Metrics {
   excess_return: number;
 }
 
+/** `GET /market/symbols` 的响应（M5a）。字典缺失时 `items` 为空列表，不是错误 */
+export interface SymbolSearchResponse {
+  query: string;
+  count: number;
+  items: { symbol: string; name: string }[];
+}
+
 export interface EquityPoint {
   date: string;
   equity: number;
+  /** 同标的买入持有（首根收盘份额化全额买入、扣一次买入成本） */
   benchmark: number;
+  /** 全市场等权基准（M5a）。**旧报告没有这一项**——图与 tooltip 按缺失处理 */
+  market?: number | null;
+}
+
+/** 基准口径自述（M5a）。`note` 由服务端给出，前端**照抄显示**，不另写一份文案。 */
+export interface BenchmarkInfo {
+  kind: "market_equal_weight";
+  note: string;
+  exclude_rule: string;
+  /** 被剔除的异常样本条数（新股首日 / 复牌，涨跌幅超 30%） */
+  excluded: number;
+  sample_days: number;
+  avg_samples: number;
+  total_return: number;
+}
+
+/** A 股规则本次的实际生效情况（M5a）。`skipped` 时报告要自证「没做涨跌停判定」 */
+export interface AShareRuleStatus {
+  limit_check: "on" | "skipped";
+  reason: string | null;
+  is_st: boolean;
+  limit_pct: number | null;
 }
 
 export interface Trade {
@@ -183,6 +213,26 @@ export interface BacktestMeta {
   strategy_kind: "builtin" | "user";
   /** 用户策略的名字；内置策略为 null */
   strategy_name: string | null;
+  /** 基准口径自述（M5a）。**旧记录没有这一项**——重开时按缺失处理，不崩页 */
+  benchmark?: BenchmarkInfo;
+  /** A 股规则生效情况（M5a）。同上，旧记录缺失 */
+  a_share_rules?: AShareRuleStatus;
+}
+
+/** 被拒 / 未能成交的信号（M5a）。`code` 为 null 的是非 A 股规则原因（已持仓等） */
+export interface RejectedSignal {
+  date: string | null;
+  side: "buy" | "sell";
+  code: string | null;
+  reason: string;
+  signal_reason: string;
+}
+
+export interface RejectSummary {
+  count: number;
+  /** 原因码 → 条数 */
+  by_code: Record<string, number>;
+  items: RejectedSignal[];
 }
 
 export interface BacktestReport {
@@ -190,6 +240,8 @@ export interface BacktestReport {
   metrics: Metrics;
   equity_curve: EquityPoint[];
   trades: Trade[];
+  /** 拒单与未成交信号，带原因码（M5a）。同上，旧记录缺失 */
+  rejects?: RejectSummary;
   open_position: OpenPosition | null;
   /** null = 本次未做对比（未请求，或该策略不消费事件语料） */
   pit_comparison: PitComparison | null;

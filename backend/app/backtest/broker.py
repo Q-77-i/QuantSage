@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import logging
 
+from app.backtest.a_share_rules import LOT_SIZE
 from app.backtest.costs import CostModel
 from app.backtest.portfolio import Portfolio
 from app.backtest.types import Bar, Fill, Side, Signal
 
 log = logging.getLogger(__name__)
-
-LOT_SIZE = 100
 
 
 class Broker:

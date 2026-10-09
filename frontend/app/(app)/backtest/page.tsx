@@ -24,7 +24,7 @@ import {
 } from "@/lib/backtest-form";
 import type { FormState } from "@/lib/backtest-form";
 import type { ChartHandle } from "@/lib/chart-handle";
-import type { BacktestRunDetail, StoredBacktestRequest } from "@/lib/types";
+import type { BacktestRunDetail, RejectSummary, StoredBacktestRequest } from "@/lib/types";
 
 /**
  * 回测页（T6c）。
@@ -149,6 +149,13 @@ export default function BacktestPage() {
               />
             </ChartFrame>
 
+            {/* 基准口径自述（M5a）：SPEC 要求「口径在报告与 UI 如实标注」。
+                文案由服务端给（`meta.benchmark.note`），前端**照抄**——两处各写一份必然漂移。
+                `?.` 不是防御性编程：**M5a 之前落库的记录没有这个字段**，重开时必须有得退 */}
+            {report.meta.benchmark ? (
+              <p className="-mt-3 text-xs text-ink-3">{report.meta.benchmark.note}</p>
+            ) : null}
+
             <ChartFrame
               title="K 线"
               empty={bars.length ? null : "该区间没有行情数据。"}
@@ -174,6 +181,8 @@ export default function BacktestPage() {
             <Section title="交易明细" hint={`已平仓 ${report.trades.length} 笔`}>
               <TradesTable trades={report.trades} openPosition={report.open_position} />
             </Section>
+
+            <RejectsSection rejects={report.rejects} />
 
             <EventsTable events={events} coverage={report.meta.event_coverage} />
           </div>
@@ -246,6 +255,42 @@ function UserRunBanner({ notice }: { notice: UserRunNotice }) {
       </Link>
     </p>
   );
+}
+
+/**
+ * 拒单（M5a）：只在**有拒单时**出现。
+ *
+ * SPEC 验收第 3 条要求「一字涨停日买单被拒且原因可见」——原因码是这个项目
+ * 区别于普通回测框架的地方之一（A 股规则真的在拦），不该只活在 JSON 里。
+ * 旧记录没有这一块，`undefined` 时整段不渲染。
+ */
+function RejectsSection({ rejects }: { rejects?: RejectSummary }) {
+  if (!rejects || rejects.count === 0) return null;
+  return (
+    <Section title="未成交信号" hint={rejectsHint(rejects)}>
+      <div className="mt-2 space-y-1 text-sm">
+        {rejects.items.map((item, index) => (
+          <p key={index} className="flex flex-wrap items-baseline gap-x-2 text-ink-2">
+            <span className="num text-xs text-ink-3">{item.date ?? "—"}</span>
+            <span>{item.side === "buy" ? "买入" : "卖出"}</span>
+            {item.code ? (
+              <span className="num rounded-[var(--radius)] bg-muted px-1.5 py-0.5 text-xs text-ink-2">
+                {item.code}
+              </span>
+            ) : null}
+            <span>{item.reason}</span>
+          </p>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+/** 拒单区块右侧的说明：为什么这里要按原因码分组 */
+function rejectsHint(rejects: RejectSummary): string {
+  return Object.entries(rejects.by_code)
+    .map(([code, count]) => `${code} × ${count}`)
+    .join("｜");
 }
 
 /** 「重置缩放」只在对应图表已缩放时出现，所以不做成常驻控件。 */

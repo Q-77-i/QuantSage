@@ -1,13 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { TableShell, Cell, Row } from "@/components/backtest/table";
 import { api, describeError } from "@/lib/api";
 import { EMPTY, dayStamp, num, pct } from "@/lib/format";
-import { DEFAULT_GROUP, addFormHint, groupItems, groupNames, validateSymbol } from "@/lib/watchlist";
+import {
+  DEFAULT_GROUP,
+  addFormHint,
+  groupItems,
+  groupNames,
+  isNameQuery,
+  validateSymbol,
+} from "@/lib/watchlist";
 import type { AddHint, Probe } from "@/lib/watchlist";
 import type { WatchlistItem } from "@/lib/types";
 
@@ -37,6 +44,9 @@ export function WatchlistPanel() {
   const [probe, setProbe] = useState<Probe>({ status: "idle" });
   // 存代码而不是布尔：输入一改，这个确认就自动失效（与体检结果同一个防错口径）
   const [removing, setRemoving] = useState<string | null>(null);
+  // 名称搜索的候选（M5a）。这是「输入助手」：选中只把代码填进输入框，写路径不变
+  const [candidates, setCandidates] = useState<{ symbol: string; name: string }[]>([]);
+  const [activeCandidate, setActiveCandidate] = useState(-1);
   const [renaming, setRenaming] = useState<{ from: string; value: string } | null>(null);
   const [dropping, setDropping] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -79,6 +89,49 @@ export function WatchlistPanel() {
     }, PROBE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [code, tracked]);
+
+  // 名称搜索：只在输入**含非数字**时跑。失败一律静默清空候选——查不了不等于没有，
+  // 用户仍可直接输六位代码（与 probe 的降级口径一致）
+  useEffect(() => {
+    if (!isNameQuery(symbol)) {
+      setCandidates([]);
+      setActiveCandidate(-1);
+      return;
+    }
+    const query = symbol.trim();
+    const timer = window.setTimeout(() => {
+      api
+        .symbols(query)
+        .then((body) => {
+          setCandidates(body.items);
+          setActiveCandidate(-1);
+        })
+        .catch(() => setCandidates([]));
+    }, PROBE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [symbol]);
+
+  /** 选中候选 = 把六位代码填进输入框（随后走既有的 probe 与按钮四态），并收起下拉。 */
+  function pickCandidate(option: { symbol: string; name: string }) {
+    setSymbol(option.symbol);
+    setCandidates([]);
+    setActiveCandidate(-1);
+  }
+
+  function handleSymbolKey(event: KeyboardEvent<HTMLInputElement>) {
+    if (!candidates.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault(); // 否则光标在输入框里跳
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setActiveCandidate((prev) => (prev + step + candidates.length) % candidates.length);
+    } else if (event.key === "Enter" && activeCandidate >= 0) {
+      event.preventDefault(); // 阻止提交表单：此刻 Enter 的语义是「选中候选」
+      pickCandidate(candidates[activeCandidate]);
+    } else if (event.key === "Escape") {
+      setCandidates([]);
+      setActiveCandidate(-1);
+    }
+  }
 
   const hint = addFormHint(symbol, items, probe);
   const confirmRemove = removing === code && hint.kind === "duplicate";
@@ -131,13 +184,51 @@ export function WatchlistPanel() {
   return (
     <section>
       <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2">
-        <input
-          value={symbol}
-          onChange={(event) => setSymbol(event.target.value)}
-          placeholder="股票代码"
-          inputMode="numeric"
-          className="num w-28 rounded-[var(--radius)] border border-border bg-card px-2 py-1.5 text-sm"
-        />
+        {/* 外层 relative 只为了给候选下拉定位；输入框本身没有任何绝对定位 */}
+        <div className="relative">
+          <input
+            value={symbol}
+            onChange={(event) => setSymbol(event.target.value)}
+            onKeyDown={handleSymbolKey}
+            onBlur={() => window.setTimeout(() => setCandidates([]), 120)}
+            placeholder="代码或名称"
+            aria-label="股票代码或名称"
+            role="combobox"
+            aria-expanded={candidates.length > 0}
+            aria-controls="symbol-candidates"
+            className="num w-32 rounded-[var(--radius)] border border-border bg-card px-2 py-1.5 text-sm"
+          />
+          {candidates.length > 0 && (
+            <ul
+              id="symbol-candidates"
+              role="listbox"
+              className="absolute left-0 top-full z-20 mt-1 max-h-64 w-56 overflow-auto rounded-[var(--radius)] border border-border bg-card py-1 shadow-lg"
+            >
+              {candidates.map((option, index) => (
+                <li key={option.symbol}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeCandidate}
+                    // onMouseDown 而不是 onClick：blur 先于 click 触发，用 click 会点不中
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      pickCandidate(option);
+                    }}
+                    className={
+                      index === activeCandidate
+                        ? "flex w-full items-baseline justify-between gap-3 bg-muted px-2 py-1.5 text-left text-sm"
+                        : "flex w-full items-baseline justify-between gap-3 px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    }
+                  >
+                    <span className="truncate">{option.name}</span>
+                    <span className="num shrink-0 text-xs text-ink-3">{option.symbol}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <input
           value={group}
           onChange={(event) => setGroup(event.target.value)}
@@ -168,6 +259,12 @@ export function WatchlistPanel() {
           </button>
         )}
       </form>
+
+      {isNameQuery(symbol) && candidates.length === 0 && (
+        <p className="mt-2 text-xs text-ink-3">
+          没有匹配的标的（名称字典覆盖 96.7%）；也可以直接输入六位代码。
+        </p>
+      )}
 
       {hintText && (
         <p

@@ -151,6 +151,84 @@ def latest_closes(
     }
 
 
+#: 截面查询允许的排序键。**白名单而非转义**：排序列会拼进 SQL，参数化占位符管不到它。
+CROSS_SECTION_SORTS = frozenset({"change_pct", "amount", "close", "turnover_pct", "symbol"})
+
+#: 截面返回的列（查询层不掺名称——名称要过 PIT 与众数规则，那属 `naming` 层）
+_CROSS_SECTION_COLUMNS = ("symbol", "close", "change_pct", "amount", "turnover_pct")
+
+
+def cross_section(
+    trade_date: str | None = None,
+    *,
+    adjust: str = "qfq",
+    sort: str = "change_pct",
+    order: str = "desc",
+    symbols: list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    data_dir: Path | None = None,
+) -> dict[str, object]:
+    """某交易日的全市场截面（收盘 / 涨跌幅 / 成交额 / 换手率）+ 排序 + 分页。
+
+    `trade_date` 缺省取**该复权口径下最后一根有价 bar 的交易日**——与 `freshness`
+    同源，不写死「今天」（数据是日增的，写死会指向一个空日子）。
+
+    只返回四价齐全且有收盘价的行（与 `bars()` 同口径：无价即无价，不是零价）。
+    `turnover_pct` 在源侧 2026-08 起逐步停更、2026-09 起全空——**如实返回 null**，
+    不填 0（0 会被读成「换手率极低」，那是另一回事）。
+
+    排序带 `NULLS LAST`：换手率大面积为空，让空值沉底比随数据库默认行为漂移可预期。
+    """
+    if sort not in CROSS_SECTION_SORTS:
+        raise ValueError(f"不支持的排序键 {sort!r}")
+    direction = "DESC" if order == "desc" else "ASC"
+
+    con = connect(data_dir)
+    try:
+        if trade_date is None:
+            row = _fetch(
+                con,
+                f"SELECT max(trade_date) AS day FROM {BARS_VIEW}"
+                " WHERE adjustment = ? AND close IS NOT NULL",
+                [adjust],
+            )
+            day = row[0]["day"] if row else None
+            if day is None:
+                return {"trade_date": None, "total": 0, "count": 0, "items": []}
+            trade_date = day.isoformat()
+
+        where = [
+            "adjustment = ?",
+            "trade_date = ?",
+            "close IS NOT NULL",
+            "open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL",
+        ]
+        params: list = [adjust, trade_date]
+        if symbols is not None:
+            if not symbols:
+                return {"trade_date": trade_date, "total": 0, "count": 0, "items": []}
+            where.append(f"symbol IN ({', '.join('?' for _ in symbols)})")
+            params.extend(symbols)
+
+        condition = " AND ".join(where)
+        total = _fetch(con, f"SELECT count(*) AS n FROM {BARS_VIEW} WHERE {condition}", params)[0]
+        rows = _fetch(
+            con,
+            f"SELECT {', '.join(_CROSS_SECTION_COLUMNS)} FROM {BARS_VIEW} WHERE {condition}"
+            f" ORDER BY {sort} {direction} NULLS LAST, symbol ASC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+    finally:
+        con.close()
+    return {
+        "trade_date": trade_date,
+        "total": int(total["n"]),
+        "count": len(rows),
+        "items": rows,
+    }
+
+
 def event_coverage(data_dir: Path | None = None) -> dict[str, object]:
     """本地事件语料的覆盖区间与总条数——**从数据里查出来的**，不写死「最近 3 个月」。
 

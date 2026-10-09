@@ -16,6 +16,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from app.backtest.a_share_rules import (
+    REJECT_REASONS,
+    LimitBand,
+    RejectCode,
+    limit_band,
+    limit_pct,
+    order_reject,
+)
 from app.backtest.broker import Broker
 from app.backtest.costs import CostModel
 from app.backtest.events import build_feed
@@ -30,15 +38,40 @@ from app.backtest.types import (
     Fill,
     Mode,
     Position,
+    Side,
     Signal,
     Trade,
 )
 from app.data import duckdb_client as dc
+from app.data import naming
 
 log = logging.getLogger(__name__)
 
 #: 停牌顺延上限：连续这么多根 bar 无法撮合则丢弃信号（实测样本内不触发）。
 MAX_DEFER_BARS = 5
+
+
+@dataclass(frozen=True, slots=True)
+class RuleStatus:
+    """A 股规则本次运行的实际生效情况——**如实标注降级**，报告里原样带出去。
+
+    「跑了但没生效」和「压根没跑」在报告里必须分得开，否则「一字涨停日买单被拒」
+    这条验收没法判断是不是真的验过了。
+    """
+
+    #: `on` = 涨跌停判定生效；`skipped` = 降级未做（原因见 `reason`）
+    limit_check: str
+    reason: str | None
+    is_st: bool
+    limit_pct: float | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "limit_check": self.limit_check,
+            "reason": self.reason,
+            "is_st": self.is_st,
+            "limit_pct": self.limit_pct,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +99,9 @@ class BacktestResult:
     dropped_signals: tuple[DroppedSignal, ...]
     visible_event_ids: tuple[str, ...]
     cutoff_field: str
+    a_share_rules: RuleStatus = RuleStatus(
+        limit_check="skipped", reason="not_run", is_st=False, limit_pct=None
+    )
 
     @property
     def final_equity(self) -> float:
@@ -109,6 +145,43 @@ def _load_bars(config: BacktestConfig) -> list[Bar]:
     return [Bar.from_row(row) for row in rows]
 
 
+def _limit_bands(
+    config: BacktestConfig, bars: list[Bar]
+) -> tuple[dict[date, LimitBand], RuleStatus]:
+    """按 **raw 前收**算窗口内每根 bar 的涨跌停价。
+
+    三处刻意的降级（都往「判大 / 跳过」一侧倒，见 `a_share_rules` 的不对称性说明）：
+
+    * **板别认不出** → 不给任何 band，`reason=unknown_board`；
+    * **raw 序列不成序列**（分片缺失，或只有一根算不出前收）→ 全不给，`reason=no_raw_series`；
+    * **ST 判定取回测终点的名字**——名称只在事件语料覆盖期内有，更早的窗口查不到名字，
+      按板块默认幅度。
+
+    raw 取数**不带 start**：窗口第一根 bar 的前收在窗口之外，带了 start 就算不出来。
+    反正单标的整段历史只有千余行，多取一点的代价远小于「第一根永远没有涨跌停价」。
+    """
+    is_st = config.symbol in naming.st_symbols(naming.load_dictionary(config.data_dir))
+    pct = limit_pct(config.symbol, is_st=is_st)
+    if pct is None:
+        return {}, RuleStatus("skipped", "unknown_board", is_st, None)
+
+    rows = dc.bars(
+        config.symbol,
+        end=config.end.isoformat() if config.end else None,
+        adjust="raw",
+        data_dir=config.data_dir,
+    )
+    closes = [(row["trade_date"], row["close"]) for row in rows if row.get("close") is not None]
+    if len(closes) < 2:
+        return {}, RuleStatus("skipped", "no_raw_series", is_st, pct)
+
+    bands = {
+        day: limit_band(prev_close, pct)
+        for (_, prev_close), (day, _) in zip(closes, closes[1:], strict=False)
+    }
+    return bands, RuleStatus("on", None, is_st, pct)
+
+
 def run_backtest(config: BacktestConfig, strategy: Strategy | None = None) -> BacktestResult:
     """按 bar 时间驱动回测；信号在 bar 收盘生成，成交在下一 bar 开盘。
 
@@ -120,6 +193,7 @@ def run_backtest(config: BacktestConfig, strategy: Strategy | None = None) -> Ba
     bars = _load_bars(config)
     if strategy is None:
         strategy = build_strategy(config.strategy, config.params)
+    bands, rule_status = _limit_bands(config, bars)
 
     # 事件一次性取全量、不按 start/end 预过滤：dc.events() 的窗口过滤打在 event_time 上，
     # 拿它做 PIT 预筛会误删「事发在窗口前、但窗口内才可得」的事件。可见性一律交给 feed。
@@ -138,9 +212,37 @@ def run_backtest(config: BacktestConfig, strategy: Strategy | None = None) -> Ba
         if pending:
             if bar.tradable:
                 for signal in pending:
+                    # A 股规则（涨跌停）先过一道；过了再交给 broker 处理资金与整手
+                    blocked = order_reject(
+                        signal.side,
+                        bar,
+                        band=bands.get(bar.trade_date),
+                        bar_index=index,
+                        position=portfolio.position,
+                    )
+                    if blocked is not None:
+                        dropped.append(
+                            DroppedSignal(
+                                bar.trade_date, signal, REJECT_REASONS[blocked], blocked.value
+                            )
+                        )
+                        continue
                     fill = broker.execute(signal, bar, portfolio)
                     if fill is None:
-                        dropped.append(DroppedSignal(bar.trade_date, signal, "拒单：资金或持仓不满足"))
+                        # broker 返 None 只有三种来路：已持仓 / 空仓卖出 / 资金不足一手。
+                        # 前两者不是 A 股规则（是本引擎的单标的单持仓模型），故只在
+                        # 「空仓买入却买不起一手」这一支上挂 `REJECT_LOT`。
+                        code = (
+                            RejectCode.LOT
+                            if signal.side is Side.BUY and portfolio.position.is_flat
+                            else None
+                        )
+                        reason = (
+                            REJECT_REASONS[RejectCode.LOT] if code else "拒单：资金或持仓不满足"
+                        )
+                        dropped.append(
+                            DroppedSignal(bar.trade_date, signal, reason, code.value if code else None)
+                        )
                     else:
                         portfolio.settle(fill, bar_index=index)
                         fills.append(fill)
@@ -150,7 +252,12 @@ def run_backtest(config: BacktestConfig, strategy: Strategy | None = None) -> Ba
                 deferred += 1
                 if deferred > MAX_DEFER_BARS:
                     dropped.extend(
-                        DroppedSignal(bar.trade_date, s, f"停牌连续 {deferred} 根无法撮合，丢弃")
+                        DroppedSignal(
+                            bar.trade_date,
+                            s,
+                            f"停牌连续 {deferred} 根无法撮合，丢弃",
+                            RejectCode.SUSPENDED.value,
+                        )
                         for s in pending
                     )
                     pending = []
@@ -210,4 +317,5 @@ def run_backtest(config: BacktestConfig, strategy: Strategy | None = None) -> Ba
         dropped_signals=tuple(dropped),
         visible_event_ids=tuple(event.event_id for event in feed.visible),
         cutoff_field=feed.cutoff_field,
+        a_share_rules=rule_status,
     )
