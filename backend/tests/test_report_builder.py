@@ -147,7 +147,107 @@ def test_report_hash_moves_with_the_narrative_only_when_it_changes() -> None:
     assert same != other
 
 
-# ── 闸门的四条拒收规格 ─────────────────────────────────────
+# ── M7b：逐笔复盘块 ────────────────────────────────────────
+
+
+def _review_payload() -> dict[str, Any]:
+    return {
+        "account": {"id": "acct-1"},
+        "as_of": "2026-09-30",
+        "data_end": "2026-09-30",
+        "summary": {"settled": 1, "open": 1, "unfilled": 1, "saved": 2, "reused": 0, "lessons": 1},
+        "settled": [
+            {
+                "decision_id": "d-buy",
+                "symbol": "600519",
+                "entry_date": "2026-08-03",
+                "exit_date": "2026-08-10",
+                "settled": True,
+                "pnl": 984.5,
+                "return_pct": 0.0984,
+                "benchmark_pct": 0.02,
+                "alpha_pp": 7.84,
+                "window_days": 6,
+                "entry_reason": "MA 金叉",
+                "exit_reason": "持有到期",
+                "direction": "bullish",
+                "evidence_key": "news:1|2026-08-03",
+                "as_of": "2026-09-30",
+                "settled_at": "2026-10-10T12:00:00+00:00",
+                "reflection": {"text": "吃到了金叉后的主升段。", "model": "m", "note": None},
+                "sources": None,
+                "evidence": None,
+            }
+        ],
+        "open": [
+            {
+                "decision_id": "d-open",
+                "symbol": "600519",
+                "entry_date": "2026-09-30",
+                "exit_date": None,
+                "settled": False,
+                "pnl": 1995.0,
+                "alpha_pp": 18.94,
+                "window_days": 1,
+                "settled_at": "2026-10-10T12:00:00+00:00",
+                "reflection": None,
+            }
+        ],
+        "unfilled": [
+            {
+                "decision_id": "d-exp",
+                "symbol": "600519",
+                "trade_date": "2026-09-20",
+                "side": "buy",
+                "status": "expired",
+                "status_label": "未审批过期（未审批不成交）",
+                "reject_code": None,
+                "reject_reason": None,
+                "sources": None,
+                "evidence": None,
+            }
+        ],
+    }
+
+
+def test_review_block_self_certifies_and_drops_run_time_noise() -> None:
+    """复盘块靠**计数**自证；墙钟时间与本次运行读数（saved/reused）都不进冻结正文。"""
+    facts = build_facts(**_inputs(), review=_review_payload())
+    body = assemble_report(facts, Narrative("综述", "m"))
+
+    assert [block["id"] for block in body["blocks"]] == [
+        "overview", "performance", "attribution", "review", "narrative",
+    ]
+    block = body["blocks"][3]
+    assert block["kind"] == "fact"
+    assert block["numbers"]["review.summary.settled"] == 1
+    assert "saved" not in body["review"]["summary"]  # 运行读数不进正文
+    assert "reused" not in body["review"]["summary"]
+    assert "settled_at" not in body["review"]["settled"][0]
+    validate_claims(body)
+
+
+def test_review_block_ignores_evidence_keys_that_are_not_in_the_body() -> None:
+    """复盘项引用的证据键若不在报告的 `evidence` 里，就不往块上挂（挂上去会被闸门拒收）。"""
+    review = _review_payload()
+    facts = build_facts(**_inputs(), review=review)  # _inputs 的 evidence 只有 news:1|2026-08-03
+    block = next(b for b in facts["blocks"] if b["id"] == "review")
+
+    assert block["evidence"] == ["news:1|2026-08-03"]
+
+
+def test_absent_review_keeps_the_four_block_shape() -> None:
+    """没有复盘（记忆降级 / 旧报告）时块清单退回四块，`review` 为 None。"""
+    facts = build_facts(**_inputs())
+    body = assemble_report(facts, Narrative("综述", "m"))
+
+    assert [block["id"] for block in body["blocks"]] == [
+        "overview", "performance", "attribution", "narrative",
+    ]
+    assert body["review"] is None
+
+
+# ── 闸门的拒收规格 ─────────────────────────────────────────
 
 
 def _body(**over: Any) -> dict[str, Any]:

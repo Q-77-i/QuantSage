@@ -41,6 +41,32 @@ class ClaimError(RuntimeError):
     """claim 闸门拒收（悬空证据键 / 事实块不自证 / 推断块带数字）。"""
 
 
+def freeze_review(review: Mapping[str, Any]) -> dict[str, Any]:
+    """报告里嵌的复盘：**只留事实**——去掉墙钟时间（`settled_at`）与本次运行读数（`saved`/`reused`）。
+
+    两者都是「这次跑出来的东西」，不是事实：留着它们，`review_hash` 每次结算都会变
+    （首次 saved=3/reused=0，二次反过来），报告就再也复用不上了——这是 `report_hash`
+    可复现性的一部分，不是清理。
+    """
+    summary = {
+        key: value
+        for key, value in (review.get("summary") or {}).items()
+        if key not in ("saved", "reused")
+    }
+    return {
+        "summary": summary,
+        "settled": [
+            {key: value for key, value in item.items() if key != "settled_at"}
+            for item in review.get("settled") or []
+        ],
+        "open": [
+            {key: value for key, value in item.items() if key != "settled_at"}
+            for item in review.get("open") or []
+        ],
+        "unfilled": [dict(item) for item in review.get("unfilled") or []],
+    }
+
+
 def _resolve_path(body: Mapping[str, Any], path: str) -> Any:
     """按点分路径取值；任一段不存在返回 `_MISSING`（与「值是 None」区分开）。"""
     node: Any = body
@@ -110,6 +136,7 @@ def build_facts(
     benchmark: MarketBenchmark | None,
     snapshot: Mapping[str, Any],
     evidence: Mapping[str, EvidenceItem],
+    review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """事实层正文（不含综述）。**纯函数**：同一批输入逐字段相等。"""
     equity = [float(row["equity"]) for row in equity_rows]
@@ -220,6 +247,45 @@ def build_facts(
         ),
     ]
 
+    frozen_review: dict[str, Any] | None = None
+    if review is not None:
+        frozen_review = freeze_review(review)
+        summary = frozen_review.get("summary") or {}
+        known = {f"{item.event_id}|{item.day.isoformat()}" for item in ordered_evidence}
+        review_evidence = sorted(
+            {
+                str(item["evidence_key"])
+                for group in ("settled", "open")
+                for item in frozen_review[group]
+                if item.get("evidence_key") and str(item["evidence_key"]) in known
+            }
+        )
+        missing_notes = sum(
+            1
+            for item in frozen_review["settled"]
+            if (item.get("reflection") or {}).get("note")
+        )
+        if missing_notes:
+            warnings.append(f"{missing_notes} 条反思不可用（原因见逐笔复盘，未编造）")
+        blocks.append(
+            _block(
+                "review",
+                "逐笔复盘",
+                text=(
+                    "已到期的回合逐笔给出结算与一句话教训（教训是模型综合，标注为推断型）；"
+                    "期末仍未平仓的标「未到期」——数据止于 where，没有结果就不总结教训；"
+                    "定了没交易的决策如实列状态，不做反事实收益。"
+                ).replace("where", str(market_end)),
+                numbers={
+                    "review.summary.settled": summary.get("settled"),
+                    "review.summary.open": summary.get("open"),
+                    "review.summary.lessons": summary.get("lessons"),
+                    "review.summary.unfilled": summary.get("unfilled"),
+                },
+                evidence=review_evidence,
+            )
+        )
+
     return {
         "version": REPORT_VERSION,
         "kind": REPORT_KIND,
@@ -251,6 +317,7 @@ def build_facts(
             }
             for index, row in enumerate(equity_rows)
         ],
+        "review": frozen_review,
         "attribution": {
             "summary": attribution_summary,
             "symbols": [row.to_payload() for row in symbols],

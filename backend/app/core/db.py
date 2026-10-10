@@ -660,6 +660,18 @@ class Database:
             (user_id, limit),
         )
 
+    async def list_all_paper_accounts(self, limit: int = 500) -> list[dict[str, Any]]:
+        """**跨用户**列出账户（M7b 的结算 job 用）。
+
+        这是全项目唯一一条不带 `user_id` 的业务读：定时结算要为所有用户跑，没有「当前用户」。
+        使用面因此收窄到调度器——**端点一律走带 `user_id` 的那条**（M1 归属口径不破）。
+        """
+        return await self._all(
+            "SELECT id, user_id, name, status, as_of, config FROM paper_accounts "
+            "ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+
     async def get_paper_account(self, user_id: int, account_id: str) -> dict[str, Any] | None:
         """单条（含 config）。带 `user_id` 过滤：越权与不存在同为 None（由调用方翻 404）。
 

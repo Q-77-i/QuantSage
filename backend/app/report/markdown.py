@@ -28,7 +28,7 @@ METRIC_LABELS: tuple[tuple[str, str, str], ...] = (
 DISCLAIMER = "本报告由 QuantSage 生成，仅供研究用途，不构成投资建议。"
 
 #: 容器固定渲染的块（其余块走 `_extra_sections` —— M8 的块不用改这里）
-_HANDLED_BLOCKS = {"overview", "performance", "attribution", "narrative"}
+_HANDLED_BLOCKS = {"overview", "performance", "attribution", "review", "narrative"}
 
 
 def _value(raw: Any, kind: str) -> str:
@@ -100,6 +100,67 @@ def _extra_sections(body: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _review_section(review: Mapping[str, Any]) -> list[str]:
+    """逐笔复盘（M7b）：已到期给教训，未到期的如实标「还没有结果」，定了没交易的列状态。"""
+    summary = review.get("summary") or {}
+    lines = [
+        "## 逐笔复盘",
+        "",
+        f"已到期 {summary.get('settled')} 笔（其中 {summary.get('lessons')} 条有教训）"
+        f"｜未到期 {summary.get('open')} 笔｜定了没交易 {summary.get('unfilled')} 笔",
+        "",
+    ]
+    for title, group in (("已到期", "settled"), ("未到期（数据止于 " + str(review.get("data_end")) + "）", "open")):
+        items = review.get(group) or []
+        if not items:
+            continue
+        lines += [f"### {title}", ""]
+        for item in items:
+            exit_text = item.get("exit_date") or "未平仓"
+            lines.append(
+                f"- **{item.get('symbol')}** {item.get('entry_date')} → {exit_text}"
+                f"（{item.get('window_days')} 个交易日）"
+                f"｜盈亏 {_value(item.get('pnl'), 'money')}"
+                f"｜回合 {_value(item.get('return_pct'), 'pct')}"
+                f"｜基准 {_value(item.get('benchmark_pct'), 'pct')}"
+                f"｜超额 {_value(item.get('alpha_pp'), 'num')} pp"
+            )
+            if item.get("entry_reason") or item.get("exit_reason"):
+                lines.append(
+                    f"  - 买入理由：{item.get('entry_reason') or '—'}"
+                    f"｜卖出理由：{item.get('exit_reason') or '—'}"
+                )
+            reflection = item.get("reflection")
+            if reflection:
+                if reflection.get("text"):
+                    lines.append(
+                        f"  - 教训：{reflection['text']}"
+                        f"（模型 {reflection.get('model') or '—'} · prompt"
+                        f" {reflection.get('prompt_version') or '—'}）"
+                    )
+                elif reflection.get("note"):
+                    lines.append(f"  - 教训：（{reflection['note']}）")
+            evidence = item.get("evidence")
+            if evidence and evidence.get("title"):
+                lines.append(
+                    f"  - 驱动事件：{evidence['title']}"
+                    f"（事发 {evidence.get('event_time') or '—'} ｜ 可得"
+                    f" {evidence.get('available_at') or '—'}）"
+                )
+        lines.append("")
+    unfilled = review.get("unfilled") or []
+    if unfilled:
+        lines += ["### 定了没交易（不做反事实收益，只列状态）", ""]
+        for item in unfilled:
+            note = item.get("reject_reason") or ""
+            lines.append(
+                f"- **{item.get('symbol')}** {item.get('trade_date')} {item.get('side')}"
+                f" — {item.get('status_label')}" + (f"（{note}）" if note else "")
+            )
+        lines.append("")
+    return lines
+
+
 def render_markdown(body: Mapping[str, Any], *, report_hash_value: str | None = None) -> str:
     """冻结正文 → Markdown。同一份正文永远同一份文件（可 diff、可归档）。"""
     account = body.get("account") or {}
@@ -163,6 +224,9 @@ def render_markdown(body: Mapping[str, Any], *, report_hash_value: str | None = 
         "一笔回合计入其驱动事件的每个行业，故各行业之和大于整体是正常的。",
         "",
     ]
+
+    if body.get("review"):
+        lines += _review_section(body["review"])
 
     lines += _extra_sections(body)
 

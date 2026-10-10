@@ -460,6 +460,20 @@ class FakeDatabase:
                 break
         return out
 
+    async def list_all_paper_accounts(self, limit: int = 500) -> list[dict[str, Any]]:
+        """跨用户列出（结算 job 用）——替身同样**不带归属过滤**，与真库那条 SQL 同义。"""
+        return [
+            {
+                "id": account_id,
+                "user_id": self.paper_accounts[account_id]["user_id"],
+                "name": self.paper_accounts[account_id]["name"],
+                "status": self.paper_accounts[account_id]["status"],
+                "as_of": self.paper_accounts[account_id]["as_of"],
+                "config": self.paper_accounts[account_id]["config"],
+            }
+            for account_id in reversed(self._paper_order)
+        ][:limit]
+
     async def get_paper_account(self, user_id: int, account_id: str) -> dict[str, Any] | None:
         row = self.paper_accounts.get(account_id)
         return None if row is None or row["user_id"] != user_id else row

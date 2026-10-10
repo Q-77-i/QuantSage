@@ -65,6 +65,35 @@ def test_markdown_marks_absent_narrative_and_none_values() -> None:
     assert "—" in text
 
 
+def test_markdown_renders_the_review_section_with_reflections() -> None:
+    """逐笔复盘段：已到期带教训（含模型身份）、未到期标「还没有结果」、未成交只列状态。"""
+    from tests.test_report_builder import _review_payload
+
+    body = assemble_report(
+        build_facts(**_inputs(), review=_review_payload()), Narrative("综述", "m")
+    )
+    text = render_markdown(body)
+
+    assert "## 逐笔复盘" in text
+    assert "### 已到期" in text and "### 未到期" in text
+    assert "吃到了金叉后的主升段。" in text and "模型 m" in text
+    assert "买入理由：MA 金叉" in text
+    assert "定了没交易" in text and "未审批过期（未审批不成交）" in text
+
+
+def test_markdown_marks_a_missing_reflection_instead_of_inventing_one() -> None:
+    from tests.test_report_builder import _review_payload
+
+    review = _review_payload()
+    review["settled"][0]["reflection"] = {"text": None, "model": "m", "note": "反思超时（>20s）"}
+    body = assemble_report(build_facts(**_inputs(), review=review), Narrative("综述", "m"))
+
+    text = render_markdown(body)
+
+    assert "反思超时" in text
+    assert "教训：（" in text  # 明写「没有」，不留空白
+
+
 def test_markdown_is_deterministic() -> None:
     assert render_markdown(_body()) == render_markdown(_body())
 

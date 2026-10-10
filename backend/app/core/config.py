@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # 补嵌的上限：实测一天语料（1k–6k 行）约 1–8 分钟，8 天积压 18 分钟，留足余量
     etl_embed_timeout_seconds: int = 1800
 
+    # ── 决策结算（M7b）：到期回合的记忆与反思 ──
+    # **独立开关**（不寄生 `etl_enabled`：那个一关，整个 ETL 调度器都不启）。
+    # 默认关，与 ETL 同风格——定时任务会调模型（花钱），本地开发与测试不该被它打扰；
+    # 界面上的「结算」按钮走的是同一条路径（`memory/service.py::settle_account`）。
+    memory_settle_enabled: bool = False
+    memory_settle_hour: int = 21  # 北京时间；收盘、数据落定之后
+    memory_settle_minute: int = 40
+
     # ── RAG（M3）：本地嵌入与检索 ──
     # 权重目录放仓库内 .tools/（已 gitignore），不散落到 ~/.cache；模型各约 2.3GB
     rag_model_dir: Path = REPO_ROOT / ".tools" / "models"

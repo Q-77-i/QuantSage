@@ -51,6 +51,8 @@ from app.core.db import (
 )
 from app.strategy import SandboxError, StrategyCheckFailed, StrategyRejected
 from app.core.langfuse import build_langfuse_handler
+from app.memory.decision_store import MemoryHolder
+from app.memory.scheduler import start_settlement_scheduler
 from app.core.llm import build_chat_model
 from app.core.logging import setup_logging
 from app.etl.scheduler import start_scheduler
@@ -90,6 +92,8 @@ async def lifespan(app: FastAPI):
     app.state.agent = None
     app.state.langfuse_handler = None
     app.state.scheduler = None
+    app.state.memory = None
+    app.state.settle_scheduler = None
 
     if not settings.jwt_secret.get_secret_value():
         # 不静默降级成无鉴权：/api/v1/auth/* 会返回 503，缺的是配置不是代码
@@ -147,11 +151,23 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001 —— 缺 key 时不要让整个服务起不来
             log.warning("Agent 未就绪（%s），/api/v1/chat 将返回 503", type(exc).__name__)
 
+        # 决策记忆（M7b）：LangGraph Store 首用——与 checkpointer 同库不同表。
+        # **按需建**（`MemoryHolder`）：`AsyncBatchedBaseStore` 在构造时捕获事件循环，
+        # 在 lifespan 的 loop 里建、在请求的 loop 上用会炸 `Future attached to a different loop`
+        # （实测；uvicorn 单 loop 侥幸不炸，那是运气）。这里只放持有者，建库建表在首次使用时。
+        app.state.memory = MemoryHolder(settings.postgres_dsn)
+
         # 事件语料定时（M2b）：默认不启用；启用了才起，起不来也不阻断服务
         try:
             app.state.scheduler = start_scheduler()
         except Exception as exc:  # noqa: BLE001
             log.warning("ETL 调度器未启动（%s），/api/v1/etl/run 仍可手动触发", type(exc).__name__)
+
+        # 到期结算定时（M7b）：**独立于 ETL**的开关与调度器（默认关，它会调模型）
+        try:
+            app.state.settle_scheduler = start_settlement_scheduler(app)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("结算调度器未启动（%s），结算端点仍可手动触发", type(exc).__name__)
 
         if settings.rag_warmup_on_start:
             # 后台线程预热 RAG 模型：把首次提问要付的 7–15s 载入挪到启动期。
@@ -161,8 +177,12 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
-            if app.state.scheduler is not None:
-                app.state.scheduler.shutdown(wait=False)
+            for scheduler in (app.state.scheduler, app.state.settle_scheduler):
+                if scheduler is not None:
+                    scheduler.shutdown(wait=False)
+            holder = app.state.memory
+            if holder is not None and hasattr(holder, "aclose"):
+                await holder.aclose()  # 按需建的 Store 连接在这里收
 
 
 app = FastAPI(title="QuantSage API", version="0.1.0", lifespan=lifespan)

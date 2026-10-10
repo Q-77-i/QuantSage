@@ -201,6 +201,124 @@ def test_mark_open_trips_fills_float_pnl_and_leaves_closed_alone() -> None:
     assert marked[2].pnl is None
 
 
+def test_settle_closed_trip_computes_window_alpha() -> None:
+    """已到期回合：窗口 = [买入成交日, 卖出成交日]，alpha = 回合收益 − 同窗口全市场等权。
+
+    手算：return = 984.50 / 10,005 = 0.0984008；基准给 0.02 ⇒ alpha = (0.0984008 − 0.02)×100
+    = 7.84008 pp。窗口只含区间内的交易日（8/3–8/7、8/10 共 6 天）。
+    """
+    from app.memory.settle import settle_trips
+
+    trips = pair_trips([buy(date(2026, 8, 3)), sell(date(2026, 8, 10))])
+    days = [date(2026, 8, day) for day in (3, 4, 5, 6, 7, 10)]
+    calls: list[list[date]] = []
+
+    def benchmark(window: object) -> float:
+        calls.append(list(window))  # type: ignore[arg-type]
+        return 0.02
+
+    settled = settle_trips(
+        trips, as_of=date(2026, 9, 30), market_days=days, benchmark_return=benchmark
+    )
+
+    item = settled[0]
+    assert item.settled and item.decision_id == "d-buy" and item.symbol == "600519"
+    assert item.entry_date == date(2026, 8, 3) and item.exit_date == date(2026, 8, 10)
+    assert item.window_days == 6
+    assert item.pnl == pytest.approx(984.50)
+    assert item.return_pct == pytest.approx(0.0984008, rel=1e-6)
+    assert item.benchmark_pct == pytest.approx(0.02)
+    assert item.alpha_pp == pytest.approx(7.84008, rel=1e-6)
+    assert item.entry_reason == "MA 金叉" and item.exit_reason == "持有到期"
+    assert calls == [days]
+
+
+def test_open_trip_windows_to_as_of_not_to_the_data_end() -> None:
+    """未平仓：窗口算到**账户 as_of**——不看到账户还没走过的日子（那是前视）。
+
+    手算：浮盈 1,995.00 / 10,005 = 0.1994003；基准 0.01 ⇒ alpha = 18.94003 pp。
+    """
+    from app.memory.settle import mark_open_trips, settle_trips
+
+    trips = mark_open_trips(
+        pair_trips([buy(date(2026, 9, 29), did="d-open")]), {"600519": 12.0}
+    )
+    days = [date(2026, 9, 29), date(2026, 9, 30), date(2026, 10, 8)]
+    seen: list[list[date]] = []
+
+    def benchmark(window: object) -> float:
+        seen.append(list(window))  # type: ignore[arg-type]
+        return 0.01
+
+    settled = settle_trips(
+        trips, as_of=date(2026, 9, 30), market_days=days, benchmark_return=benchmark
+    )
+
+    item = settled[0]
+    assert not item.settled
+    assert item.exit_date is None and item.exit_reason == ""
+    assert item.window_days == 2
+    assert seen == [days[:2]]
+    assert item.pnl == pytest.approx(1995.0)
+    assert item.return_pct == pytest.approx(0.1994003, rel=1e-6)
+    assert item.alpha_pp == pytest.approx(18.94003, rel=1e-6)
+
+
+def test_trip_without_mark_keeps_money_fields_none() -> None:
+    """缺价的未平仓：pnl / return / alpha 全 None（不编），到期状态与窗口照记。"""
+    from app.memory.settle import settle_trips
+
+    trips = pair_trips([buy(date(2026, 9, 29), did="d-open")])
+    settled = settle_trips(
+        trips,
+        as_of=date(2026, 9, 30),
+        market_days=[date(2026, 9, 29), date(2026, 9, 30)],
+        benchmark_return=lambda window: 0.01,
+    )
+
+    item = settled[0]
+    assert not item.settled
+    assert item.pnl is None and item.return_pct is None and item.alpha_pp is None
+    assert item.window_days == 2
+
+
+def test_empty_window_skips_the_benchmark_call() -> None:
+    """窗口内没有交易日（如成交日在市场日历之外）⇒ 不调基准，两个基准字段都是 None。"""
+    from app.memory.settle import settle_trips
+
+    trips = pair_trips([buy(date(2026, 8, 3)), sell(date(2026, 8, 10))])
+    calls: list[object] = []
+
+    def benchmark(window: object) -> float:
+        calls.append(window)
+        return 0.02
+
+    settled = settle_trips(
+        trips, as_of=date(2026, 9, 30), market_days=[], benchmark_return=benchmark
+    )
+
+    assert calls == []
+    assert settled[0].window_days == 0
+    assert settled[0].benchmark_pct is None and settled[0].alpha_pp is None
+
+
+def test_benchmark_absence_leaves_alpha_none() -> None:
+    """基准取不到（窗口内无行情样本）时 benchmark_pct 是 None ⇒ alpha 也只能是 None。"""
+    from app.memory.settle import settle_trips
+
+    trips = pair_trips([buy(date(2026, 8, 3)), sell(date(2026, 8, 10))])
+    settled = settle_trips(
+        trips,
+        as_of=date(2026, 9, 30),
+        market_days=[date(2026, 8, 3), date(2026, 8, 10)],
+        benchmark_return=lambda window: None,
+    )
+
+    assert settled[0].benchmark_pct is None
+    assert settled[0].alpha_pp is None
+    assert settled[0].return_pct is not None
+
+
 def test_closed_trip_matches_hand_computed_ledger_arithmetic() -> None:
     """一笔买 + 一笔卖 = 一个已平仓回合，pnl 按账本公式手算。
 

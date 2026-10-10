@@ -19,14 +19,17 @@ from __future__ import annotations
 import asyncio
 import secrets
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from app.backtest.benchmark import market_benchmark
 from app.core.auth import require_db, require_user
 from app.data import duckdb_client as dc
+from app.memory.decision_store import DecisionMemory, MemoryUnavailable, memory_for
+from app.memory.scheduler import next_run_time
+from app.memory.service import settle_account
 from app.memory.settle import mark_open_trips, pair_trips
 from app.paper.store import config_from_payload, decision_from_row, equity_from_row
 from app.paper.types import Decision, PaperConfig
@@ -35,6 +38,7 @@ from app.report.builder import (
     assemble_report,
     build_facts,
     equity_dates,
+    freeze_review,
     validate_claims,
 )
 from app.report.evidence import resolve_evidence
@@ -56,6 +60,14 @@ DECISION_LIMIT = 5000
 
 #: 分享 token：`token_urlsafe(24)` ≈ 32 字符、192 位熵——不可猜
 SHARE_TOKEN_BYTES = 24
+
+
+async def require_memory(request: Request) -> DecisionMemory:
+    """决策记忆出口：没起来（库不可用 / 降级启动）时 503——与 `require_db` 同姿态。"""
+    try:
+        return await memory_for(request.app.state)
+    except MemoryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"决策记忆不可用（{exc}）") from exc
 
 
 class ReportRequest(BaseModel):
@@ -121,6 +133,7 @@ async def _facts_for(
     decisions: list[Decision],
     equity: list[dict[str, Any]],
     snapshot: dict[str, Any],
+    review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """取齐剩余输入并组装事实层（不含 LLM）。"""
     closes = await asyncio.to_thread(dc.closes_through, list(config.symbols), row["as_of"])
@@ -144,6 +157,7 @@ async def _facts_for(
         benchmark=benchmark,
         snapshot=snapshot,
         evidence=evidence,
+        review=review,
     )
 
 
@@ -185,21 +199,42 @@ async def _load_account(
 @router.post("/reports", status_code=201)
 async def create_report(
     payload: ReportRequest,
+    request: Request,
     user: dict[str, Any] = Depends(require_user),
     db: Any = Depends(require_db),
 ) -> dict[str, Any]:
-    """生成并冻结一份绩效研报（同 `(账户, 快照)` 幂等复用；不存在则 201 新建）。"""
+    """生成并冻结一份绩效研报（同 `(账户, 快照)` 幂等复用；不存在则 201 新建）。
+
+    生成前先做一次**惰性结算**（M7b）：新到期的回合才调模型，已结算的直接复用记忆——
+    所以「同一份数据第二次点生成」既不重算分片、也不花钱。记忆不可用时（降级启动）
+    报告照常出，只是没有逐笔复盘块。
+    """
     account_id = str(payload.account_id)
     row, config, decisions, equity = await _load_account(db, user["id"], account_id)
 
+    review: dict[str, Any] | None = None
+    try:
+        memory = await memory_for(request.app.state)
+    except MemoryUnavailable:
+        memory = None  # 记忆不可用：报告照常出，只是没有逐笔复盘块
+    if memory is not None:
+        review, _run = await settle_account(
+            db, memory, user_id=user["id"], account_id=account_id
+        )
+
     snapshot = await asyncio.to_thread(_snapshot_for, row, config, decisions)
+    if review is not None:
+        # 复盘内容进快照身份：结算变了（新到期 / 新教训）就该出一份**新的**报告，
+        # 而不是复用旧的那份没复盘的
+        snapshot["review_hash"] = report_hash(freeze_review(review))
     digest = snapshot_hash(snapshot)
     existing = await db.find_research_report(user["id"], account_id, digest)
     if existing is not None:
         return _row_payload(existing, reused=True)
 
     facts = await _facts_for(
-        row=row, config=config, decisions=decisions, equity=equity, snapshot=snapshot
+        row=row, config=config, decisions=decisions, equity=equity, snapshot=snapshot,
+        review=review,
     )
     body = assemble_report(facts, await build_narrative(_narrative_brief(facts)))
     try:
@@ -321,6 +356,73 @@ async def public_report(token: str, db: Any = Depends(require_db)) -> dict[str, 
     if row is None:
         raise HTTPException(status_code=404, detail="分享链接不存在或已撤销")
     return _public_payload(row)
+
+
+# ── 决策记忆与到期结算（M7b）────────────────────────────────
+
+
+@router.get("/accounts/{account_id}/review")
+async def account_review(
+    account_id: uuid.UUID,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+    db: Any = Depends(require_db),
+    memory: DecisionMemory = Depends(require_memory),
+) -> dict[str, Any]:
+    """逐笔复盘：已到期的回合（结算 + 一句话教训）+ 未到期 + 定了没交易的。
+
+    **惰性结算**：新到期的回合才调模型，已结算的直接复用记忆——同一个账户连看两次，
+    第二次一分钱不花。
+    """
+    try:
+        review, _run = await settle_account(
+            db, memory, user_id=user["id"], account_id=str(account_id)
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="模拟盘会话不存在") from exc
+    return review
+
+
+@router.post("/accounts/{account_id}/settle")
+async def settle_now(
+    account_id: uuid.UUID,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+    db: Any = Depends(require_db),
+    memory: DecisionMemory = Depends(require_memory),
+) -> dict[str, Any]:
+    """手动触发结算（幂等；与定时 job 走**同一个函数**）。返回本次读数与下次定时时刻。"""
+    try:
+        _review, run = await settle_account(
+            db, memory, user_id=user["id"], account_id=str(account_id)
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="模拟盘会话不存在") from exc
+    return {
+        "account_id": str(account_id),
+        **run.to_payload(),
+        "next_run": next_run_time(getattr(request.app.state, "settle_scheduler", None)),
+    }
+
+
+@router.get("/lessons")
+async def lessons(
+    request: Request,
+    symbol: str | None = Query(None),
+    direction: Literal["bullish", "bearish", "neutral"] | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    user: dict[str, Any] = Depends(require_user),
+    memory: DecisionMemory = Depends(require_memory),
+) -> dict[str, Any]:
+    """跨账户 / 跨标的的教训聚合（只收**有反思文本**的已平仓回合）。"""
+    rows = await memory.lessons(
+        user_id=user["id"], symbol=symbol, direction=direction, limit=limit
+    )
+    return {
+        "lessons": rows,
+        "symbols": list(await memory.symbols(user_id=user["id"])),
+        "filters": {"symbol": symbol, "direction": direction, "limit": limit},
+    }
 
 
 @router.get("/public/reports/{token}/markdown")

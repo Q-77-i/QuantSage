@@ -46,6 +46,17 @@ def stub_narrative(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reports_api, "build_narrative", _fake_narrative)
 
 
+@pytest.fixture
+def stub_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """反思也打桩：集成用例该验库与端点，不该依赖外部 LLM 的可用性与钱包。"""
+    from app.memory import service as memory_service
+
+    async def _fake(facts: dict[str, Any], **kwargs: Any) -> Narrative:
+        return Narrative(f"教训：{facts['symbol']} 这笔记一笔。", "fake-model")
+
+    monkeypatch.setattr(memory_service, "build_reflection", _fake)
+
+
 def _fresh_emails(count: int = 2) -> list[str]:
     suffix = uuid.uuid4().hex[:8]
     return [f"m7-{suffix}-{index}@example.com" for index in range(count)]
@@ -89,7 +100,7 @@ def test_schema_is_idempotent_on_the_real_database() -> None:
 
 
 def test_full_round_trip_on_the_real_database(
-    real_stack: TestClient, stub_narrative: None
+    real_stack: TestClient, stub_narrative: None, stub_reflection: None
 ) -> None:
     """生成 → 幂等复用 → 分享 → 匿名只读 → 撤销 → 404 → 跨用户 404。"""
     emails = _fresh_emails()
@@ -139,7 +150,7 @@ def test_full_round_trip_on_the_real_database(
 
 
 def test_account_advancing_yields_a_new_report(
-    real_stack: TestClient, stub_narrative: None
+    real_stack: TestClient, stub_narrative: None, stub_reflection: None
 ) -> None:
     """账户往前推进后，决策日志变了 ⇒ 快照变了 ⇒ 出一份**新的**报告（旧的留在库里）。"""
     emails = _fresh_emails(1)
@@ -174,4 +185,55 @@ def test_account_advancing_yields_a_new_report(
     listed = client.get(f"/api/v1/reports?account_id={account_id}").json()["reports"]
     assert len(listed) == 2
 
+    purge_rows(emails, [])
+
+
+def purge_memory(account_id: str) -> None:
+    """清 Store 里这个账户的记忆。
+
+    **`store` 表不挂在 `users` 上**（langgraph 自己的表），`purge_rows` 级联不到它——
+    不单独清就会在开发库里留垃圾（同 M1c 立下的「集成用例自己收干净」）。
+    按账户 UUID 匹配前缀（UUID 唯一，不会误伤别人的记忆）。
+    """
+    import psycopg
+
+    with psycopg.connect(get_settings().postgres_dsn) as conn:
+        rows = conn.execute("SELECT DISTINCT prefix FROM store").fetchall()
+        mine = [row[0] for row in rows if account_id in row[0]]
+        if mine:
+            conn.execute("DELETE FROM store WHERE prefix = ANY(%s)", (mine,))
+
+
+def test_decision_memory_round_trip_on_the_real_store(
+    real_stack: TestClient, stub_narrative: None, stub_reflection: None
+) -> None:
+    """真 Store 全链路：惰性结算 → 落记忆 → 幂等复用 → 跨账户教训聚合（M7b 的头号验收）。"""
+    emails = _fresh_emails(1)
+    client = sign_up(emails[0])
+    account_id = _make_account(client, "M7b 记忆会话")
+
+    review = client.get(f"/api/v1/accounts/{account_id}/review")
+    assert review.status_code == 200, review.text
+    body = review.json()
+    assert body["summary"]["settled"] >= 1
+    assert all(item["reflection"]["text"] for item in body["settled"])
+    assert all("settled_at" in item for item in body["settled"])  # 记忆里有审计时间
+
+    # 幂等：再结算一次，全部复用、不新增（同 (决策, 快照) 不重复调模型）
+    again = client.post(f"/api/v1/accounts/{account_id}/settle")
+    assert again.status_code == 200, again.text
+    assert again.json()["saved"] == 0 and again.json()["reused"] >= 1
+
+    # 教训聚合：真 Store 的 search 跨账户取到本用户的记忆
+    lessons = client.get("/api/v1/lessons")
+    assert lessons.status_code == 200
+    assert lessons.json()["lessons"], "刚结算出的教训应当能聚合出来"
+    assert lessons.json()["lessons"][0]["reflection"]["model"] == "fake-model"
+    assert SYMBOL in lessons.json()["symbols"]
+
+    # 别人的教训取不到（namespace 前缀隔离）
+    other = sign_up(_fresh_emails(1)[0])
+    assert other.get("/api/v1/lessons").json()["lessons"] == []
+
+    purge_memory(account_id)
     purge_rows(emails, [])

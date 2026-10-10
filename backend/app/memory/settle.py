@@ -25,7 +25,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 
@@ -141,5 +141,90 @@ def mark_open_trips(trips: Sequence[Trip], closes: Mapping[str, float]) -> list[
         pnl = price * trip.qty - trip.entry_fees - trip.entry_price * trip.qty
         out.append(
             replace(trip, pnl=pnl, return_pct=(pnl / trip.cost) if trip.cost else None)
+        )
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class SettledTrip:
+    """一条**结算后的回合**（决策记忆的事实层，SPEC §8 D2）。
+
+    `settled=False` 表示**未到期**：期末仍未平仓，窗口只算到账户 `as_of`、不看到账户还没走
+    过的日子（那是前视）。未到期的**不给反思**——教训要从已了结的结果里长出来。
+    """
+
+    decision_id: str
+    symbol: str
+    entry_date: date
+    exit_date: date | None
+    settled: bool
+    pnl: float | None
+    return_pct: float | None
+    benchmark_pct: float | None
+    alpha_pp: float | None
+    window_days: int
+    entry_reason: str = ""
+    exit_reason: str = ""
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "decision_id": self.decision_id,
+            "symbol": self.symbol,
+            "entry_date": self.entry_date.isoformat(),
+            "exit_date": self.exit_date.isoformat() if self.exit_date else None,
+            "settled": self.settled,
+            "pnl": self.pnl,
+            "return_pct": self.return_pct,
+            "benchmark_pct": self.benchmark_pct,
+            "alpha_pp": self.alpha_pp,
+            "window_days": self.window_days,
+            "entry_reason": self.entry_reason,
+            "exit_reason": self.exit_reason,
+        }
+
+
+#: 基准收益的取数口：给一段交易日，回该窗口的全市场等权收益（取不到给 None）。
+#: 做成回调是为了让本模块保持纯函数——真实实现是 `market_benchmark(...).total_return`。
+BenchmarkReturn = Callable[[Sequence[date]], "float | None"]
+
+
+def settle_trips(
+    trips: Sequence[Trip],
+    *,
+    as_of: date,
+    market_days: Sequence[date],
+    benchmark_return: BenchmarkReturn,
+) -> list[SettledTrip]:
+    """回合 → 结算结果（含窗口 alpha）。**纯函数**：I/O 全在注入的 `benchmark_return` 里。
+
+    窗口 = `[买入成交日, 卖出成交日]`（未平仓则到 `as_of`）∩ `market_days`；窗口为空
+    （成交日不在市场日历里）或基准取不到时，`benchmark_pct` / `alpha_pp` 如实为 `None`。
+    """
+    ordered = sorted(market_days)
+    out: list[SettledTrip] = []
+    for trip in trips:
+        end = trip.exit_date or as_of
+        window = [day for day in ordered if trip.entry_date <= day <= end]
+        benchmark_pct = benchmark_return(window) if window else None
+        alpha_pp = (
+            (trip.return_pct - benchmark_pct) * 100.0
+            if trip.return_pct is not None and benchmark_pct is not None
+            else None
+        )
+        out.append(
+            SettledTrip(
+                decision_id=trip.entry_decision_id,
+                symbol=trip.symbol,
+                entry_date=trip.entry_date,
+                exit_date=trip.exit_date,
+                settled=not trip.is_open,
+                pnl=trip.pnl,
+                return_pct=trip.return_pct,
+                benchmark_pct=benchmark_pct,
+                alpha_pp=alpha_pp,
+                window_days=len(window),
+                entry_reason=trip.entry_reason,
+                exit_reason=trip.exit_reason,
+            )
         )
     return out

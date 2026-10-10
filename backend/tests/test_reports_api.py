@@ -92,11 +92,25 @@ def _values(node: Any) -> list[Any]:
 @pytest.fixture
 def report_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signed_in: Any) -> dict[str, Any]:
     """跑到末端的账户（有成交、有未平仓）+ 一份已生成的报告 + 一个分享 token。"""
+    from langgraph.store.memory import InMemoryStore
+
+    from app.memory.decision_store import DecisionMemory
+    from app.memory import service as memory_service
+
     days = _days()
     root = make_backtest_dir(tmp_path, _bars(days), events=_events(), symbol=SYMBOL)
     write_bars_parquet(root / "bars", SYMBOL, _bars(days), adjust="raw")
     monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: root)
     monkeypatch.setattr(reports_api, "build_narrative", _fake_narrative)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_reflection(facts: dict[str, Any], **kwargs: Any) -> Narrative:
+        calls.append(facts)
+        return Narrative(f"教训：{facts['symbol']} 这笔记一笔。", "fake-model")
+
+    monkeypatch.setattr(memory_service, "build_reflection", fake_reflection)
+    app.state.memory = DecisionMemory(InMemoryStore())
+    app.state.settle_scheduler = None
 
     created = client.post("/api/v1/paper/accounts", json=_account_body(days))
     assert created.status_code == 201, created.text
@@ -116,6 +130,7 @@ def report_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signed_in: Any) 
         "report_id": payload["id"],
         "report": payload["report"],
         "token": shared.json()["share_token"],
+        "llm_calls": calls,
     }
 
 
@@ -167,10 +182,10 @@ def test_report_body_shape(report_env: dict[str, Any]) -> None:
     assert body["account"]["symbols"] == [SYMBOL]
     assert body["account"]["as_of"] == report_env["days"][-1].isoformat()
     assert [block["id"] for block in body["blocks"]] == [
-        "overview", "performance", "attribution", "narrative",
+        "overview", "performance", "attribution", "review", "narrative",
     ]
     assert [block["kind"] for block in body["blocks"]] == [
-        "fact", "fact", "fact", "inference",
+        "fact", "fact", "fact", "fact", "inference",
     ]
     assert body["metrics"]["final_equity"] > 0
     # 基准必须真的算出来：夹具的 bar 带 change_pct=+2%，若日期形状喂错（字符串 vs date），
@@ -300,6 +315,104 @@ def test_unshare_then_share_again_issues_a_new_token(report_env: dict[str, Any])
 
     assert again.status_code == 200
     assert again.json()["share_token"] != report_env["token"]
+
+
+# ── 决策记忆与到期结算（M7b）──────────────────────────────
+
+
+def test_review_lists_settled_open_and_unfilled(report_env: dict[str, Any]) -> None:
+    """复盘三段：已到期（带教训）、未到期（没有教训）、定了没交易（只列状态）。"""
+    response = client.get(f"/api/v1/accounts/{report_env['account_id']}/review")
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    summary = review["summary"]
+    assert summary["settled"] >= 1 and summary["lessons"] >= 1
+    first = review["settled"][0]
+    assert first["reflection"]["text"].startswith("教训：")
+    assert first["alpha_pp"] is not None and first["benchmark_pct"] is not None
+    for item in review["open"]:
+        assert item["reflection"] is None
+    assert review["data_end"] == report_env["days"][-1].isoformat()
+
+
+def test_review_is_idempotent_and_does_not_pay_twice(report_env: dict[str, Any]) -> None:
+    """惰性结算幂等：同一个账户连看两次复盘，第二次不再调模型。"""
+    before = len(report_env["llm_calls"])
+    client.get(f"/api/v1/accounts/{report_env['account_id']}/review")
+    after_first = len(report_env["llm_calls"])
+    again = client.get(f"/api/v1/accounts/{report_env['account_id']}/review")
+
+    assert again.status_code == 200
+    assert len(report_env["llm_calls"]) == after_first  # 第二次一分钱没花
+    assert after_first >= before
+
+
+def test_settle_endpoint_reports_the_run(report_env: dict[str, Any]) -> None:
+    response = client.post(f"/api/v1/accounts/{report_env['account_id']}/settle")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["account_id"] == report_env["account_id"]
+    assert payload["reused"] >= 0 and "as_of" in payload
+    assert payload["next_run"] is None  # 夹具里没有起调度器（默认关）
+
+
+def test_lessons_aggregate_and_filter(report_env: dict[str, Any]) -> None:
+    response = client.get("/api/v1/lessons")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["lessons"], "事件驱动账户至少有一条已到期且有教训的回合"
+    assert all(row["reflection"]["text"] for row in payload["lessons"])
+    assert SYMBOL in payload["symbols"]
+
+    filtered = client.get(f"/api/v1/lessons?symbol={SYMBOL}&direction=bullish")
+    assert filtered.status_code == 200
+    assert all(row["symbol"] == SYMBOL for row in filtered.json()["lessons"])
+
+    # 非法方向 422（Literal 拦住拼错的取值，而不是静默返回空）
+    assert client.get("/api/v1/lessons?direction=up").status_code == 422
+
+
+def test_report_body_carries_the_review_block(report_env: dict[str, Any]) -> None:
+    """报告里带逐笔复盘块与 review 段（M7b 接进来的那一块）。"""
+    body = report_env["report"]
+
+    assert [block["id"] for block in body["blocks"]] == [
+        "overview", "performance", "attribution", "review", "narrative",
+    ]
+    assert body["review"]["summary"]["settled"] >= 1
+    assert "review_hash" in body["snapshot"]
+    # 冻结产物里不留墙钟时间（否则 report_hash 每次重放都会变）
+    assert all("settled_at" not in item for item in body["review"]["settled"])
+
+
+def test_m7b_endpoints_require_sign_in(report_env: dict[str, Any]) -> None:
+    app.dependency_overrides.clear()
+    try:
+        assert client.get(f"/api/v1/accounts/{report_env['account_id']}/review").status_code == 401
+        assert client.post(f"/api/v1/accounts/{report_env['account_id']}/settle").status_code == 401
+        assert client.get("/api/v1/lessons").status_code == 401
+    finally:
+        app.dependency_overrides[reports_api.require_user] = lambda: dict(TEST_USER)
+
+
+def test_memory_unavailable_is_503(report_env: dict[str, Any]) -> None:
+    """记忆没起来（降级启动）：三个端点 503，而**研报照常出**（只是没有复盘块）。"""
+    app.state.memory = None
+    try:
+        assert client.get(f"/api/v1/accounts/{report_env['account_id']}/review").status_code == 503
+        assert client.get("/api/v1/lessons").status_code == 503
+        created = client.post("/api/v1/reports", json={"account_id": report_env["account_id"]})
+        assert created.status_code == 201
+        assert "review" not in [block["id"] for block in created.json()["report"]["blocks"]]
+    finally:
+        from langgraph.store.memory import InMemoryStore
+
+        from app.memory.decision_store import DecisionMemory
+
+        app.state.memory = DecisionMemory(InMemoryStore())
 
 
 # ── Markdown 导出 ───────────────────────────────────────────
