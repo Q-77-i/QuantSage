@@ -31,6 +31,10 @@ import type {
   FactorReport,
   OptimizeRunDetail,
   OptimizeRunSummary,
+  PaperAccountDetail,
+  PaperAccountRequest,
+  PaperAccountSummary,
+  PaperDecision,
   StrategyWriteBody,
   SymbolProbe,
   SymbolSearchResponse,
@@ -254,6 +258,37 @@ export const api = {
   /** 因子报告：**同步一次返回**（公开端点、不落库）；`costs=false` 时净曲线为 null */
   factorReport: (params: FactorQueryInput) =>
     request<FactorReport>(`/api/v1/factor/report${factorQuery(params)}`),
+
+  // ── 模拟盘（M6）────────────────────────────────────────────────────────
+  /** 我的会话（摘要，最近创建在前） */
+  paperAccounts: (limit = 20) =>
+    request<PaperAccountSummary[]>(`/api/v1/paper/accounts?limit=${limit}`),
+
+  /** 会话详情：账户卡 + 持仓 + 决策流水 + 待审批 + 净值曲线 */
+  paperAccount: (id: string) =>
+    request<PaperAccountDetail>(`/api/v1/paper/accounts/${encodeURIComponent(id)}`),
+
+  createPaperAccount: (body: PaperAccountRequest) =>
+    request<PaperAccountDetail>("/api/v1/paper/accounts", jsonInit("POST", body)),
+
+  /** 推进**一个**交易日：成交上一日的批准单 → 结算 → 生成本日决策 */
+  stepPaperAccount: (id: string) =>
+    request<PaperAccountDetail>(`/api/v1/paper/accounts/${encodeURIComponent(id)}/step`, {
+      method: "POST",
+    }),
+
+  /** 跑到区间末端（不可逆）。`approve` 决定这一路上新生成的决策怎么处理 */
+  runPaperAccount: (id: string, approve: "all" | "none") =>
+    request<PaperAccountDetail>(`/api/v1/paper/accounts/${encodeURIComponent(id)}/run`, {
+      ...jsonInit("POST", { approve }),
+    }),
+
+  /** 批准 / 驳回一张待审批的决策：**只改状态**，推进后才成交 */
+  decidePaper: (decisionId: string, action: "approve" | "reject") =>
+    request<PaperDecision>(
+      `/api/v1/paper/decisions/${encodeURIComponent(decisionId)}/${action}`,
+      { method: "POST" },
+    ),
 };
 
 /**

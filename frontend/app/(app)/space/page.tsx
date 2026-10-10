@@ -4,13 +4,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
 import { OptimizationsPanel } from "@/components/space/optimizations-panel";
+import { PaperPanel } from "@/components/paper/sessions-panel";
 import { RunsPanel } from "@/components/space/runs-panel";
 import { StrategiesPanel } from "@/components/space/strategies-panel";
 import { ThreadsPanel } from "@/components/space/threads-panel";
 import { WatchlistPanel } from "@/components/space/watchlist-panel";
 
 /**
- * 个人空间（M1c / M5b）：我的自选 / 我的回测 / 会话历史 / 我的策略 / 我的优化。
+ * 个人空间（M1c / M5b / M6）：我的自选 / 我的回测 / 会话历史 / 我的策略 / 我的优化 / 我的模拟盘。
  *
  * 页签做成一页，是因为这几块都是「这个账号有什么」——分开摆会让人以为它们是几个功能。
  * 页签状态放地址栏（`?tab=`）：刷新与分享都能回到同一格，返回键也能退回上一格。
@@ -24,6 +25,7 @@ const TABS = [
   { key: "threads", label: "会话历史" },
   { key: "strategies", label: "我的策略" },
   { key: "optimizations", label: "我的优化" },
+  { key: "paper", label: "我的模拟盘" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -76,6 +78,7 @@ function SpaceTabs() {
         {active === "threads" && <ThreadsPanel />}
         {active === "strategies" && <StrategiesPanel />}
         {active === "optimizations" && <OptimizationsPanel />}
+        {active === "paper" && <PaperPanel />}
       </div>
     </main>
   );

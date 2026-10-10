@@ -66,6 +66,12 @@ export function AppHeader() {
             因子
           </Link>
           <Link
+            href="/paper"
+            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            模拟盘
+          </Link>
+          <Link
             href="/space"
             className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >

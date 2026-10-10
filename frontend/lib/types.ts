@@ -731,3 +731,176 @@ export interface FactorReport {
   /** 服务端给的**必填清单**（前端不自己拼免责文案） */
   notes: string[];
 }
+
+// ── M6 模拟盘 ──────────────────────────────────────────────────────────────
+//
+// 与后端的对应关系：`app/paper/store.py` 的 `decision_to_payload` / `account_from_row`
+// 就是这些类型。**六态的中文文案由服务端给**（`status_label`），前端不自己拼——
+// 两处话术迟早漂移（M5b 的 `overfit.reason_text` 同一条规矩）。
+
+/** 决策的六态（SPEC §7） */
+export type PaperDecisionStatus =
+  | "pending" // 待审批
+  | "approved" // 已批准，等次日开盘成交
+  | "filled" // 已成交
+  | "rejected" // 已驳回
+  | "expired" // 未审批过期（未审批不成交）
+  | "unfilled"; // 已批准未成交（一字板 / 停牌顺延超限 / 资金不足一手）
+
+export interface PaperFill {
+  trade_date: string;
+  qty: number;
+  price: number;
+  /** 未含滑点的开盘价（`price` 与它的差就是滑点成本） */
+  ref_price: number;
+  commission: number;
+  stamp_tax: number;
+  slippage_cost: number;
+  cash_delta: number;
+}
+
+/** 决策的来源三元组：买入决策能回链到驱动它的那条事件；卖出如实留空（`null`） */
+export interface PaperSources {
+  event_id?: string;
+  title?: string;
+  event_time?: string;
+  available_at?: string;
+  source?: string;
+  original_source?: string;
+  content_hash?: string;
+  source_url?: string;
+}
+
+export interface PaperDecision {
+  id: string;
+  account_id: string;
+  trade_date: string;
+  symbol: string;
+  side: "buy" | "sell";
+  /** 按**决策日收盘价**预估的整手数；真正的成交股数见 `fill.qty`（次日开盘价重算） */
+  est_qty: number;
+  est_price: number;
+  reason: string;
+  event_id: string | null;
+  sources: PaperSources | null;
+  status: PaperDecisionStatus;
+  /** 服务端给的六态中文文案 */
+  status_label: string;
+  decided_at: string | null;
+  fill: PaperFill | null;
+  reject_code: string | null;
+  reject_reason: string | null;
+}
+
+export interface PaperPosition {
+  symbol: string;
+  shares: number;
+  entry_price: number;
+  entry_fees: number;
+  entry_date: string | null;
+  entry_reason: string;
+}
+
+export interface PaperEquityPoint {
+  trade_date: string;
+  cash: number;
+  market_value: number;
+  equity: number;
+}
+
+export interface PaperAccountConfig {
+  initial_cash: number;
+  symbols: string[];
+  strategy: Strategy;
+  strategy_name: string | null;
+  params: Record<string, number>;
+  start: string;
+  end: string;
+  costs: {
+    commission_rate: number;
+    commission_min: number;
+    stamp_tax_rate: number;
+    slippage_bps: number;
+    fee_enabled: boolean;
+    slippage_enabled: boolean;
+  };
+}
+
+/** 每只标的的涨跌停判定生效情况（升格如实标注：`skipped` 时要说出来） */
+export interface PaperRuleStatus {
+  limit_check: "on" | "skipped";
+  reason: string | null;
+  is_st: boolean;
+  limit_pct: number | null;
+}
+
+export interface PaperAccount {
+  id: string;
+  name: string;
+  status: "active" | "finished";
+  cash: number;
+  realized_pnl: number;
+  as_of: string;
+  config: PaperAccountConfig;
+  rules: Record<string, PaperRuleStatus>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaperProgress {
+  start: string;
+  end: string;
+  as_of: string;
+  days_total: number;
+  days_done: number;
+}
+
+/** `step` 的响应里才有：**这一次推进发生了什么** */
+export interface PaperStepOutcome {
+  trade_date: string;
+  filled: PaperDecision[];
+  expired: PaperDecision[];
+  unfilled: PaperDecision[];
+  generated: PaperDecision[];
+}
+
+export interface PaperAccountDetail {
+  account: PaperAccount;
+  progress: PaperProgress;
+  /** 最后一个交易日的收盘估值；会话刚建时是第一天 */
+  valuation: PaperEquityPoint | null;
+  positions: PaperPosition[];
+  decisions: PaperDecision[];
+  /** `decisions` 里状态为待审批的那些（省得前端自己过滤） */
+  pending: PaperDecision[];
+  equity_curve: PaperEquityPoint[];
+  this_step?: PaperStepOutcome;
+}
+
+/** 会话列表的摘要行（`GET /accounts`） */
+export interface PaperAccountSummary {
+  id: string;
+  name: string;
+  status: "active" | "finished";
+  cash: number;
+  as_of: string;
+  strategy: Strategy;
+  strategy_name: string | null;
+  symbols: string[];
+  start: string;
+  end: string;
+  rules: Record<string, PaperRuleStatus>;
+  created_at: string;
+}
+
+export interface PaperAccountRequest {
+  name: string;
+  initial_cash: number;
+  symbols: string[];
+  strategy: Strategy;
+  strategy_id?: string;
+  params: Record<string, number>;
+  start: string;
+  end?: string;
+  costs: { fees: boolean; slippage: boolean; slippage_bps: number };
+}
