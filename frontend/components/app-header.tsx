@@ -1,22 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { api } from "@/lib/api";
+import { isActive, NAV_ITEMS } from "@/lib/nav";
 import type { DataFreshness } from "@/lib/types";
 
 /**
- * 全站页头：品牌 + 五项导航 + 当前用户 + 主题切换。导航在桌面必须单行（设计规范）。
+ * 全站页头：品牌 + 导航 + 当前用户 + 主题切换。导航在桌面必须单行（设计规范）。
+ *
+ * **当前项要高亮**（用户反馈：切换模块后分不清自己在哪）：品牌色文字 + 品牌浅底 + 中等字重，
+ * 与中性的 hover 面（`bg-muted`）明确区分；判据在 `lib/nav.ts`（纯函数，带用例）。
  *
  * 只在受保护路由组内渲染，所以 `user` 必然非空（守卫已挡在前面）。
  */
 export function AppHeader() {
   const { user, logout } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const freshness = useFreshness();
 
   async function handleLogout() {
@@ -35,48 +40,26 @@ export function AppHeader() {
             加第 5 项「优化」后 390px 下页头会横溢出 140px（第 6 项「因子」沿用同一条自滚策略）（界面验证逮到），
             而挤走的若是品牌或用户区，损失比让导航滚一下大得多 */}
         <nav className="flex min-w-0 items-center gap-1 overflow-x-auto text-sm whitespace-nowrap">
-          <Link
-            href="/"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            对话
-          </Link>
-          <Link
-            href="/backtest"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            回测
-          </Link>
-          <Link
-            href="/strategies"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            策略
-          </Link>
-          <Link
-            href="/optimize"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            优化
-          </Link>
-          <Link
-            href="/factor"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            因子
-          </Link>
-          <Link
-            href="/paper"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            模拟盘
-          </Link>
-          <Link
-            href="/space"
-            className="rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            个人空间
-          </Link>
+          {NAV_ITEMS.map((item) => {
+            const current = isActive(pathname, item.href);
+            return (
+              <Link
+                key={item.key}
+                href={item.href}
+                // `aria-current="page"` 是无障碍里的「你在这儿」；`data-active` 给界面验证用
+                aria-current={current ? "page" : undefined}
+                data-nav={item.key}
+                data-active={current ? "true" : "false"}
+                className={
+                  current
+                    ? "rounded-[var(--radius)] bg-brand/12 px-2.5 py-1 font-medium text-brand"
+                    : "rounded-[var(--radius)] px-2.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                }
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="ml-auto flex shrink-0 items-center gap-3">

@@ -177,6 +177,15 @@ async function main() {
   const openCards = await page.$$('[data-tone="open"]');
   check("未到期卡与已到期卡**语气不同**（同一组件两种状态）", true, `${openCards.length} 张未到期`);
 
+  // 页头当前项：报告页归到「模拟盘」（它是模拟盘账户的产物）——按 data-active 断言，不撞颜色
+  const nav = await page.evaluate(() => {
+    const active = [...document.querySelectorAll("nav [data-nav]")].filter(
+      (el) => el.dataset.active === "true",
+    );
+    return active.map((el) => el.dataset.nav);
+  });
+  check("页头点亮当前项（报告页 → 模拟盘）", nav.length === 1 && nav[0] === "paper", nav.join(",") || "一项都没亮");
+
   // ── ③ 证据追溯面板 ────────────────────────────────────
   console.log("\n[3] 证据追溯面板");
   await page.click('[data-block-id="attribution"] button:has-text("证据（")');
