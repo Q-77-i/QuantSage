@@ -154,6 +154,26 @@ async function main() {
   check("表格里没有用 0 冒充缺值", !tableText.includes("0.000") || numeric.length > 0);
   await page.screenshot({ path: resolve(EVIDENCE, "grid-table.png"), fullPage: true });
   await page.getByRole("button", { name: "看图" }).click();
+  // 切回来之后热力图必须**真的回来**（宿主重新挂载 ⇒ 实例要重建；判据连尺寸一起看——
+  // 零尺寸容器会让 ECharts 按兜底的 100×300 建画布，「有像素」不足以证明画对了）
+  const heatBack = await (async () => {
+    await page
+      .waitForFunction(
+        () => {
+          const canvas = document.querySelector('[role="img"][aria-label*="热力图"] canvas');
+          return canvas !== null && canvas.width > 300;
+        },
+        undefined,
+        { timeout: 10_000 },
+      )
+      .catch(() => undefined);
+    return canvasStats(page, '[role="img"][aria-label*="热力图"]', LIGHT_SURFACE);
+  })();
+  check(
+    "看表格 → 看图之后热力图真的回来了",
+    (heatBack?.ink ?? 0) > 1000,
+    heatBack ? `${heatBack.width}×${heatBack.height}，非底色 ${heatBack.ink}` : "没找到 canvas",
+  );
 
   // ── ③ 点一格重跑 ───────────────────────────────────────
   console.log("\n[3] 点一格重跑");

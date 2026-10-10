@@ -10,7 +10,7 @@ import * as echarts from "echarts/core";
 import type { EChartsCoreOption } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { useTheme } from "next-themes";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useEChart } from "@/components/ui/use-echart";
@@ -40,7 +40,6 @@ export function EquityPanel({
   decisions: PaperDecision[];
 }) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const hostRef = useRef<HTMLDivElement>(null);
   const [asTable, setAsTable] = useState(false);
 
   const series = useMemo(() => equitySeries(curve, decisions), [curve, decisions]);
@@ -48,7 +47,7 @@ export function EquityPanel({
     () => (curve.length < 2 ? null : buildOption(series, chartTokens(isDark))),
     [series, curve.length, isDark],
   );
-  useEChart(hostRef, option);
+  const { hostRef } = useEChart(option);
 
   const drawable = curve.length >= 2;
 
@@ -64,28 +63,22 @@ export function EquityPanel({
           {asTable ? "看图" : "看表格"}
         </Button>
       </div>
-      {/*
-        **宿主常驻、且按真实尺寸 init**（同 `ChartFrame` 的写法）。两条都是踩出来的：
-        · 宿主「数据到了才渲染」→ `useEChart` 只在组件挂载时 init，那一刻 ref 是 null，
-          实例永远不会建出来（ECharts 静默无画布，页面上只少一张图）；
-        · 用 `hidden` 把它藏到有数据为止也不行——零尺寸容器会让 ECharts 用兜底的
-          100×300 建画布（界面验证的读数里当场露馅），得等 ResizeObserver 补一刀。
-        故「还没数据」与「看表格」只在外面叠一层提示 / 换成表格，宿主本身始终可见。
-      */}
-      <div className="relative h-[300px] w-full">
+      {asTable ? (
+        drawable ? (
+          <SettlementTable curve={curve} />
+        ) : null
+      ) : drawable ? (
         <div
           ref={hostRef}
-          className={`h-full w-full rounded-[var(--radius)] border border-border bg-chart-surface ${asTable ? "hidden" : ""}`}
+          className="h-[300px] w-full rounded-[var(--radius)] border border-border bg-chart-surface"
           role="img"
           aria-label={`净值曲线，共 ${curve.length} 个交易日，成交标记 ${series.markers.length} 个`}
         />
-        {!drawable ? (
-          <p className="absolute inset-0 flex items-center justify-center rounded-[var(--radius)] border border-dashed border-border text-sm text-ink-2">
-            只有一个交易日的估值点，还画不出曲线——推进一天再看。
-          </p>
-        ) : null}
-      </div>
-      {asTable && drawable ? <SettlementTable curve={curve} /> : null}
+      ) : (
+        <p className="rounded-[var(--radius)] border border-dashed border-border px-4 py-6 text-center text-sm text-ink-2">
+          只有一个交易日的估值点，还画不出曲线——推进一天再看。
+        </p>
+      )}
     </div>
   );
 }

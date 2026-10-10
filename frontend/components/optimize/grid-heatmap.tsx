@@ -97,7 +97,6 @@ function Heatmap({
   picking: number | null;
 }) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const hostRef = useRef<HTMLDivElement>(null);
   const onPickRef = useRef(onPick);
   useEffect(() => {
     onPickRef.current = onPick;
@@ -115,7 +114,7 @@ function Heatmap({
       if (typeof index === "number") onPickRef.current(index);
     });
   }, []);
-  useEChart(hostRef, option, onInit);
+  const { hostRef } = useEChart(option, onInit);
 
   if (!payload) return null;
   const best = summary.best_index;
@@ -324,13 +323,12 @@ function axisKeys(axes: OptimizeAxis[], params: Record<string, number>): number[
  */
 export function GridLine({ summary, axes }: { summary: OptimizeSummary; axes: OptimizeAxis[] }) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const hostRef = useRef<HTMLDivElement>(null);
   const payload = lineFromGrid(summary, axes);
   const option = useMemo(
     () => (payload ? buildLineOption(payload, chartTokens(isDark)) : null),
     [payload, isDark],
   );
-  useEChart(hostRef, option);
+  const { hostRef } = useEChart(option);
 
   if (!payload) return null;
   return (

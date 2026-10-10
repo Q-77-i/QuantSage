@@ -6,7 +6,7 @@ import * as echarts from "echarts/core";
 import type { EChartsCoreOption } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { useTheme } from "next-themes";
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 
 import { useEChart } from "@/components/ui/use-echart";
 import { CHART_FONT, chartTokens } from "@/lib/chart-theme";
@@ -50,12 +50,11 @@ export function CurveChart({
   height?: number;
 }) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const hostRef = useRef<HTMLDivElement>(null);
   const option = useMemo(
     () => (dates.length === 0 ? null : buildOption(dates, series, chartTokens(isDark))),
     [dates, series, isDark],
   );
-  useEChart(hostRef, option);
+  const { hostRef } = useEChart(option);
 
   return (
     <div

@@ -110,6 +110,29 @@ async function waitForReport(page) {
   await page.waitForSelector(SPREAD_HOST, { timeout: 30_000 });
 }
 
+/**
+ * 切回「看图」之后，图必须**真的回来**。
+ *
+ * 这条断言是 2026-10-10 补上的：脚本原本也走「看表格 → 看图」，但**没验回来之后有没有图**，
+ * 于是「切回来是一张空画布」这个 bug 一路全绿（宿主重新挂载，`useEChart` 只在挂载时 init）。
+ * 判据连**尺寸**一起看：零尺寸容器会让 ECharts 按兜底的 100×300 建画布——
+ * 一个压扁的图也有像素，「有像素」不足以证明它画对了。
+ */
+async function canvasBack(page, selector, surface, label) {
+  await page
+    .waitForFunction(
+      (sel) => {
+        const canvas = document.querySelector(`${sel} canvas`);
+        return canvas !== null && canvas.width > 300;
+      },
+      selector,
+      { timeout: 10_000 },
+    )
+    .catch(() => undefined);
+  const stats = await canvasStats(page, selector, surface);
+  check(label, (stats?.ink ?? 0) > 500, stats ? `${stats.width}×${stats.height}，非底色 ${stats.ink}` : "没找到 canvas");
+}
+
 async function main() {
   await mkdir(IMAGES, { recursive: true });
   await mkdir(EVIDENCE, { recursive: true });
@@ -167,6 +190,7 @@ async function main() {
   const icRows = await page.locator("table:has(caption:text-is('逐日 RankIC 与当日池内样本数')) tbody tr").count();
   check("IC 表格孪生有逐日行", icRows > 20, `${icRows} 行`);
   await page.getByRole("button", { name: "看图" }).first().click();
+  await canvasBack(page, IC_HOST, LIGHT_SURFACE, "看表格 → 看图之后 IC 图真的回来了");
 
   // 用**标题**锚定而不是「含图宿主」：切到表格后图宿主就没了，`has:` 过滤会跟着失配
   const groupSection = page.locator("section").filter({ hasText: "分层净值（五等分）" });
@@ -184,6 +208,7 @@ async function main() {
     `净 ${netLevel} ≤ 毛 ${grossLevel}`,
   );
   await groupSection.getByRole("button", { name: "看图" }).click();
+  await canvasBack(page, GROUP_HOST, LIGHT_SURFACE, "分层图切表格再切回来也真的回来了");
   await groupSection.getByRole("button", { name: "净（扣费用）" }).click();
 
   // ── ⑥ 价格因子源（深链） ──────────────────────────────

@@ -6,7 +6,7 @@ import * as echarts from "echarts/core";
 import type { EChartsCoreOption } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { useTheme } from "next-themes";
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 
 import { useEChart } from "@/components/ui/use-echart";
 import { chartTokens } from "@/lib/chart-theme";
@@ -29,11 +29,10 @@ echarts.use([ScatterChart, GridComponent, TooltipComponent, MarkLineComponent, C
  */
 export function SharpeDistribution({ summary }: { summary: OptimizeSummary }) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const hostRef = useRef<HTMLDivElement>(null);
 
   const payload = distributionFromGrid(summary);
   const option = useMemo(() => buildOption(payload, chartTokens(isDark)), [payload, isDark]);
-  useEChart(hostRef, option);
+  const { hostRef } = useEChart(option);
 
   return (
     <div

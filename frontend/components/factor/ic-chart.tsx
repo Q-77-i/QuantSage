@@ -6,7 +6,7 @@ import * as echarts from "echarts/core";
 import type { EChartsCoreOption } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { useTheme } from "next-themes";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useEChart } from "@/components/ui/use-echart";
@@ -31,7 +31,6 @@ echarts.use([BarChart, GridComponent, TooltipComponent, MarkLineComponent, Canva
  */
 export function ICChart({ report }: { report: FactorReport }) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const hostRef = useRef<HTMLDivElement>(null);
   const [asTable, setAsTable] = useState(false);
 
   const payload = useMemo(() => icBars(report), [report]);
@@ -40,7 +39,7 @@ export function ICChart({ report }: { report: FactorReport }) {
     () => (payload.empty ? null : buildOption(payload, chartTokens(isDark))),
     [payload, isDark],
   );
-  useEChart(hostRef, option);
+  const { hostRef } = useEChart(option);
 
   return (
     <div className="mt-1">
