@@ -71,6 +71,11 @@ EVENTS_SCHEMA = pa.schema(
         ("source", pa.string()),
         ("original_source", pa.string()),
         ("content_hash", pa.string()),
+        # M7a 起证据面板要用的三列（生产语料本就有，30 列里的三个）：
+        # 摘要与行业是「语料行补充展示字段」（决策快照里没有），source_url 直接展示
+        ("summary", pa.string()),
+        ("industries", pa.list_(pa.string())),
+        ("source_url", pa.string()),
     ]
 )
 
@@ -142,6 +147,10 @@ def write_events_parquet(
             "source": row.get("source"),
             "original_source": row.get("original_source"),
             "content_hash": row.get("content_hash"),
+            "summary": row.get("summary"),
+            # 传了 `industries` 就按它写；不传即 None（真实语料里 announcement 也是 0% 覆盖）
+            "industries": list(row["industries"]) if row.get("industries") is not None else None,
+            "source_url": row.get("source_url"),
         }
         for row in rows
     ]

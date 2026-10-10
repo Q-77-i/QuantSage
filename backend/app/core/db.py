@@ -177,6 +177,28 @@ SCHEMA = (
         PRIMARY KEY (account_id, trade_date)
     )
     """,
+    # ── M7 绩效研报：一次生成即冻结（分享链接永远看同一份）────────────
+    # `snapshot` / `report` 都是冻结产物正文；两个 hash 由服务端算好落库，
+    # `share_token` 为 NULL 表示未分享（撤销即置回 NULL，公开端点随之 404）。
+    """
+    CREATE TABLE IF NOT EXISTS research_reports (
+        id            UUID PRIMARY KEY,
+        user_id       BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        account_id    UUID        NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+        snapshot      JSONB       NOT NULL,
+        snapshot_hash TEXT        NOT NULL,
+        report        JSONB       NOT NULL,
+        report_hash   TEXT        NOT NULL,
+        share_token   TEXT        UNIQUE,
+        shared_at     TIMESTAMPTZ,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS research_reports_user_created_idx "
+    "ON research_reports (user_id, created_at DESC)",
+    # 幂等复用按 (账户, 快照) 查：同一份输入不出第二份报告
+    "CREATE INDEX IF NOT EXISTS research_reports_account_snapshot_idx "
+    "ON research_reports (account_id, snapshot_hash)",
 )
 
 
@@ -706,6 +728,84 @@ class Database:
             (status, account_id),
         )
         return len(rows)
+
+    # ── 绩效研报（M7）───────────────────────────────────────
+
+    async def create_research_report(
+        self,
+        *,
+        report_id: str,
+        user_id: int,
+        account_id: str,
+        snapshot: dict[str, Any],
+        snapshot_hash: str,
+        report: dict[str, Any],
+        report_hash: str,
+    ) -> dict[str, Any]:
+        row = await self._one(
+            "INSERT INTO research_reports "
+            "(id, user_id, account_id, snapshot, snapshot_hash, report, report_hash) "
+            "VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s, %s) "
+            "RETURNING id, created_at",
+            (report_id, user_id, account_id, Jsonb(snapshot), snapshot_hash,
+             Jsonb(report), report_hash),
+        )
+        assert row is not None  # RETURNING 必有一行
+        return row
+
+    async def find_research_report(
+        self, user_id: int, account_id: str, snapshot_hash: str
+    ) -> dict[str, Any] | None:
+        """幂等复用：同一账户同一快照已有的那份（分享链接因此永远同一份）。"""
+        return await self._one(
+            "SELECT id, created_at, snapshot_hash, report_hash, report, share_token "
+            "FROM research_reports "
+            "WHERE user_id = %s AND account_id = %s::uuid AND snapshot_hash = %s "
+            "ORDER BY created_at LIMIT 1",
+            (user_id, account_id, snapshot_hash),
+        )
+
+    async def get_research_report(self, user_id: int, report_id: str) -> dict[str, Any] | None:
+        return await self._one(
+            "SELECT id, created_at, account_id, snapshot, snapshot_hash, report, report_hash, "
+            "share_token, shared_at FROM research_reports "
+            "WHERE user_id = %s AND id = %s::uuid",
+            (user_id, report_id),
+        )
+
+    async def list_research_reports(self, user_id: int, account_id: str) -> list[dict[str, Any]]:
+        """摘要列表（不带正文）——`/paper` 页的「已出研报」入口状态用它。"""
+        return await self._all(
+            "SELECT id, created_at, snapshot_hash, report_hash, share_token "
+            "FROM research_reports WHERE user_id = %s AND account_id = %s::uuid "
+            "ORDER BY created_at DESC",
+            (user_id, account_id),
+        )
+
+    async def set_report_share(
+        self, report_id: str, user_id: int, *, token: str | None
+    ) -> dict[str, Any] | None:
+        """生成（传 token）或撤销（传 None）分享。命中 0 行 = 不存在或非本人 → None。
+
+        两个 `%s` 都要**显式转型**：`CASE WHEN %s IS NULL` 里的参数没有类型上下文，
+        Postgres 会以 `IndeterminateDatatype` 拒收（真库实测，内存替身照不出来）。
+        """
+        return await self._one(
+            "UPDATE research_reports SET share_token = %s::text, "
+            "shared_at = CASE WHEN %s::text IS NULL THEN NULL ELSE now() END "
+            "WHERE user_id = %s AND id = %s::uuid "
+            "RETURNING id, share_token, shared_at",
+            (token, token, user_id, report_id),
+        )
+
+    async def get_report_by_token(self, token: str) -> dict[str, Any] | None:
+        """公开只读：**凭 token 取冻结产物正文**。本方法不做归属过滤（token 本身就是凭据），
+        端点层负责只取正文、不带任何用户身份字段（`user_id` 留在行里不出接口）。"""
+        return await self._one(
+            "SELECT id, account_id, snapshot, snapshot_hash, report, report_hash, "
+            "shared_at, created_at FROM research_reports WHERE share_token = %s",
+            (token,),
+        )
 
     # ── 内部 ────────────────────────────────────────────────
 

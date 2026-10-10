@@ -425,6 +425,70 @@ def events(
         con.close()
 
 
+#: 证据面板要显示的列（30 列里取 11 个，别把整行塞进冻结报告）
+EVIDENCE_COLUMNS = (
+    "event_id",
+    "event_time",
+    "available_at",
+    "title",
+    "summary",
+    "industries",
+    "direction_norm",
+    "source",
+    "original_source",
+    "source_url",
+    "content_hash",
+)
+
+
+def events_by_ids(event_ids: list[str], *, data_dir: Path | None = None) -> list[dict]:
+    """按 `event_id` 批量取语料行（M7 证据面板）。
+
+    **`event_id` 只在日分区内唯一**（M2b 实测：平台对同题事件复用 id）——调用方必须拿
+    `(event_id, event_time::DATE)` 再筛一次，别单独拿 id 当键。一次连接批量取，不做 N 次查询。
+    """
+    if not event_ids:
+        return []
+    con = connect(data_dir)
+    try:
+        placeholders = ", ".join("?" for _ in event_ids)
+        return _fetch(
+            con,
+            f"SELECT {', '.join(EVIDENCE_COLUMNS)} FROM {EVENTS_VIEW} "
+            f"WHERE event_id IN ({placeholders})",
+            list(event_ids),
+        )
+    finally:
+        con.close()
+
+
+def closes_through(
+    symbols: list[str], through: date, *, adjust: str = "qfq", data_dir: Path | None = None
+) -> dict[str, float]:
+    """每只标的**截至 `through`（含）**最近一根**有价** bar 的收盘价（M7 未平仓估值用）。
+
+    与 `latest_closes` 的差别只有一个：那个取全局最新，这个取「账户 `as_of` 那天往前」——
+    模拟盘结算到哪一天，估值就必须停在哪一天，否则期末浮盈会看到未来的价。
+    未命中的标的**不进结果**（调用方如实留空，不编价）；无价 bar 同样排除。
+    """
+    if not symbols:
+        return {}
+    con = connect(data_dir)
+    try:
+        placeholders = ", ".join("?" for _ in symbols)
+        rows = _fetch(
+            con,
+            f"SELECT symbol, close FROM {BARS_VIEW} "
+            f"WHERE adjustment = ? AND symbol IN ({placeholders}) "
+            "AND close IS NOT NULL AND trade_date <= ? "
+            "QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1",
+            [adjust, *symbols, through],
+        )
+    finally:
+        con.close()
+    return {row["symbol"]: float(row["close"]) for row in rows}
+
+
 def bars_multi(
     symbols: list[str],
     *,

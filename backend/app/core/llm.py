@@ -32,3 +32,36 @@ def build_chat_model(
     if not api_key:
         raise LLMNotConfigured("DEEPSEEK_API_KEY 未在 .env 配置")
     return ChatLiteLLM(model=model, api_key=api_key, temperature=temperature)
+
+
+def text_of(response: object) -> str:
+    """取消息正文。兼容 content 为内容块列表的形态（与 `scripts/build_rag_eval.py` 同规）。"""
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(block.get("text", "")) if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return str(content)
+
+
+async def ask_once(
+    prompt: str,
+    *,
+    model: str = DEFAULT_MODEL,
+    timeout: float = 20.0,
+    chat: ChatLiteLLM | None = None,
+) -> str:
+    """一句话问答（M7 的综述与反思用）。**超时即抛 `TimeoutError`，其余异常原样抛**——
+    降级由调用方决定（报告与结算各有自己的缺失表述），这里只负责「不无限等」。
+
+    `chat` 供离线测试注入假模型（不传则现造一个真模型）；超时用 `asyncio.wait_for`，
+    底层 HTTP 请求随之取消，不会留一个跑飞的调用。
+    """
+    import asyncio
+
+    client = chat if chat is not None else build_chat_model(model)
+    response = await asyncio.wait_for(client.ainvoke(prompt), timeout=timeout)
+    return text_of(response)

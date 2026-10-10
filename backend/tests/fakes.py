@@ -118,6 +118,9 @@ class FakeDatabase:
         self.paper_positions_rows: dict[str, list[dict[str, Any]]] = {}
         self.paper_decision_rows: dict[str, dict[str, Any]] = {}
         self.paper_equity_rows: dict[str, list[dict[str, Any]]] = {}
+        # 绩效研报（M7）：report_id → 行；顺序另记，列表倒序给「最新在前」
+        self.reports: dict[str, dict[str, Any]] = {}
+        self._report_order: list[str] = []
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -495,6 +498,79 @@ class FakeDatabase:
         for row in hits:
             row.update({"status": status, "decided_at": datetime.now(UTC)})
         return len(hits)
+
+    # ── 绩效研报（M7）──────────────────────────────────────
+
+    async def create_research_report(
+        self, *, report_id: str, user_id: int, account_id: str, snapshot: dict[str, Any],
+        snapshot_hash: str, report: dict[str, Any], report_hash: str,
+    ) -> dict[str, Any]:
+        row = {
+            "id": report_id,
+            "user_id": user_id,
+            "account_id": account_id,
+            "snapshot": snapshot,
+            "snapshot_hash": snapshot_hash,
+            "report": report,
+            "report_hash": report_hash,
+            "share_token": None,
+            "shared_at": None,
+            "created_at": datetime.now(UTC),
+        }
+        self.reports[report_id] = row
+        self._report_order.append(report_id)
+        return {"id": report_id, "created_at": row["created_at"]}
+
+    async def find_research_report(
+        self, user_id: int, account_id: str, snapshot_hash: str
+    ) -> dict[str, Any] | None:
+        for report_id in self._report_order:  # 与真库同序：最早的先命中（ORDER BY created_at）
+            row = self.reports[report_id]
+            if (
+                row["user_id"] == user_id
+                and row["account_id"] == account_id
+                and row["snapshot_hash"] == snapshot_hash
+            ):
+                return dict(row)
+        return None
+
+    async def get_research_report(self, user_id: int, report_id: str) -> dict[str, Any] | None:
+        row = self.reports.get(report_id)
+        return None if row is None or row["user_id"] != user_id else dict(row)
+
+    async def list_research_reports(self, user_id: int, account_id: str) -> list[dict[str, Any]]:
+        out = [
+            {k: row[k] for k in ("id", "created_at", "snapshot_hash", "report_hash", "share_token")}
+            for report_id in reversed(self._report_order)
+            for row in [self.reports[report_id]]
+            if row["user_id"] == user_id and row["account_id"] == account_id
+        ]
+        return out
+
+    async def set_report_share(
+        self, report_id: str, user_id: int, *, token: str | None
+    ) -> dict[str, Any] | None:
+        row = self.reports.get(report_id)
+        if row is None or row["user_id"] != user_id:
+            return None
+        # 真库的 UNIQUE(share_token)：撞号会抛，替身照抄这条语义——但**要排除自己那一行**
+        # （真库是 `UPDATE ... WHERE id = 自己`，把值改成自己已有的值不违反唯一约束；
+        #  不排除的话「重复点分享」在替身上会假报撞号，而真库不会）
+        if token is not None and any(
+            other["share_token"] == token and other["id"] != report_id
+            for other in self.reports.values()
+        ):
+            raise ValueError(f"share_token 撞号：{token}")
+        row["share_token"] = token
+        row["shared_at"] = None if token is None else datetime.now(UTC)
+        return {"id": row["id"], "share_token": token, "shared_at": row["shared_at"]}
+
+    async def get_report_by_token(self, token: str) -> dict[str, Any] | None:
+        for row in self.reports.values():
+            if row["share_token"] == token:
+                # 真库那条 SELECT 不带 user_id——替身也**不带**，否则公开端点会静默多拿一个字段
+                return {k: v for k, v in row.items() if k != "user_id"}
+        return None
 
     def _touch(self, thread_id: str) -> None:
         self._recent = [tid for tid in self._recent if tid != thread_id]

@@ -33,6 +33,7 @@ from app.api.factor import router as factor_router
 from app.api.market import router as market_router
 from app.api.optimize import router as optimize_router
 from app.api.paper import router as paper_router
+from app.api.reports import router as reports_router
 from app.api.strategies import router as strategies_router
 from app.api.watchlist import router as watchlist_router
 from app.backtest.batch import BatchRequestError
@@ -193,6 +194,7 @@ for router in (
     factor_router,
     etl_router,
     paper_router,
+    reports_router,
 ):
     app.include_router(router)
 

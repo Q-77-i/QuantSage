@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.6 待评审）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.28 ｜ 2026-10-10 ｜ 状态：M1 已落地（M1a / M1b / M1c；**M1c 补「加自选表单的即时反馈」——判重 + 代码体检**）；M2a / M2b 已落地；**M2c 已收口——M2 整段完成（三天台账核验通过，2026-10-09）**；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库）**；**M4c 已落地并验收（M4c-1 持久化与端点 / M4c-2 前端工作台）——M4 整段完成**；**M5a 规则与地基已落地并验收（A 股规则接引擎 / 横截面 / 名称字典 / 等权基准，界面验证 13/13）**；**M5b 批量 / 网格 / 过拟合检验已落地并验收（后端 5×5 网格 + DSR 交叉验证 / 前端 `/optimize`，界面验证 13/13）**；**M5c 已细化并拍板（开工前，D1–D6 见 §6 M5c v1.25）**；**M5c-1 后端已落地（`app/factor/` + `GET /api/v1/factor/report`，同尺子 30.7 万行零不一致、离线 958 全绿）**；**M5c-2 前端已落地（`/factor` 页，界面验证 12/12）——M5 整段完成**；**M6 已细化并拍板（开工前，D1–D8 见 §7）**；**M6a 后端已落地（`app/paper/` + 7 端点 + 四张表，全批 == 回测逐笔相等）**；**M6b 前端已落地（`/paper` 页，界面验证 18/18）——M6 整段完成**
+> 版本 v1.33 ｜ 2026-10-10 ｜ 状态：M1 已落地（M1a / M1b / M1c；**M1c 补「加自选表单的即时反馈」——判重 + 代码体检**）；M2a / M2b 已落地；**M2c 已收口——M2 整段完成（三天台账核验通过，2026-10-09）**；**M3 已落地并验收通过（M3a / M3b / M3c）**；**M4a 已落地（沙箱与用户策略 API）、M4b 已落地（静态检查器与模板库）**；**M4c 已落地并验收（M4c-1 持久化与端点 / M4c-2 前端工作台）——M4 整段完成**；**M5a 规则与地基已落地并验收（A 股规则接引擎 / 横截面 / 名称字典 / 等权基准，界面验证 13/13）**；**M5b 批量 / 网格 / 过拟合检验已落地并验收（后端 5×5 网格 + DSR 交叉验证 / 前端 `/optimize`，界面验证 13/13）**；**M5c 已细化并拍板（开工前，D1–D6 见 §6 M5c v1.25）**；**M5c-1 后端已落地（`app/factor/` + `GET /api/v1/factor/report`，同尺子 30.7 万行零不一致、离线 958 全绿）**；**M5c-2 前端已落地（`/factor` 页，界面验证 12/12）——M5 整段完成**；**M6 已细化并拍板（开工前，D1–D8 见 §7）**；**M6a 后端已落地（`app/paper/` + 7 端点 + 四张表，全批 == 回测逐笔相等）**；**M6b 前端已落地（`/paper` 页，界面验证 18/18）——M6 整段完成**；**M7 已细化并拍板（D1–D4 与 F1–F11 见 §8）；M7a 后端已落地（报告容器 + 八端点 + 快照指纹，离线 1076 / 集成 96 全绿，真实账户取证 3 项复核全过）——M7b 决策记忆与 M7c 研报页待开工**
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -24,6 +24,7 @@
 backend/app/
 ├── api/                    # + auth.py / watchlist.py / etl.py / paper.py / dashboard.py / calendar.py
 │                           #   optimize.py（批量与网格，SSE 进度，M5b）/ factor.py（因子报告，M5c）
+│                           #   reports.py（研报容器 / 分享 / 公开只读 / 复盘与教训，M7）
 ├── agent/                  # 深路径 fan-out 角色 A 股化（PIT 基本面 / 政策面）
 ├── backtest/               # + a_share_rules.py / benchmark.py（全市场等权代理，M5a）
 │                           #   batch.py（多策略×多标的，并发 2，M5b）/ overfit.py（Deflated Sharpe，M5b）
@@ -42,7 +43,14 @@ backend/app/
 │                           #   market.py（批量取数 + 窗口涨跌停价，不逐标的取）
 │                           #   replay.py（★ 纯函数重放：闸门语义 / 顺延 / 结算全在这里）
 │                           #   store.py（决策与账户状态 ↔ DB 行 / JSON 信封的形状转换）
-├── memory/                 # 决策记忆：decision_store.py / settle.py / reflection.py
+├── memory/                 # 决策记忆（M7）：settle.py（**回合配对**与未平仓估值，纯函数，M7a 已交付；
+│                           #   alpha 结算与反思在 M7b 续写）/ reflection.py（flash 一句话教训，M7b）
+│                           #   decision_store.py（LangGraph Store 封装：namespace / put / search，M7b）
+├── report/                 # 绩效研报容器（M7a，独立于回测引擎与模拟盘账本）：
+│                           #   performance.py（账户绩效指标，复用 backtest.metrics）/ attribution.py（标的级与事件级归因）
+│                           #   evidence.py（来源快照 → 语料行 join，含修订标注）/ snapshot.py（数据指纹与 report_hash）
+│                           #   narrative.py（flash 综述，超时与降级）/ builder.py（冻结产物组装 + claim 校验闸门）
+│                           #   markdown.py（Markdown 导出，含证据链）
 ├── strategy/               # 用户策略与沙箱（M4）：sandbox.py（子进程执行器：配额/超时/输出上限）
 │                           #   worker.py（沙箱子进程入口）/ static_check.py（AST 前视检查，纯函数 + 规则表）
 │                           #   params.py（PARAMS schema 校验，纯函数）/ templates/（模板源码，服务端为唯一真源）
@@ -53,11 +61,13 @@ scripts/                    # + generate_calendar.py（生成冻结日历）/ au
 │                           #   run_health_check.py / embed_events.py（嵌入薄壳）
 │                           #   spike_rag_encoder.py（M3 运行时实测，结论见 §4）/ build_rag_eval.py（评测集：生成/池化/标注/报告）
 frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ space/（个人空间）paper/（模拟盘，M6）
-│                           #   strategies/（策略工作台，M4）dashboard/（研究首页）research/[id]/（研报页）
+│                           #   strategies/（策略工作台，M4）dashboard/（研究首页）research/[id]/（研报页，M7）
 │                           #   optimize/（网格与批量，M5b）factor/（因子报告，M5c）
+│                           #   r/[token]/（公开只读分享页，M7——**不在守卫组内**）
 │                           #   自选股不单开路由，是 space/ 的一个页签（M1c 定）；模拟盘另加 space/ 页签（M6）
 frontend/components/        # + auth-provider.tsx space/ strategies/（编辑器/参数表单/检查面板）dashboard/ evidence/ agent-run/ calendar/
 │                           #   paper/（会话创建 / 账户卡 / 决策卡 / 持仓表 / 决策流水 / 结算表，M6）
+│                           #   research/（报告头 / 指标卡 / 归因表 / 逐笔复盘 / 证据追溯面板，M7）
 ```
 
 ## 2. M1 用户系统
@@ -816,12 +826,134 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 
 ## 8. M7 绩效分析
 
-- 研报页：可分享独立 URL（未登录只读）；简单归因（行业/因子）；风险指标在 P1 五指标基础上补波动率与超额收益；页脚免责声明（PRD 已定）
-- **决策记忆 + 到期结算反思**：Store 落决策记录（标的/方向/理由/来源三元组/决策时点/有效期）；到期任务按真实收盘价结算 pnl 与相对基准 alpha；反思摘要（flash 一句话教训）写回 Store；跨标的教训聚合查询
-- **证据追溯面板**：研报页每个结论块可展开 → 证据列表（标题/摘要/`event_time`/`available_at` 并列/`source`/`original_source`/`content_hash`）；claim 分级（事实型 = 直接引用事件，推断型 = 模型综合）
-- **研报导出 + 版本快照**：Markdown 导出（必做）；PDF 经 Playwright 渲染（复用 P1 capture 脚本链路）；研报生成时记录 `report_hash` + 数据快照版本 + 模型版本，同一快照重放结论一致（hash 相同）
+> 一句话形态：**M7 建「报告容器与信任层」，M8 建「生成器」**——报告一次生成后冻结落库，事实型结论全由
+> 数据/规则生成且可回链事件，LLM 只写综述与逐笔反思（显式标为推断型）；M8 的深度研报接进同一个容器
+> （容器只认 `blocks` 结构，不认来源）。
+> 2026-10-10 拍板 D1–D4，规划底稿与 F1–F11 实测见 `docs/private/Pn-n/P2-Mn/P2-M7.md`。
+> 切片：**M7a** 绩效层与报告容器（后端）→ **M7b** 决策记忆与到期结算反思（后端）→ **M7c** 研报页与证据追溯面板（前端）。
 
-**验收**：分享链接在未登录浏览器可打开完整研报；决策到期自动结算并生成反思摘要；导出含证据链；同一数据快照下重放结论一致。
+### 主体与生成（D1）
+
+- 报告**主体 = 一个模拟盘账户**（`paper_accounts`）。回测 run 不出本段报告——它的 `trades` 没有 `event_id`，
+  证据面板会空一半（规划期实测确认）。
+- **冻结产物**：报告一次生成即落库（`research_reports`），同 `(account, snapshot_hash)` **幂等复用**
+  （不新建行）——分享链接因此永远看到同一份。
+- **claim 分级**：`blocks[].kind ∈ fact | inference`。事实型由数据/规则生成（数字可复算、事件可回链）；
+  推断型只有两处：报告综述与逐笔反思（M7b）。**生成期校验闸门**：`kind="fact"` 的块必须带 `evidence`
+  或 `numbers`（引用报告内指标键路径），否则拒收不落库——M8 的 LLM 结论也将过这道闸门。
+- **块清单**（固定五块，顺序即渲染顺序）：① 概览（池子 / 策略 / 区间 / 基准口径 / **数据截止日**）·
+  ② 绩效（指标 + 净值与全市场等权对照）· ③ 归因（标的级 + 事件级）· ④ 逐笔复盘（回合卡，M7b 追加）·
+  ⑤ 综述（唯一的 inference 块）。M8 的深度研报按同一 `blocks` 结构追加，不改渲染层。
+- **重放一致**：`snapshot_hash` 相同的报告重新生成时，事实层逐字段相等，综述与反思**复用已存文本**
+  （缓存键 = `snapshot_hash | model_version | prompt_version`）；`report_hash` = 冻结产物正文（去易变字段）
+  的规范化 JSON sha256 —— 同一快照重放 `report_hash` 必然相同（可断言）。
+
+### 绩效与归因（M7a）
+
+指标（**口径与回测同源**，复用 `backtest.metrics`）：总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数，
+**补波动率**（日净值收益样本标准差 × √252）与**超额收益**（账户收益 − 全市场等权同窗口，`market_benchmark`）。
+账户级「期末权益 / 已实现盈亏」取**账本**（`paper_equity` / `paper_accounts.realized_pnl`）。
+
+归因（**如实收窄：本地无标的行业分类数据**——M2a 已核 `cn-daily` 无行业字段、sector 归档仅数日）：
+
+| 维度 | 口径 | 来源 |
+|---|---|---|
+| 标的级 | 每只标的的已实现盈亏 + 未平仓浮盈 → 对初始资金的贡献 pp | 决策日志回合配对 + 账本 |
+| 事件级 | 每笔买入决策的驱动事件**方向**分布与 **industries** 分布，按组给回合结果（组内 n 小如实标注） | `paper_decisions.sources.event_id` → 语料行 join（不新引数据源） |
+
+因子归因不做（M5c 的因子面板是独立尺子，硬接会造一个假接口）；页面导流到 `/factor`。
+
+### 决策记忆与到期结算反思（M7b）
+
+- **「到期」= 持有期回合结束**（D2）：结算单位是**一次买→卖回合**（同账户同标的，买入成交 → 卖出成交）；
+  期末仍未平仓的买入按**末根 bar 收盘**估值并标「未平仓」，alpha 算到数据末端；被驳回 / 过期 / 未成交的
+  决策**不做反事实收益**（PRD 未要求），只记状态。
+- **alpha 口径**：窗口 = [买入成交日, 卖出成交日]，与**同窗口全市场等权**比——与账户级基准同一把尺子
+  （实测 181 天 24ms，逐笔可实时算）。
+- **事实层可重算**：回合配对、pnl、alpha 都是纯函数（输入 = 决策日志 + 行情 + 日历），**不另落表**；
+  落 Store 的只有「结算快照 + 反思文本」——反思是 LLM 产物、不可重算，才需要持久化。
+  - 重算 pnl 用 `paper/account.py::settle` 的同一公式（`(卖价×量−卖费用) − (买价×量+买费用)`）。
+    **已知舍入边界**：落库成交价/费用是 `NUMERIC(18,4)`，重算与该账户 `realized_pnl` 有**元级以下**差异
+    （实测 2 个有回合的账户：0.01 元 / 0.53 元）——断言用容差，UI 不并列展示两数。
+- **Store**（LangGraph，本段首用）：namespace = `("decisions", user_id, account_id)`，key = 决策 id，
+  value = `{settled_at, outcome, pnl, return_pct, benchmark_pct, alpha_pp, window, reflection{text, model, at}}`；
+  跨标的聚合走 `search(("decisions", user_id), filter=…)`，不上向量检索。
+- **反思**：flash 一句话教训（输入 = 决策 + 结果 + 相对基准；输出 ≤120 字），**超时 20s、失败降级**
+  （反思位留空并标注「反思不可用」，不挡报告与结算）。这是 `app/` 包内第一处直接 LLM 调用，
+  统一经 `core/llm.py` 新增的 `ask_once()`。
+- **触发**（D4）：结算核心是纯函数，入口两个——① 生成报告 / 查看复盘时**惰性结算**（幂等：已有结算即复用，
+  不重复调 LLM）；② **独立调度 job**（`MEMORY_SETTLE_ENABLED` 开关，默认关）——与 `ETL_ENABLED` **解耦**，
+  不寄生在 ETL 开关下（F6：唯一调度器在 `etl/scheduler.py`，ETL 关掉整个调度器不启）。
+- **未到期如实标注**：行情止于 2026-09-30（X5 已知停更项），期末未平仓是**多数形态**（实测：14 笔买单里
+  9 笔落在数据末端那天、未平仓）——报告与复盘页必须写「未到期（数据止于 2026-09-30）」，不得静默省略。
+
+### 证据追溯面板（后端组装在 M7a，渲染在 M7c）
+
+- 每个 `kind="fact"` 的块可展开 → 证据列表：**标题 / 摘要 / `event_time` 与 `available_at` 并列 /
+  `source` / `original_source` / `content_hash`（截断）/ `source_url`**（字段形状与 M3 检索返回、M6 决策卡一致）。
+- 证据 = **决策时的来源快照**（`paper_decisions.sources`，冻结）+ 语料行 join 补 `summary` / `industries`；
+  join 键 = `(event_id, event_time::DATE)`（**`event_id` 不是全局唯一键**，M2b 已记）。
+- **修订标注**：语料行 `content_hash` 与快照不一致时标「该事件已被平台修订」并给两个 hash 前 12 位——
+  当前实测 22/22 一致（噪声为零），是廉价保险。
+
+### 分享与导出
+
+- `share_token = secrets.token_urlsafe(24)`（不可猜）、**可撤销**（撤销即公开端点 404）；公开页 `noindex`，
+  响应**不含任何用户身份字段**（无 user_id / 邮箱）。
+- **公开端点进 M1 的公开清单**：`GET /api/v1/public/reports/{token}`（JSON）+ `/markdown`（下载）。
+  这是全站第一个匿名可达的用户数据出口——越权矩阵单列（token 猜不中、撤销即 404、不带 token 不泄露存在性）。
+- **导出**（D4 拍板改 SPEC）：**Markdown 下载**（必做，含证据链）在受保护与公开两侧都可用；
+  **PDF = 前端打印样式**（`window.print()` + `@media print`）替代原「Playwright 渲染」——复用 P1 capture
+  链路是构建期脚本、不是产品功能；改为打印后未登录的分享页也能导出，且零新依赖。
+
+### 端点（`/api/v1/reports` 受保护；越权与不存在同为 404）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/reports` | `{account_id}` → 生成并冻结报告（幂等复用）→ `{id, report}` |
+| GET | `/api/v1/reports?account_id=` | 该账户的报告摘要列表（`/paper` 入口按钮状态用） |
+| GET | `/api/v1/reports/{id}` | 完整报告 JSON（受保护） |
+| POST | `/api/v1/reports/{id}/share` | 生成/取回分享 token → `{share_token, share_path}`（幂等）——**不给 `share_url`**：URL 由前端按当前 origin 拼（同 M1b「apiBase 跟随页面 host」的理由，部署换域名不用改后端配置） |
+| DELETE | `/api/v1/reports/{id}/share` | 撤销 → 公开端点即 404 |
+| GET | `/api/v1/reports/{id}/markdown` | Markdown 下载（含证据链） |
+| GET | `/api/v1/public/reports/{token}` | **匿名只读**完整报告 |
+| GET | `/api/v1/public/reports/{token}/markdown` | **匿名** Markdown 下载 |
+| GET | `/api/v1/accounts/{id}/review` | 逐笔复盘（回合 + 未平仓 + 未成交 + 反思）；惰性结算（M7b） |
+| POST | `/api/v1/accounts/{id}/settle` | 手动触发结算（登录必需、幂等；调度器走同一条路径）（M7b） |
+| GET | `/api/v1/lessons` | 跨标的教训聚合（`symbol` / `direction` / `limit` 过滤）（M7b） |
+
+### 持久化与快照
+
+- 新表一张：`research_reports`（`id UUID PK` / `user_id FK` / `account_id UUID` / `created_at` /
+  `snapshot JSONB` / `snapshot_hash TEXT` / `report JSONB` / `report_hash TEXT` / `share_token TEXT UNIQUE NULL` /
+  `shared_at TIMESTAMPTZ NULL`）；幂等建表走 `core/db.py` 既有机制。
+- `snapshot` = `{bars: {shards[{name, sha256}], digest}, events: {digest, days, last_day, rows},
+  corpus: {start, end}, market_end, decisions_hash, account: {id, config_hash, as_of}}`——**顺带还上 M2c 的挂账**
+  （`backtest_runs.request` 不含数据版本指纹；M7 起报告自带，`backtest_runs` 新写入补指纹列可延）。
+  shards 的字段是 `{name, sha256}`（落盘文件名）：回执里的 `object_key` 属下载那一侧，
+  本地拿不到也不采信（M2a 已记它连顶层 manifest_version 都对不上号）。
+- 快照 digest **不采信清单元数据**：sha 从实际 Parquet 重算（体检 B1 同规）。实测：860MB 行情 0.93s、
+  80MB 语料 0.28s —— 报告是点一次的动作（之后幂等复用），这个量级可接受。
+- **冻结产物一律过 `plain_json`**：UUID / Decimal / date 一次性翻成纯 JSON 类型——落库（psycopg 的
+  Jsonb 不认 UUID，而真库读回的 `account_id` / 决策 `id` 就是 UUID 对象）、分享、导出、算 hash
+  用的一定是同一棵树。
+
+### 前端（M7c）
+
+- 两个路由：`(app)/research/[id]`（登录态，本人）与 `/r/[token]`（**公开只读，不在 `(app)` 守卫组内**），
+  共用同一套渲染组件；`/paper` 账户卡旁加「生成研报」入口，`?id=` 深链。
+- 页面元素：报告头（标的池 / 策略 / 区间 / 快照 digest 与 `report_hash` 短码 / **数据截止日**）· 指标卡
+  （含波动率与超额，带口径标签）· 净值 vs 全市场等权（ECharts，沿用 ChartFrame / useEChart 约定）·
+  归因表 · 逐笔决策复盘（回合卡：驱动事件证据 + 结算 + 反思）· 证据追溯面板（块内展开）·
+  **页脚免责声明**「本报告由 QuantSage 生成，仅供研究用途，不构成投资建议」· 导出（打印 PDF / Markdown）·
+  分享（复制链接 / 撤销，带确认）。动手前先出 design brief（P1 口径），图表遵守 dataviz skill。
+
+**验收**：未登录浏览器打开分享链接可见完整研报（Playwright 无 cookie context 断言 + 截图）；真实账户跑结算
+生成反思并落 Store（含「未到期」如实标注）；Markdown 导出含每条证据的双时间戳与来源三元组；同一
+`snapshot_hash` 重放 → 事实层逐字段相等且 `report_hash` 相同（集成用例断言）；撤销分享后公开端 404。
+**本轮不做**：研报生成器（多 Agent 深度研报，M8）· 回测 run 出报告 · 因子归因 · 持仓行业分类（无数据源，
+留 M10 板块数据）· 反事实机会成本 · PDF 服务端渲染 · 报告版本历史（只保最新一份，重放由快照保证）·
+研报评论/协作 · 手工下单与 Agent 下单。
 
 ## 9. M8 深度研报多 Agent
 
@@ -876,6 +1008,12 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 - M6 增量（HTTP 矩阵）：未登录 401 · 越权与不存在同为 404 · 状态机 409（批已过期 / 批已成交 / 重复批准 / 越权批）· 创建期 422（池子为空 / 超 20 只 / 区间不足 2 个交易日 / 超 250 个交易日 / **配额不足一手**并指出是哪只 / 未知策略 / 用户策略未保存）· 推进到区间末端 409
 - M6 增量（集成，真实 Postgres）：四表**幂等建表**（连跑两次 lifespan）；**推进是一个事务**（注入中途失败后 `as_of` 与持仓都不变）；**乐观并发**（两次并发 `step` 只生效一次，另一次 409）；**重放对账**（从决策日志重建的账户状态 == 库里存的账户状态）
 - M6 沙箱增量：`kind="paper"` 路径下**用户源码版双均线的模拟盘结果 == 内置 ma_cross**（与 parity 同一条判据）；坏法矩阵（死循环 / 超大分配 / 抛异常）各给明确错误码且父进程存活（复用 M4a 口径，配额由 monkeypatch 压低）
+- M7 增量（离线，M7a）：绩效指标**手工样例**（净值曲线与回合列表硬编码 → 波动率 / 超额 / 回合统计逐项断言，同 P1「不引第三方快照库」口径）；**回合配对重算 vs 账本**用**容差**断言（`NUMERIC(18,4)` 舍入，实测 0.01 / 0.53 元级，见 §8）；归因（标的级贡献之和 == 已实现盈亏 + 未平仓浮盈；事件级分组小样本如实标注）；**证据组装**（sources → 语料行 join 双键命中、修订标注在 hash 不一致时出现、缺行时如实留空不编）；**快照**（digest 从实际 Parquet 重算而非采信清单；`snapshot_hash` 对同一输入稳定、对任一字段变化敏感）；**claim 校验闸门**（`fact` 块无 evidence 且无 numbers → 拒收；`inference` 块放行）；Markdown 渲染（含双时间戳与来源三元组的逐条存在性）
+- M7 增量（离线，M7b）：结算口径**固定价格快照**逐例（回合 / 未平仓按末根 bar / 未成交不结算三类；alpha 与 `market_benchmark` 同源）；**幂等**（同 `(决策, snapshot)` 二次结算不重复调 LLM，用假模型计次）；**反思降级**（假模型抛异常 / 超时 → 反思位留空且带「不可用」标注，结算结果照常落 Store）；Store 用 `InMemoryStore` 离线跑 namespace / filter 聚合
+- M7 增量（HTTP 矩阵）：生成 / 查看 / 分享 / 撤销 / Markdown 五端点各自的未登录 401 · 越权与不存在同为 404 · 非 UUID 422；**匿名只读**（`/api/v1/public/reports/{token}` 无 cookie 200，**响应不含 user_id / 邮箱**）；**撤销即 404**；**不带 token 不泄露存在性**（随机 token 与已撤销 token 同响应）
+- M7 增量（集成，真实 Postgres + 真实 Store）：`research_reports` 幂等建表与幂等复用（同 `(account, snapshot_hash)` 二次 POST 不新建行）；**重放一致**——同 `snapshot_hash` 重新生成，事实层逐字段相等且 `report_hash` 相同；**Store 真库** put / search 往返；`AsyncPostgresStore.setup()` 连跑两次不报错
+- M7 增量（前端纯函数）：报告 JSON → 视图模型（指标卡口径标签、归因表、回合卡、`report_hash` 短码）；证据行展示序（**事发与可得并列**，沿用 `sourceRows` 口径不新写一套）；`fact`/`inference` 分级 → 徽章与展开态；公开页与登录页共用同一映射
+- M7 界面验证：`capture-m7.mjs` 走真浏览器——**匿名 context**（无 cookie）打开分享链接断言报告正文可见并出截图；所有者侧生成 → 分享 → 复制链接 → 撤销后公开页 404；打印样式走查（人工，出 `logs/m7/print-*.pdf` 截图）；Markdown 下载内容含证据链（读文件断言）
 - **界面验证必须验「动作的结果」，不能只走动作**（2026-10-10 补）：因子页 / 优化页的脚本**也走了**「看表格 → 看图」，但只验表格里的数、没验图回来没有，于是「切回来是一张空画布」一路全绿。补上的判据是**等画布宽 > 300 再数像素**（零尺寸容器会让 ECharts 按兜底 100×300 建画布，压扁的图也有像素）
 - M5 界面验证（**不属于自动化层**，同 M4c 口径）：基准叠加出图、自选股按名称搜、网格跑到热力图 + 点一格重跑、因子页出图，各出一条真浏览器证据。**已落地部分（M5a）抓到一类新问题：旧数据形状**——`meta.benchmark` 这类新增字段在 M5a 之前落库的记录里不存在，直取属性会整页白屏；断言「图例出现某条线」也不能用 `text=` 去撞（ECharts 画在 canvas 上，DOM 里没有该文本，撞上了是撞到别处的同名文案）——**改读画布像素**数三个 series token
 - 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验 + 加自选表单提示口径；M4c 增：findings → 编辑器标注映射、`PARAMS` schema → 表单初值与请求体、运行请求体只在非空时带区间、**错误体还原**（422 的 `findings` / 沙箱的 `kind`，畸形响应不当崩）、`strategy="user"` 旧记录的处置函数；M5c 增：请求体构造 → 查询串、报告 → IC 图 / 分层曲线 / 多空曲线的数据映射（含 `net` 缺失与空 `per_day` 不当崩）、`notes` 分组与「不显著」态判据（IC 的 t 绝对值 < 2 时页面文案口径）），不引组件测试框架（沿用 P1 口径）。**M5 增量**（M5b 为主）：网格输入 → 笛卡尔展开与边界校验、矩阵（`params → metrics`）→ 热力图数据映射、SSE 帧解析沿用 `lib/sse.ts` 既有纯函数（**不新写一套**）、名称搜索输入 → 请求参数的匹配口径
@@ -886,6 +1024,8 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.33 | 2026-10-10 | M7a | **M7a 落地回填 —— 绩效层与报告容器交付（后端整片）**。① **交付**：`app/report/`（performance / attribution / evidence / snapshot / narrative / builder / markdown 七个模块）+ `app/memory/settle.py`（回合配对与未平仓估值，纯函数）+ `app/api/reports.py` 八端点 + `research_reports` 表（幂等 DDL + 归属过滤 + `UNIQUE(share_token)`）+ `core/llm.py::ask_once`（超时 20s、失败降级）+ `duckdb_client` 两个批量查询（`events_by_ids` / `closes_through`）。② **claim 闸门实测拦下一处真问题**：纯价量账户（双均线）没有事件证据，归因块既无 `numbers` 也无 `evidence` ⇒ 拒收整份报告；修法是给归因块补**回合口径的合计数字**（`attribution.summary`），不放松闸门。③ **真数据取证逮到两个静默错**（`scripts/report_evidence.py`，读数为证）：**(a) 日期形状**——`paper.store.equity_from_row` 给的是 ISO 字符串，而 `market_benchmark` 按 `date` 查表，喂错了会**全数落空、基准静默变 0**（真账户跑赢 2.51%、基准却显示 0.00%），收口为 `report.builder.equity_dates()`；**(b) UUID 落库**——真库读回的 `account_id` / 决策 `id` 是 `uuid.UUID`，psycopg 的 Jsonb 适配器拒收，收口为 `assemble_report` 末尾的 `plain_json()`（落库 / 分享 / 导出 / 算 hash 用同一棵树）。④ **另外三处只有真库/真浏览器才现形**：`Content-Disposition` 头是 latin-1（中文文件名要走 RFC 5987 的 `filename*`）；`CASE WHEN %s IS NULL` 参数无类型上下文 ⇒ `IndeterminateDatatype`（要 `%s::text`）；综述 prompt 直接给原始浮点会被模型**原样复述**（`0.02509640439999994`）——数字在 prompt 里就格式化好。⑤ **内存替身的两个反向教训**（同 M1c/M4c 的「替身会骗人」）：token 撞号检查没排除**自己那一行**（比真库严，误报「重复点分享」）；UUID 未照抄（比真库松，放过了 ③(b)）。⑥ **读数**：离线 **1076 passed**（唯一红是 `test_etl` 那条既定日期定时炸弹，与 M7 无关）、集成 **96 passed**（新增 3 条：幂等建表 / 全链路往返 / 推进后出新报告）；真实账户取证 3 项复核全过——回合重算 vs 账本差 **0.0119 元**（容差内，SPEC §8 记的舍入边界在真数据上复现）、证据 4/4 可回链、同一综述重放 `report_hash` 相同；耗时快照 0.93s / flash 综述 4.6–7.0s。⑦ **措辞订正**：`share_url` → `share_token` + `share_path`（URL 由前端按 origin 拼）；snapshot 分片字段 `object_key` → `name`；`report/` 增列 `markdown.py`。**M7b（决策记忆与结算反思）/ M7c（研报页与证据面板）未开工** |
+| v1.32 | 2026-10-10 | M7 | **M7 细化为可执行规格（开工前，用户已拍板 D1–D4）**。① **形态定为「容器与信任层」**：报告主体 = 一个模拟盘账户（回测 run 的 `trades` 无 `event_id`，证据面板会空一半，规划期实测确认）；报告**一次生成即冻结落库**（新表 `research_reports`），同 `(account, snapshot_hash)` 幂等复用——**M7 建容器、M8 建生成器**，深度研报接同一个 `blocks` 结构。② **claim 分级与闸门**：`kind ∈ fact｜inference`；事实型必带 `evidence` 或可复算的 `numbers`，生成期校验不过即拒收（M8 的 LLM 结论也过这道闸门）；LLM 只出综述与逐笔反思（flash），**超时 20s、失败降级留空并如实标注**。③ **重放一致是可断言的**：`snapshot_hash`（bars 逐片 sha + events 日分区 + 语料覆盖 + 决策日志 hash + 账户 config）相同 ⇒ 事实层逐字段相等、综述与反思**复用已存文本**（缓存键含 model/prompt 版本）、`report_hash` 相同。④ **「到期」= 持有期回合结束**：结算单位是买→卖回合，期末未平仓按末根 bar 收盘估值并标「未平仓」（**实测这是多数形态**：14 笔买单里 9 笔落在数据末端那天），alpha 对**同窗口全市场等权**（与账户级同一把尺子，实测 181 天 24ms）；被驳回/过期/未成交**不做反事实收益**。⑤ **事实层可重算、不落表**；落 **LangGraph Store**（本段首用）的只有结算快照 + 反思文本，namespace `("decisions", user_id, account_id)`，跨标的聚合走 `search` 前缀扫。⑥ **实测记下一条舍入边界**：落库成交价/费用是 `NUMERIC(18,4)`，回合重算与该账户 `realized_pnl` 有**元级以下**差异（0.01 / 0.53 元）——断言用容差、UI 不并列展示两数。⑦ **分享与导出**：`token_urlsafe(24)` 不可猜、可撤销（撤销即公开端 404）、`noindex`、**响应不含任何用户身份字段**；公开端点显式进 M1 公开清单（全站第一个匿名可达的用户数据出口，越权矩阵单列）；**PDF 改走前端打印样式**（替代原「Playwright 渲染」——capture 链路是构建期脚本、不是产品功能，打印后未登录页也能导出且零新依赖），Markdown 下载两侧都可用。⑧ **触发解耦**：惰性结算（报告/复盘时，幂等）+ 独立调度 job（`MEMORY_SETTLE_ENABLED` 默认关）——**不寄生 `ETL_ENABLED`**（唯一调度器在 `etl/scheduler.py`，ETL 关掉整个调度器不启，F6 实测）。⑨ **如实收窄归因**：本地无标的行业分类数据（M2a 已核），只做标的级 + 事件级（方向 / industries）；因子归因不做（导流 `/factor`）。⑩ §1 结构、§12 测试增量（离线 / HTTP / 集成 / 前端纯函数 / 界面验证）与验收同步。规划底稿与 F1–F11 实测：`docs/private/Pn-n/P2-Mn/P2-M7.md` |
 | v1.31 | 2026-10-10 | M5b · M5c · M6 补口 | **图表基础设施补口：`useEChart` 的宿主从 `RefObject` 改为回调 ref。**① **现象**：因子页与优化页热力图的「看表格 ⇄ 看图」切回来之后**图永远不再出现**（实测 `初始 1366×238 → 切表格「无 canvas」→ 切回来仍「无 canvas」`）。② **根因**：建图 effect 依赖 `[hostRef]`，而 ref 物件身份永不变 ⇒ 它**只在组件挂载那一刻跑一次**；宿主是「数据到了才渲染」或「切走再切回」时，那一刻 `hostRef.current` 是 `null`，实例永远不会建出来（**静默无画布，控制台干净**）。③ **修法（修 hook，不逐个打补丁）**：宿主参数改为**回调 ref**（调用方 `<div ref={hostRef} />` 一字不改），宿主出现/消失都变成一次 state 变化，建图 effect 与 `setOption` effect 跟着重跑；**`option` 那条 effect 也必须把宿主写进依赖**——换回来的是一张新实例（空的），而 option 本身没变。四处调用点（因子 IC / 分层 / 热力图 / 分布图）同步切换，净值曲线组件退回最朴素的「图 ⇄ 表」写法。④ **两个既有界面验证脚本当时为什么没逮到**：它们**也走了**「看表格 → 看图」，但只验了表格里的数、**没验图回来没有**——动作做过不等于断言到位。补上后因子页 **15/15**、优化页 **14/14**，判据连画布**尺寸**一起看（零尺寸容器会让 ECharts 按兜底 100×300 建画布，压扁的图也有像素）。⑤ 回归：前端 **283** 纯函数 + typecheck / lint / `pnpm build` 全绿；模拟盘界面验证 **18/18** 不受影响 |
 | v1.30 | 2026-10-10 | M6 | **M6b 前端落地回填 —— `/paper` 页交付，M6 整段完成**。① **页面**：会话条（切换 / ＋新建）+ 账户卡（净值英雄数字 + 已实现盈亏 / 现金 / 市值 + 进度条 + **数据截止日如实标注**）+ **决策闸门**（待审批卡：标的 / 买卖 / 预计数量与金额 / 理由 / **来源三元组可展开** / 批准与驳回）+ 推进控制（推进一天 / 跑到结束带**内联二次确认**）+ 净值曲线（单序列 + **成交日 ▲买 ▼卖标记**）+ 持仓表 + 决策流水（六态徽章）+ 每日结算表；页头第 7 项导航、`/space` 第 6 个页签、`?id=` 深链。② **`lib/paper.ts` 纯函数**（28 条 Vitest）：六态 → **语气**（`action`/`waiting`/`normal`/`void`/`alert`，语义与像素分开）+ 决策卡视图（**预估与成交两个数分开说**）+ 来源三元组展示序（**事发与可得并列**）+ 推进回执 + 进度映射 + 请求体构造。③ **界面验证 18/18**（`logs/m6/ui.md`），三条是自动化层结构上看不见的：净值曲线**真的画在画布上**（1366×298、非底色 13340 px）、**批准真的换了状态**（按 `data-status` 断言而非文案）、**推进后账户数字真的变了**（现金 500,000 → 3,816 且持仓库出现该标的）。④ **界面验证逮到四处、两处是真 bug**：**(a) 切了策略后旧参数照发**（`event_driven` 收到 `fast/slow` → 422）——M5b「界面上看不见的东西进了请求」的翻版，修法是同一条：只发该策略**可见**的参数键（`STRATEGY_PARAM_KEYS` 由表单与请求体共用）；**(b) 图宿主「数据到了才渲染」→ `useEChart` 在挂载时 ref 还是 null，实例永远建不出来**（ECharts 静默无画布）；用 `hidden` 藏到有数据为止也不行——它会按**零尺寸兜底 100×300** 建画布（界面验证读数当场露馅）——修法是宿主常驻 + 按真实尺寸 init（`ChartFrame` 的老写法）；**(c) 批准后卡片当场消失**（待审批区只渲染 pending），用户看不到回执——改为闸门区同时给「待审批」与「已批准（等次日开盘）」两态。⑤ 回归：前端 **282** 纯函数（新增 28）+ typecheck / lint / `pnpm build` 全绿（`/paper` 12.3 kB / 首屏 328 kB）；**后端零改动**。设计推导见 `docs/private/Pn-n/P2-Mn/P2-M6b-design-brief.md` |
 | v1.29 | 2026-10-10 | M6 | **M6a 后端落地回填 —— 模拟盘从「回测 + 闸门 + 账户」建成（前端 M6b 待做）**。① **落地物**：`app/paper/{types,account,market,replay,store}.py` + `api/paper.py`（7 端点）+ `core/db.py` 四张表与事务出口 + `duckdb_client.{bars_multi,events_multi}` + 沙箱 `kind="paper"` 分支 + `scripts/run_paper.py`（取证 7/7）。② **头号断言成立**：单标的 + 全批 ⇒ 与 `run_backtest` 的 `fills` **逐笔相等**（真数据 600519：2 笔成交、期末净值 1,092,071.15 两边一致）。③ **「推进一天 = 全量重放」实测比规划期还便宜**：20 标的 × 250 个交易日，**每步 288–323ms**（50 日 288 / 250 日 323——成本几乎不随天数增长，说明它由**取数**而非循环主导，印证 F3 的结论②）；纯策略循环 20×181 根 bar 仅 24.5ms。④ **两处只有真数据/真库能验的**：真实**一字涨停**日（002058）批了也成交不了，拒绝码 `REJECT_LIMIT_UP`；真库上**重放对账**（按决策日志重建的账户状态 == 库里存的 `cash`/`as_of`/持仓）。⑤ **实施期逮到三个真 bug，都不是自动化层单测能发现的形状**：**(a) 日志里已成交的决策必须照原样记回账本**（否则「重放是纯函数」不成立——第二轮得到一条没有成交的曲线，决策却显示已成交）；**(b) 从日志种回来的「已批准」挂单会在决策日当天成交**（同一次重放天然不会撞上，带日志回来才会——铁律「T 日生成、T+1 成交」被悄悄改掉）；**(c) 已驳回的决策带着上一轮的成交明细**（决策单自相矛盾；逮到它的是取证 CLI 而非单测——单测里的日志是手搓的，真实调用方却是「拿已成交的结果改状态」）。三处修法与可复用判据已进踩坑记录。⑥ **驱动差异一条**：psycopg 的**异步连接没有 `executemany`**（那是同步 API），批量要自己开 cursor——离线替身全绿什么都不能说明，得有真库用例。**事务与并发怎么测**也有了定式：拿唯一约束当注入点验回滚、直接打 `Database.paper_advance(expected_as_of=旧值)` 验守卫（顺序调用永远撞不上）。⑦ §1 结构、§12 测试增量的落点与本文同步。**既有文件只动了五处，全是加法**：`broker.py`（`_affordable_qty` 上提为模块级 `affordable_qty`，行为不变）、`duckdb_client.py`（两个批量查询）、`events.py` 未改（来源三元组直接从取数行取）、`core/db.py`（+4 表 +9 方法）、`main.py`（注册路由 + 两个处理器）、`strategy/{sandbox,worker}.py`（`_run_worker` 抽出共用 + `kind="paper"` 分支）。**回归：离线 1004 passed**（既有 958 零改动 + 新增 46）、**集成 93 passed**（既有 86 + 新增 7）。证据：`logs/m6/{paper.md, paper.json}`。规划底稿与 F1–F8：`docs/private/Pn-n/P2-Mn/P2-M6.md` |
