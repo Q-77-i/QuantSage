@@ -24,6 +24,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -33,6 +34,12 @@ from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig
 from app.backtest.types import Mode
 from app.core.config import get_settings
+from app.paper.store import (
+    config_to_payload as paper_config_to_payload,
+    decision_to_payload,
+    result_from_payload,
+)
+from app.paper.types import Decision, PaperConfig, ReplayResult
 from app.strategy import SandboxError, SandboxLimits, StrategyRejected
 
 #: 子进程内存看门狗触发时的退出码（128 + SIGKILL，沿用惯例）
@@ -186,7 +193,17 @@ async def run_user_strategy(
             },
         }
     ).encode("utf-8")
+    envelope, duration, tail = await _run_worker(payload, limits)
+    return SandboxOutcome(report=envelope["report"], duration_s=duration, stderr_tail=tail)
 
+
+async def _run_worker(payload: bytes, limits: SandboxLimits) -> tuple[dict[str, Any], float, str]:
+    """跑一次沙箱子进程，返回 `(信封, 耗时秒, stderr 尾巴)`。
+
+    错误映射集中在这里（原样搬自 M4a 的 `run_user_strategy`，行为未变）：用户要改的问题抛
+    `StrategyRejected`（4xx），配额与执行层问题抛 `SandboxError`（带 `kind`）。
+    回测（M4c）与模拟盘（M6）两条任务共用这一份——配额、杀进程组、信封解析只有一处实现。
+    """
     started = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -267,9 +284,7 @@ async def run_user_strategy(
             raise StrategyRejected(message, line=int(line) if line else None)
         raise SandboxError(message, kind=str(error.get("kind") or "crash"))
 
-    return SandboxOutcome(
-        report=envelope["report"], duration_s=duration, stderr_tail=tail[-2000:]
-    )
+    return envelope, duration, tail[-2000:]
 
 
 def run_user_strategy_sync(
@@ -294,6 +309,47 @@ def run_user_strategy_sync(
     )
 
 
+async def run_user_paper(
+    source: str,
+    *,
+    config: PaperConfig,
+    account_id: str,
+    decisions: Sequence[Decision] = (),
+    through: date | None = None,
+    auto: str | None = None,
+    strategy_name: str | None = None,
+    limits: SandboxLimits | None = None,
+) -> ReplayResult:
+    """把用户策略放进沙箱子进程跑一次**模拟盘重放**（M6，SPEC §7 D5）。
+
+    为什么整段重放都放进去：用户代码可以在模块级持状态（M4a 已记），而跨 HTTP 请求保留不了
+    实例——只有「从会话起点重放」能让它看到同一串 bar。父进程传决策日志、子进程回账户状态，
+    **零 IPC 协议改造**，三层配额照旧生效。
+    """
+    limits = limits or default_limits()
+    payload = json.dumps(
+        {
+            "kind": "paper",
+            "source": source,
+            "name": strategy_name or config.strategy,
+            "account_id": account_id,
+            "through": through.isoformat() if through else None,
+            "auto": auto,
+            "config": paper_config_to_payload(config),
+            "decisions": [decision_to_payload(d) for d in decisions],
+            "limits": {
+                "wall_seconds": limits.wall_seconds,
+                "cpu_seconds": limits.cpu_seconds,
+                "memory_mb": limits.memory_mb,
+                "output_bytes": limits.output_bytes,
+                "stderr_bytes": limits.stderr_bytes,
+            },
+        }
+    ).encode("utf-8")
+    envelope, _, _ = await _run_worker(payload, limits)
+    return result_from_payload(envelope["result"])
+
+
 __all__ = [
     "BACKEND_DIR",
     "EXIT_MEMORY",
@@ -301,6 +357,7 @@ __all__ = [
     "config_from_payload",
     "config_to_payload",
     "default_limits",
+    "run_user_paper",
     "run_user_strategy",
     "run_user_strategy_sync",
 ]

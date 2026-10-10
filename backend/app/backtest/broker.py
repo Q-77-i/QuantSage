@@ -16,6 +16,26 @@ from app.backtest.types import Bar, Fill, Side, Signal
 log = logging.getLogger(__name__)
 
 
+def affordable_qty(costs: CostModel, cash: float, price: float, lot: int = LOT_SIZE) -> int:
+    """现金 `cash` 在价格 `price` 下最多能买多少股（整手向下取整）。
+
+    含最低佣金时可能需减 1~2 手，故用循环而非一次估算（跳空高开也不打穿现金）。
+
+    M6 起上提为模块级：**模拟盘的提案期预估与成交期定股数共用本函数**——提案按决策日
+    收盘价、成交按次日开盘价，同一规则两处取值（SPEC §7）。`price <= 0` 返 0：
+    引擎那条路径进不来（`bar.tradable` 已挡），模拟盘的预估价来自收盘价，可能拿到脏值。
+    """
+    if price <= 0:
+        return 0
+    qty = int(cash // price) // lot * lot
+    while qty > 0:
+        commission, stamp_tax = costs.fees(Side.BUY, qty, price)
+        if qty * price + commission + stamp_tax <= cash:
+            return qty
+        qty -= lot
+    return 0
+
+
 class Broker:
     def __init__(self, costs: CostModel, lot_size: int = LOT_SIZE) -> None:
         self._costs = costs
@@ -80,14 +100,5 @@ class Broker:
         )
 
     def _affordable_qty(self, cash: float, price: float) -> int:
-        """按整手向下取整，再逐步减手直到「成交金额 + 费用」不超现金。
-
-        含最低佣金时可能需减 1~2 手，故用循环而非一次估算（跳空高开也不打穿现金）。
-        """
-        qty = int(cash // price) // self._lot * self._lot
-        while qty > 0:
-            commission, stamp_tax = self._costs.fees(Side.BUY, qty, price)
-            if qty * price + commission + stamp_tax <= cash:
-                return qty
-            qty -= self._lot
-        return 0
+        """按整手向下取整，再逐步减手直到「成交金额 + 费用」不超现金（实现见模块级函数）。"""
+        return affordable_qty(self._costs, cash, price, self._lot)

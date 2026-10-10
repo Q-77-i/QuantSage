@@ -32,10 +32,12 @@ from app.api.events import router as events_router
 from app.api.factor import router as factor_router
 from app.api.market import router as market_router
 from app.api.optimize import router as optimize_router
+from app.api.paper import router as paper_router
 from app.api.strategies import router as strategies_router
 from app.api.watchlist import router as watchlist_router
 from app.backtest.batch import BatchRequestError
 from app.backtest.types import BacktestError, NoDataError
+from app.paper import PaperConflict, PaperError
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
 from app.core.db import (
@@ -190,8 +192,25 @@ for router in (
     optimize_router,
     factor_router,
     etl_router,
+    paper_router,
 ):
     app.include_router(router)
+
+
+@app.exception_handler(PaperConflict)
+async def _paper_conflict(_: Request, exc: PaperConflict) -> JSONResponse:
+    """模拟盘的状态冲突（决策不是待审批 / 会话已到末端 / 并发推进）：**409**。
+
+    与 422 分开：请求本身没写错，是「这一刻的会话状态不允许这个动作」——
+    用户该做的是刷新看看现在是什么状态，而不是改请求。
+    """
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(PaperError)
+async def _paper_error(_: Request, exc: PaperError) -> JSONResponse:
+    """模拟盘的配置/数据前提不满足（区间内没数据、交易日不足、策略已删等）：**400**。"""
+    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": str(exc)})
 
 
 @app.exception_handler(EmailTaken)

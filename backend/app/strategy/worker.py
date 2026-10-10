@@ -2,7 +2,8 @@
 
 协议：stdin 收一行 JSON（源码 + 配置 + 配额 + 策略名），stdout 回**一行** JSON 信封：
 
-    {"ok": true,  "report": {...}}
+    {"ok": true,  "report": {...}}      # kind 缺省 / "backtest"
+    {"ok": true,  "result": {...}}      # kind = "paper"（M6 模拟盘重放）
     {"ok": false, "error": {"kind": "rejected|backtest|memory", "message": "...", "line": 12}}
 
 三个实现要点：
@@ -16,6 +17,9 @@
 - **参数归一在子侧再确认一遍**：`PARAMS` 是静态可读的字面量，子进程据此填满缺省值，
   用户 `on_bar` 里可以放心 `p["fast"]`。父侧那道校验是为了**不 spawn 就能返回 422**，
   这里这道是保证策略拿到的字典一定完整
+
+两类任务（回测 / 模拟盘）共用同一个入口与同一套配额：**M6 的整段重放跑在这里**，
+父进程只收账户状态与决策日志（见 `app.paper.replay` 的模块 docstring）。
 """
 
 from __future__ import annotations
@@ -26,12 +30,23 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from datetime import date
 from typing import Any
 
 import resource  # noqa: S404 - 只用于给自己设配额，不碰用户输入
 
 from app.backtest.report import build_report
 from app.backtest.types import BacktestError
+from app.paper import PaperError
+from app.paper.replay import replay
+from app.paper.store import (
+    config_from_payload as paper_config_from_payload,
+)
+from app.paper.store import (
+    decision_from_payload,
+    result_to_payload,
+)
+from app.paper.types import DecisionStatus
 from app.strategy import USER_STRATEGY, SandboxLimits, StrategyRejected
 from app.strategy.api import format_traceback, load_strategy, parse_meta
 from app.strategy.params import validate_params
@@ -124,6 +139,46 @@ def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         return _rejected(f"策略执行时发生 {type(exc).__name__}: {exc}")
 
 
+def _execute_paper(payload: dict[str, Any]) -> dict[str, Any]:
+    """模拟盘重放（M6）：**整段重放**在这里跑，父进程只收账户状态与决策日志。
+
+    与 `_execute` 的差别只有产物：那边回一份报告，这边回账户状态 + 决策日志 + 净值曲线。
+    闸门语义全在 `app.paper.replay` 里，两侧共用同一份实现——回测与模拟盘的口径不会分叉。
+    """
+    source = payload["source"]
+    name = str(payload.get("name") or USER_STRATEGY)
+    try:
+        meta = parse_meta(source)
+        raw = payload["config"]
+        config = replace(
+            paper_config_from_payload(raw),
+            params=validate_params(meta.params, raw.get("params") or {}),
+        )
+        strategy = load_strategy(source, name=name, params=config.params)
+        errors = strategy.check_values(config.params)
+        if errors:
+            return _rejected("；".join(errors))
+        result = replay(
+            config,
+            [decision_from_payload(d) for d in payload.get("decisions") or []],
+            through=date.fromisoformat(payload["through"]) if payload.get("through") else None,
+            auto=DecisionStatus(payload["auto"]) if payload.get("auto") else None,
+            strategy=strategy,
+            account_id=str(payload.get("account_id") or ""),
+        )
+        return {"ok": True, "result": result_to_payload(result)}
+    except StrategyRejected as exc:
+        return _rejected(str(exc), line=exc.line)
+    except MemoryError:
+        return {"ok": False, "error": {"kind": "memory", "message": "策略内存不足（MemoryError）"}}
+    except (BacktestError, PaperError) as exc:
+        # 数据层问题（区间无 bar、标的缺数据一类）：父侧通常已拦，这里是兜底，别谎报成用户的错
+        return {"ok": False, "error": {"kind": "backtest", "message": str(exc)}}
+    except BaseException as exc:  # noqa: BLE001 - 含 SystemExit / KeyboardInterrupt
+        print(format_traceback(exc), file=sys.stderr)
+        return _rejected(f"策略执行时发生 {type(exc).__name__}: {exc}")
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read())
@@ -135,7 +190,7 @@ def main() -> int:
     sys.stdout = sys.stderr  # 用户的 print 默认走 stderr，协议通道留给信封
     try:
         install_limits(SandboxLimits(**payload["limits"]))
-        envelope = _execute(payload)
+        envelope = _execute_paper(payload) if payload.get("kind") == "paper" else _execute(payload)
     finally:
         sys.stdout = real_stdout
 

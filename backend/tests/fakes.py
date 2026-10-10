@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
@@ -110,6 +110,14 @@ class FakeDatabase:
         # 批量/网格汇总：run_id → 行（顺序另记，列表倒序给「最新在前」）
         self.optimizations: dict[str, dict[str, Any]] = {}
         self._optimization_order: list[str] = []
+        # 模拟盘（M6）：会话 / 持仓 / 决策 / 净值，四份都与真库同形。
+        # **乐观并发守卫必须照抄**（`as_of` 对不上返 False）——替身若不挡，
+        # 「双击推进只生效一次」那条用例测的就是替身自己的宽容。
+        self.paper_accounts: dict[str, dict[str, Any]] = {}
+        self._paper_order: list[str] = []
+        self.paper_positions_rows: dict[str, list[dict[str, Any]]] = {}
+        self.paper_decision_rows: dict[str, dict[str, Any]] = {}
+        self.paper_equity_rows: dict[str, list[dict[str, Any]]] = {}
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -367,6 +375,126 @@ class FakeDatabase:
             "request": row["request"],
             "summary": row["summary"],
         }
+
+    # ── 模拟盘（M6）─────────────────────────────────────────
+
+    async def create_paper_account(
+        self, *, account_id: str, user_id: int, name: str, config: dict[str, Any],
+        cash: float, as_of: date, rules: dict[str, Any],
+        positions: list[dict[str, Any]], decisions: list[dict[str, Any]],
+        equity: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        row = {
+            "id": account_id,
+            "user_id": user_id,
+            "name": name,
+            "config": config,
+            "status": "active",
+            "cash": cash,
+            "realized_pnl": 0.0,
+            "as_of": as_of,
+            "rules": rules,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
+        self.paper_accounts[account_id] = row
+        self._paper_order.append(account_id)
+        self.paper_positions_rows[account_id] = list(positions)
+        self.paper_decision_rows.update({d["id"]: d for d in decisions})
+        self.paper_equity_rows[account_id] = list(equity)
+        return row
+
+    async def paper_advance(
+        self, *, account_id: str, user_id: int, expected_as_of: date, cash: float,
+        realized_pnl: float, as_of: date, status: str, rules: dict[str, Any],
+        positions: list[dict[str, Any]], decisions: list[dict[str, Any]],
+        equity: list[dict[str, Any]],
+    ) -> bool:
+        row = self.paper_accounts.get(account_id)
+        if row is None or row["user_id"] != user_id or row["as_of"] != expected_as_of:
+            return False  # 守卫没中：**什么都不写**（真库那条 UPDATE 也是这个语义）
+        row.update(
+            {
+                "cash": cash,
+                "realized_pnl": realized_pnl,
+                "as_of": as_of,
+                "status": status,
+                "rules": rules,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self.paper_positions_rows[account_id] = list(positions)
+        self.paper_decision_rows.update({d["id"]: d for d in decisions})
+        merged = {e["trade_date"]: e for e in self.paper_equity_rows.get(account_id, [])}
+        merged.update({e["trade_date"]: e for e in equity})  # 已写过的日子不改（不可变事实）
+        self.paper_equity_rows[account_id] = [merged[d] for d in sorted(merged)]
+        return True
+
+    async def list_paper_accounts(self, user_id: int, limit: int) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for account_id in reversed(self._paper_order):
+            row = self.paper_accounts[account_id]
+            if row["user_id"] != user_id:
+                continue
+            config = row["config"]
+            out.append(
+                {
+                    "id": account_id,
+                    "name": row["name"],
+                    "status": row["status"],
+                    "cash": row["cash"],
+                    "as_of": row["as_of"],
+                    "rules": row["rules"],
+                    "created_at": row["created_at"],
+                    "strategy": config.get("strategy"),
+                    "strategy_name": config.get("strategy_name"),
+                    "symbols": list(config.get("symbols") or []),
+                    "start": config.get("start"),
+                    "end": config.get("end"),
+                }
+            )
+            if len(out) == limit:
+                break
+        return out
+
+    async def get_paper_account(self, user_id: int, account_id: str) -> dict[str, Any] | None:
+        row = self.paper_accounts.get(account_id)
+        return None if row is None or row["user_id"] != user_id else row
+
+    async def paper_positions(self, account_id: str) -> list[dict[str, Any]]:
+        return list(self.paper_positions_rows.get(account_id, []))
+
+    async def paper_decisions(self, account_id: str, limit: int) -> list[dict[str, Any]]:
+        rows = [r for r in self.paper_decision_rows.values() if r["account_id"] == account_id]
+        rows.sort(key=lambda r: (r["trade_date"], r["symbol"], r["side"]), reverse=True)
+        return rows[:limit]
+
+    async def paper_equity(self, account_id: str) -> list[dict[str, Any]]:
+        return list(self.paper_equity_rows.get(account_id, []))
+
+    async def paper_decision(self, user_id: int, decision_id: str) -> dict[str, Any] | None:
+        row = self.paper_decision_rows.get(decision_id)
+        if row is None:
+            return None
+        account = self.paper_accounts.get(row["account_id"])
+        return None if account is None or account["user_id"] != user_id else row
+
+    async def set_paper_decision(self, decision_id: str, status: str) -> bool:
+        row = self.paper_decision_rows.get(decision_id)
+        if row is None or row["status"] != "pending":
+            return False  # 守卫照抄真库：只有待审批的能改
+        row.update({"status": status, "decided_at": datetime.now(UTC)})
+        return True
+
+    async def set_paper_decisions_bulk(self, account_id: str, status: str) -> int:
+        hits = [
+            r
+            for r in self.paper_decision_rows.values()
+            if r["account_id"] == account_id and r["status"] == "pending"
+        ]
+        for row in hits:
+            row.update({"status": status, "decided_at": datetime.now(UTC)})
+        return len(hits)
 
     def _touch(self, thread_id: str) -> None:
         self._recent = [tid for tid in self._recent if tid != thread_id]

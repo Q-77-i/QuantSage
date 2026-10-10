@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 
 from psycopg import errors
@@ -102,6 +103,80 @@ SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS optimization_runs_user_created_idx "
     "ON optimization_runs (user_id, created_at DESC)",
+    # ── M6 模拟盘：四张表（账户 / 持仓 / 决策 / 净值）────────────────
+    # 金额一律 NUMERIC(18,4)：算钱不用二进制浮点（`round(2.675, 2)` 给 2.67 那个教训）。
+    # `config` 存创建时的全部参数（池子/策略/参数/区间/费用），落库即契约——读回时
+    # 由 `paper.store.config_from_payload` 还原，重放的全部输入都从这一列来。
+    """
+    CREATE TABLE IF NOT EXISTS paper_accounts (
+        id           UUID PRIMARY KEY,
+        user_id      BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name         TEXT        NOT NULL,
+        config       JSONB       NOT NULL,
+        status       TEXT        NOT NULL DEFAULT 'active',
+        cash         NUMERIC(18, 4) NOT NULL,
+        realized_pnl NUMERIC(18, 4) NOT NULL DEFAULT 0,
+        as_of        DATE        NOT NULL,
+        rules        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS paper_accounts_user_created_idx "
+    "ON paper_accounts (user_id, created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS paper_positions (
+        account_id   UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+        symbol       TEXT NOT NULL,
+        shares       INTEGER NOT NULL,
+        entry_price  NUMERIC(18, 4) NOT NULL,
+        entry_fees   NUMERIC(18, 4) NOT NULL DEFAULT 0,
+        entry_date   DATE,
+        entry_reason TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (account_id, symbol)
+    )
+    """,
+    # 决策表**同时是订单表与日志表**（决策与成交 1:1，不拆两张）——M7 的到期结算反思只读它。
+    # `UNIQUE (account_id, trade_date, symbol, side)` 是 id 之外的又一道保险：id 本就是
+    # 这三者加账户的函数（`paper.types.decision_id`），撞键说明有人手工塞了行。
+    """
+    CREATE TABLE IF NOT EXISTS paper_decisions (
+        id             UUID PRIMARY KEY,
+        account_id     UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+        trade_date     DATE NOT NULL,
+        symbol         TEXT NOT NULL,
+        side           TEXT NOT NULL,
+        est_qty        INTEGER NOT NULL,
+        est_price      NUMERIC(18, 4) NOT NULL,
+        reason         TEXT NOT NULL DEFAULT '',
+        event_id       TEXT,
+        sources        JSONB,
+        status         TEXT NOT NULL,
+        decided_at     TIMESTAMPTZ,
+        fill_date      DATE,
+        fill_qty       INTEGER,
+        fill_price     NUMERIC(18, 4),
+        fill_ref_price NUMERIC(18, 4),
+        commission     NUMERIC(18, 4),
+        stamp_tax      NUMERIC(18, 4),
+        cash_delta     NUMERIC(18, 4),
+        reject_code    TEXT,
+        reject_reason  TEXT,
+        UNIQUE (account_id, trade_date, symbol, side)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS paper_decisions_account_date_idx "
+    "ON paper_decisions (account_id, trade_date DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS paper_equity (
+        account_id   UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+        trade_date   DATE NOT NULL,
+        cash         NUMERIC(18, 4) NOT NULL,
+        market_value NUMERIC(18, 4) NOT NULL,
+        equity       NUMERIC(18, 4) NOT NULL,
+        PRIMARY KEY (account_id, trade_date)
+    )
+    """,
 )
 
 
@@ -486,6 +561,152 @@ class Database:
         )
         return {**row, "id": str(row["id"])} if row is not None else None
 
+    # ── 模拟盘（M6）─────────────────────────────────────────
+    #
+    # 三条约定：① 一次「推进」写多张表，**必须在一个事务里**（半推进的状态比没推进更难收场）；
+    # ② 账户行带**乐观并发守卫**（`WHERE as_of = 期望值`），0 行受影响即返 False，由端点翻 409；
+    # ③ 决策的 `decided_at` 由重放从日志里带回来，所以整份 upsert 不会抹掉用户做过的动作。
+
+    async def create_paper_account(
+        self,
+        *,
+        account_id: str,
+        user_id: int,
+        name: str,
+        config: dict[str, Any],
+        cash: float,
+        as_of: date,
+        rules: dict[str, Any],
+        positions: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        equity: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """建会话 + 首批决策/持仓/净值点，一个事务。"""
+        async with self.pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO paper_accounts (id, user_id, name, config, cash, as_of, rules) "
+                    "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s)",
+                    (account_id, user_id, name, Jsonb(config), cash, as_of, Jsonb(rules)),
+                )
+                await _write_paper_state(conn, account_id, positions, decisions, equity)
+        row = await self.get_paper_account(user_id, account_id)
+        assert row is not None  # 刚插进去的行必然取得到
+        return row
+
+    async def paper_advance(
+        self,
+        *,
+        account_id: str,
+        user_id: int,
+        expected_as_of: date,
+        cash: float,
+        realized_pnl: float,
+        as_of: date,
+        status: str,
+        rules: dict[str, Any],
+        positions: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        equity: list[dict[str, Any]],
+    ) -> bool:
+        """推进一个交易日（一个事务）。返回 False = 守卫没中（已被别的请求推进过），**什么都没写**。"""
+        async with self.pool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    "UPDATE paper_accounts SET cash = %s, realized_pnl = %s, as_of = %s, "
+                    "status = %s, rules = %s, updated_at = now() "
+                    "WHERE id = %s::uuid AND user_id = %s AND as_of = %s RETURNING id",
+                    (cash, realized_pnl, as_of, status, Jsonb(rules), account_id, user_id,
+                     expected_as_of),
+                )
+                if await cursor.fetchone() is None:
+                    return False
+                # 持仓整体换一遍（不改写别的会话的行）：陈旧行必须消失，否则平掉的仓位会长留
+                await conn.execute(
+                    "DELETE FROM paper_positions WHERE account_id = %s::uuid", (account_id,)
+                )
+                await _write_paper_state(conn, account_id, positions, decisions, equity)
+        return True
+
+    async def list_paper_accounts(self, user_id: int, limit: int) -> list[dict[str, Any]]:
+        """会话列表（最近创建在前）。摘要只取界面要用的几列，不拖整份 config。"""
+        return await self._all(
+            "SELECT id, name, status, cash, as_of, rules, created_at, "
+            "config->>'strategy' AS strategy, config->>'strategy_name' AS strategy_name, "
+            "config->'symbols' AS symbols, config->>'start' AS start, config->>'end' AS end "
+            "FROM paper_accounts WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+            (user_id, limit),
+        )
+
+    async def get_paper_account(self, user_id: int, account_id: str) -> dict[str, Any] | None:
+        """单条（含 config）。带 `user_id` 过滤：越权与不存在同为 None（由调用方翻 404）。
+
+        本层一律**原样返回行**（UUID / Decimal / date 都不动）——转成 JSON 契约形状是
+        `app.paper.store` 的职责，让驱动类型只在一处被翻译。
+        """
+        return await self._one(
+            "SELECT id, name, config, status, cash, realized_pnl, as_of, rules, created_at, "
+            "updated_at FROM paper_accounts WHERE id = %s::uuid AND user_id = %s",
+            (account_id, user_id),
+        )
+
+    async def paper_positions(self, account_id: str) -> list[dict[str, Any]]:
+        return await self._all(
+            "SELECT account_id, symbol, shares, entry_price, entry_fees, entry_date, "
+            "entry_reason FROM paper_positions WHERE account_id = %s::uuid ORDER BY symbol",
+            (account_id,),
+        )
+
+    async def paper_decisions(self, account_id: str, limit: int) -> list[dict[str, Any]]:
+        """决策流水（新的在前）。`limit` 只是防呆——池子 ≤20、区间 ≤250 个交易日，
+        信号本来就稀（M6 规划期实测：20 标的 × 181 个交易日约 110 条）。"""
+        return await self._all(
+            "SELECT * FROM paper_decisions WHERE account_id = %s::uuid "
+            "ORDER BY trade_date DESC, symbol, side LIMIT %s",
+            (account_id, limit),
+        )
+
+    async def paper_equity(self, account_id: str) -> list[dict[str, Any]]:
+        """净值曲线（按交易日升序——画图要的顺序）。"""
+        return await self._all(
+            "SELECT account_id, trade_date, cash, market_value, equity FROM paper_equity "
+            "WHERE account_id = %s::uuid ORDER BY trade_date",
+            (account_id,),
+        )
+
+    async def paper_decision(self, user_id: int, decision_id: str) -> dict[str, Any] | None:
+        """按 id 取一条决策（**连账户归属一起判**）。越权与不存在同为 None。"""
+        return await self._one(
+            "SELECT d.* FROM paper_decisions d JOIN paper_accounts a ON a.id = d.account_id "
+            "WHERE d.id = %s::uuid AND a.user_id = %s",
+            (decision_id, user_id),
+        )
+
+    async def set_paper_decision(self, decision_id: str, status: str) -> bool:
+        """把一条**待审批**决策改成 `status`。返回 False = 它已不是待审批（端点翻 409）。
+
+        守卫写在 SQL 里（`status = 'pending'`）而不是「先读再写」：两次请求之间会开竞态窗口，
+        而这里正是「同一张单被批两次」会发生的地方。`decided_at` 取库里的 `now()`——
+        时间基准只有一处（应用进程的时钟不参与）。
+        """
+        return (
+            await self._one(
+                "UPDATE paper_decisions SET status = %s, decided_at = now() "
+                "WHERE id = %s::uuid AND status = 'pending' RETURNING id",
+                (status, decision_id),
+            )
+            is not None
+        )
+
+    async def set_paper_decisions_bulk(self, account_id: str, status: str) -> int:
+        """一键全批 / 全驳：把该会话所有待审批决策改成 `status`，返回改了几条。"""
+        rows = await self._all(
+            "UPDATE paper_decisions SET status = %s, decided_at = now() "
+            "WHERE account_id = %s::uuid AND status = 'pending' RETURNING id",
+            (status, account_id),
+        )
+        return len(rows)
+
     # ── 内部 ────────────────────────────────────────────────
 
     async def _one(self, sql: str, params: tuple) -> dict[str, Any] | None:
@@ -501,6 +722,103 @@ class Database:
     async def _exec(self, sql: str, params: tuple) -> None:
         async with self.pool.connection() as conn:
             await conn.execute(sql, params)
+
+
+async def _write_paper_state(
+    conn: Any,
+    account_id: str,
+    positions: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    equity: list[dict[str, Any]],
+) -> None:
+    """把一批持仓 / 决策 / 净值点写进库。**调用方负责开事务**（见 `paper_advance`）。
+
+    行 dict 由 `app.paper.store` 造好（本层不 import 业务包）。决策走 upsert：
+    重放每次都会把**全量**决策交回来，同 id 重写一遍是幂等的——
+    而 `decided_at` 由重放从日志里带回来，故用户做过的动作不会被抹掉。
+    """
+    if positions:
+        await _executemany(
+            conn,
+            "INSERT INTO paper_positions "
+            "(account_id, symbol, shares, entry_price, entry_fees, entry_date, entry_reason) "
+            "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s)",
+            [
+                (
+                    p["account_id"],
+                    p["symbol"],
+                    p["shares"],
+                    p["entry_price"],
+                    p["entry_fees"],
+                    p["entry_date"],
+                    p["entry_reason"],
+                )
+                for p in positions
+            ],
+        )
+    if decisions:
+        await _executemany(
+            conn,
+            "INSERT INTO paper_decisions "
+            "(id, account_id, trade_date, symbol, side, est_qty, est_price, reason, event_id, "
+            " sources, status, decided_at, fill_date, fill_qty, fill_price, fill_ref_price, "
+            " commission, stamp_tax, cash_delta, reject_code, reject_reason) "
+            "VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "        %s, %s, %s, %s, %s) "
+            "ON CONFLICT (id) DO UPDATE SET "
+            " status = EXCLUDED.status, decided_at = EXCLUDED.decided_at, "
+            " est_qty = EXCLUDED.est_qty, est_price = EXCLUDED.est_price, "
+            " reason = EXCLUDED.reason, event_id = EXCLUDED.event_id, sources = EXCLUDED.sources, "
+            " fill_date = EXCLUDED.fill_date, fill_qty = EXCLUDED.fill_qty, "
+            " fill_price = EXCLUDED.fill_price, fill_ref_price = EXCLUDED.fill_ref_price, "
+            " commission = EXCLUDED.commission, stamp_tax = EXCLUDED.stamp_tax, "
+            " cash_delta = EXCLUDED.cash_delta, reject_code = EXCLUDED.reject_code, "
+            " reject_reason = EXCLUDED.reject_reason",
+            [
+                (
+                    d["id"],
+                    d["account_id"],
+                    d["trade_date"],
+                    d["symbol"],
+                    d["side"],
+                    d["est_qty"],
+                    d["est_price"],
+                    d["reason"],
+                    d["event_id"],
+                    Jsonb(d["sources"]) if d["sources"] else None,
+                    d["status"],
+                    d["decided_at"],
+                    d["fill_date"],
+                    d["fill_qty"],
+                    d["fill_price"],
+                    d["fill_ref_price"],
+                    d["commission"],
+                    d["stamp_tax"],
+                    d["cash_delta"],
+                    d["reject_code"],
+                    d["reject_reason"],
+                )
+                for d in decisions
+            ],
+        )
+    if equity:
+        # 估值点是**不可变事实**：写过的日子不再改（重放重算也该得到同一个数）
+        await _executemany(
+            conn,
+            "INSERT INTO paper_equity (account_id, trade_date, cash, market_value, equity) "
+            "VALUES (%s::uuid, %s, %s, %s, %s) ON CONFLICT (account_id, trade_date) DO NOTHING",
+            [
+                (e["account_id"], e["trade_date"], e["cash"], e["market_value"], e["equity"])
+                for e in equity
+            ],
+        )
+
+
+async def _executemany(conn: Any, sql: str, rows: list[tuple]) -> None:
+    """批量写。**`executemany` 在异步连接上不存在**（那是同步 API），得走游标——
+    psycopg 的 `AsyncConnection` 只提供 `execute`（返回游标），批量要自己开 cursor。"""
+    async with conn.cursor() as cursor:
+        await cursor.executemany(sql, rows)
 
 
 def _strategy_row(row: dict[str, Any]) -> dict[str, Any]:

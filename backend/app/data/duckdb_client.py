@@ -423,3 +423,77 @@ def events(
         return _fetch(con, sql + " ORDER BY event_time, event_id", params)
     finally:
         con.close()
+
+
+def bars_multi(
+    symbols: list[str],
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    adjust: str = "qfq",
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> list[dict]:
+    """一批标的的日线，按 `(symbol, trade_date)` 升序。**与 `bars()` 的差别只有形状**：
+    它逐标的查，这里一次查全池——每次查询各自的建连接 + 建视图就有几十毫秒，
+    20 只标的因此差出 10 倍（M6 规划期实测：逐标的 4,958ms / 批量 480ms）。
+
+    过滤口径与 `bars()` 逐条相同（四个价格齐全才返回，无价 bar 不进定价路径）。
+    `con` 供调用方复用同一条连接（一次读三条通道时省掉两次建视图），**借来的连接不由本函数关**。
+    """
+    if not symbols:
+        return []
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        marks = ", ".join("?" for _ in symbols)
+        sql = (
+            f"SELECT * FROM {BARS_VIEW} WHERE symbol IN ({marks}) AND adjustment = ?"
+            " AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL"
+        )
+        params: list = [*symbols, adjust]
+        if start:
+            sql += " AND trade_date >= ?"
+            params.append(start)
+        if end:
+            sql += " AND trade_date <= ?"
+            params.append(end)
+        return _fetch(con, sql + " ORDER BY symbol, trade_date", params)
+    finally:
+        if own:
+            con.close()
+
+
+def events_multi(
+    symbols: list[str],
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> list[dict]:
+    """一批标的的事件语料，按 `(event_time, event_id)` 升序。
+
+    **按标的过滤走 `list_contains(symbols, ?)` 的 OR 并联**（口径同 `events()`：一条事件一行、
+    标的是数组）。返回的行**没有按标的拆分**——一条事件可挂多只股票，拆分是消费方按
+    `row["symbols"]` 自己做的事（模拟盘每只标的一份 feed，见 `app/paper/market.py`）。
+    """
+    if not symbols:
+        return []
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        sql = f"SELECT * FROM {EVENTS_VIEW} WHERE (" + " OR ".join(
+            "list_contains(symbols, ?)" for _ in symbols
+        ) + ")"
+        params: list = list(symbols)
+        if start:
+            sql += " AND event_time >= ?"
+            params.append(start)
+        if end:
+            sql += " AND event_time <= ?"
+            params.append(end)
+        return _fetch(con, sql + " ORDER BY event_time, event_id", params)
+    finally:
+        if own:
+            con.close()
