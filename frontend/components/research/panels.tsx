@@ -34,7 +34,7 @@ export function MetricsCards({ metrics }: { metrics: ReportMetrics }) {
   const rest = cells.filter((cell) => !cell.primary);
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-3" data-print-grid="3">
         {primary.map((cell) => (
           <div
             key={cell.key}
@@ -49,7 +49,7 @@ export function MetricsCards({ metrics }: { metrics: ReportMetrics }) {
           </div>
         ))}
       </div>
-      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6" data-print-grid="3">
         {rest.map((cell) => (
           <div
             key={cell.key}
@@ -186,7 +186,7 @@ export function NumberChips({ numbers }: { numbers: Record<string, number | null
   const entries = Object.entries(numbers ?? {});
   if (!entries.length) return null;
   return (
-    <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+    <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm" data-print-flex>
       {entries.map(([path, value]) => (
         <div key={path} className="flex items-baseline gap-2">
           <dt className="text-ink-3">{numberLabel(path)}</dt>

@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # 补嵌的上限：实测一天语料（1k–6k 行）约 1–8 分钟，8 天积压 18 分钟，留足余量
     etl_embed_timeout_seconds: int = 1800
 
+    # ── 研报 PDF 导出（M7d）：渲染器要打开前端的打印页 ──
+    # 渲染在**子进程**里跑（`app/report/pdf_worker.py`），它需要一个能打开的前端地址。
+    frontend_base_url: str = "http://127.0.0.1:3001"
+
     # ── 决策结算（M7b）：到期回合的记忆与反思 ──
     # **独立开关**（不寄生 `etl_enabled`：那个一关，整个 ETL 调度器都不启）。
     # 默认关，与 ETL 同风格——定时任务会调模型（花钱），本地开发与测试不该被它打扰；

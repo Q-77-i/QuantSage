@@ -810,6 +810,15 @@ class Database:
             (token, token, user_id, report_id),
         )
 
+    async def get_report_by_id(self, report_id: str) -> dict[str, Any] | None:
+        """按 id 取（**不带 user_id 过滤**）：调用方是**凭令牌**进来的打印页取数口——
+        与 `get_report_by_token` 同一条理由（令牌本身就是凭据），端点层负责只吐正文。"""
+        return await self._one(
+            "SELECT id, account_id, snapshot, snapshot_hash, report, report_hash, "
+            "shared_at, created_at FROM research_reports WHERE id = %s::uuid",
+            (report_id,),
+        )
+
     async def get_report_by_token(self, token: str) -> dict[str, Any] | None:
         """公开只读：**凭 token 取冻结产物正文**。本方法不做归属过滤（token 本身就是凭据），
         端点层负责只取正文、不带任何用户身份字段（`user_id` 留在行里不出接口）。"""

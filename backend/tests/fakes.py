@@ -579,6 +579,10 @@ class FakeDatabase:
         row["shared_at"] = None if token is None else datetime.now(UTC)
         return {"id": row["id"], "share_token": token, "shared_at": row["shared_at"]}
 
+    async def get_report_by_id(self, report_id: str) -> dict[str, Any] | None:
+        row = self.reports.get(report_id)
+        return {k: v for k, v in row.items() if k != "user_id"} if row is not None else None
+
     async def get_report_by_token(self, token: str) -> dict[str, Any] | None:
         for row in self.reports.values():
             if row["share_token"] == token:

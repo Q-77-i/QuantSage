@@ -85,7 +85,7 @@ function Card({ card }: { card: ReviewCardView }) {
         open ? "border-warn/40" : "border-border"
       }`}
     >
-      <header className="flex flex-wrap items-baseline gap-2">
+      <header className="flex flex-wrap items-baseline gap-2" data-print-flex>
         <span className="font-mono font-medium">{card.symbol}</span>
         <span
           className={`rounded-[2px] px-1.5 py-0.5 text-[11px] ${
@@ -100,13 +100,13 @@ function Card({ card }: { card: ReviewCardView }) {
         </span>
       </header>
 
-      <div className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
+      <div className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-3" data-print-grid="3">
         <Metric label="回合收益" value={card.returnText} />
         <Metric label="同期全市场等权" value={card.benchmarkText} />
         <Metric label="超额" value={card.alphaText} />
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-3">
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-3" data-print-flex>
         <span>买入理由：{card.entryReason}</span>
         {!open ? <span>卖出理由：{card.exitReason}</span> : null}
       </div>

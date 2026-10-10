@@ -321,6 +321,12 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  /** 打印页取数：凭一次性导出令牌读冻结产物（渲染器没有会话 cookie，走的就是这条路） */
+  reportForPrint: (id: string, token: string) =>
+    request<PublicReport>(
+      `/api/v1/reports/${encodeURIComponent(id)}/print?t=${encodeURIComponent(token)}`,
+    ),
+
   /** **匿名只读**：凭分享 token 取冻结产物（未登录的浏览器走的就是这条路） */
   publicReport: (token: string) =>
     request<PublicReport>(`/api/v1/public/reports/${encodeURIComponent(token)}`),

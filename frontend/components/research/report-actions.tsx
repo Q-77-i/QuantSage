@@ -12,7 +12,7 @@
 import { useCallback, useState } from "react";
 
 import { api, apiBase, describeError } from "@/lib/api";
-import { downloadName, markdownHref, shareUrl } from "@/lib/research";
+import { downloadName, markdownHref, pdfHref, shareUrl } from "@/lib/research";
 
 export function ReportActions({
   reportId,
@@ -120,6 +120,13 @@ export function ReportActions({
         )}
 
         <a
+          href={pdfHref(apiBase(), reportId, shareToken)}
+          className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs leading-8 hover:bg-muted"
+          data-export="pdf"
+        >
+          导出 PDF
+        </a>
+        <a
           href={markdownHref(apiBase(), reportId, shareToken)}
           download={downloadName(accountName, reportHash)}
           className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs leading-8 hover:bg-muted"
@@ -130,10 +137,10 @@ export function ReportActions({
         <button
           type="button"
           onClick={() => window.print()}
-          className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs hover:bg-muted"
+          className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs text-ink-3 hover:bg-muted"
           data-export="print"
         >
-          打印 / 存 PDF
+          打印
         </button>
       </div>
 
@@ -164,6 +171,13 @@ export function PublicExport({
   return (
     <div className="flex flex-wrap items-center gap-2" data-report-actions>
       <a
+        href={pdfHref(apiBase(), "", token)}
+        className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs leading-8 hover:bg-muted"
+        data-export="pdf"
+      >
+        导出 PDF
+      </a>
+      <a
         href={markdownHref(apiBase(), "", token)}
         download={downloadName(accountName, reportHash)}
         className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs leading-8 hover:bg-muted"
@@ -174,10 +188,10 @@ export function PublicExport({
       <button
         type="button"
         onClick={() => window.print()}
-        className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs hover:bg-muted"
+        className="h-8 rounded-[var(--radius)] border border-border px-3 text-xs text-ink-3 hover:bg-muted"
         data-export="print"
       >
-        打印 / 存 PDF
+        打印
       </button>
     </div>
   );

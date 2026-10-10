@@ -15,7 +15,7 @@
  *   4. 撤销后同一匿名 context **看到失效页**——权限真的生效，不是前端藏了个按钮。
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -243,6 +243,52 @@ async function main() {
     return actions ? getComputedStyle(actions).display === "none" : null;
   });
   check("打印时动作条隐藏（纸上只有报告本身）", printHidden === true, String(printHidden));
+
+  // 打印的**两条不变量**（与具体某份研报的内容无关，任何一份报告都要成立）：
+  //   ① 没有「切不开又放不下」的盒子——`break-inside: avoid` 的元素一旦高过一页，
+  //      浏览器只能把它溢出或切在行上（用户报的「一行被切成两半」就是这一类）；
+  //   ② 没有屏幕残留的覆盖层（开发指示器是 fixed 的圆形挂件，白底灰环）。
+  // 这两条是**规则级**的：改的是打印样式表的写法，不是「把这份研报的字缩短一点」。
+  const printInvariants = await anonPage.evaluate((pageHeight) => {
+    const tooTall = [];
+    for (const element of document.querySelectorAll("body *")) {
+      const style = getComputedStyle(element);
+      const avoid = style.breakInside === "avoid" || style.pageBreakInside === "avoid";
+      if (!avoid) continue;
+      const height = element.getBoundingClientRect().height;
+      if (height > pageHeight) {
+        tooTall.push(`${element.tagName.toLowerCase()}${element.getAttribute("data-review") ?? ""}=${Math.round(height)}px`);
+      }
+    }
+    const leftovers = [...document.querySelectorAll("nextjs-portal, nextjs-dev-tools-button, [data-print-hide]")].filter(
+      (element) => getComputedStyle(element).display !== "none",
+    ).length;
+    return { tooTall, leftovers };
+  }, 1047);
+  check(
+    "打印不变量①：没有高过一页却又不许断开的盒子",
+    printInvariants.tooTall.length === 0,
+    printInvariants.tooTall.slice(0, 3).join(" / ") || "0 个",
+  );
+  check(
+    "打印不变量②：屏幕残留的覆盖层（含开发指示器）不印",
+    printInvariants.leftovers === 0,
+    `${printInvariants.leftovers} 个`,
+  );
+
+  // 真 PDF 落两份（A4 / Letter），供人眼复核分页——**分页只在真 PDF 里**，
+  // 截图（哪怕是 print 媒体）不做分页，所以这份文件是这一节唯一能人眼复核的证据
+  for (const format of ["A4", "Letter"]) {
+    await anonPage.pdf({
+      path: resolve(EVIDENCE, `report-print-${format}.pdf`),
+      format,
+      displayHeaderFooter: true,
+      headerTemplate: '<div style="font-size:8px;width:100%">QuantSage 研报</div>',
+      footerTemplate: '<div style="font-size:8px;width:100%"></div>',
+      margin: { top: "0.4in", bottom: "0.4in", left: "0.4in", right: "0.4in" },
+    });
+  }
+  check("真 PDF 已落两份（A4 / Letter，分页可人眼复核）", true, "logs/m7/report-print-{A4,Letter}.pdf");
   await anonPage.emulateMedia({ media: "screen" });
 
   // ── ⑥ 撤销 → 匿名侧立刻失效 ───────────────────────────
@@ -280,6 +326,30 @@ async function main() {
   );
   check("窄屏无横向溢出", overflow <= 1, `溢出 ${overflow}px`);
   await page.screenshot({ path: resolve(EVIDENCE, "report-narrow.png"), fullPage: true });
+
+  // ── ⑧ 一键导出 PDF（M7d：服务端渲染，不弹打印对话框）────────
+  console.log("\n[8] 一键导出 PDF");
+  await page.emulateMedia({ colorScheme: "light" });
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 240_000 }), // 冷启动 Chrome + 渲染
+    page.click('[data-export="pdf"]'),
+  ]);
+  const pdfPath = resolve(EVIDENCE, "report-export.pdf");
+  await download.saveAs(pdfPath);
+  const head = (await readFile(pdfPath)).subarray(0, 5).toString("latin1");
+  const size = (await stat(pdfPath)).size;
+  const filename = download.suggestedFilename();
+  check(
+    "「导出 PDF」一键下载到**真文件**（服务端渲染，无打印对话框）",
+    head.startsWith("%PDF") && size > 50_000,
+    `${Math.round(size / 1024)} KB · ${filename}`,
+  );
+  // 文件名要能区分开：一个账户有很多份研报，名字里必须带报告指纹前 8 位
+  check(
+    "下载名带报告指纹（不是「report」）",
+    filename !== "report.pdf" && /-[0-9a-f]{8}\.pdf$/.test(filename),
+    filename,
+  );
 
   check("没有页面级 JS 异常", errors.length === 0 && anonErrors.length === 0,
     [...errors, ...anonErrors].slice(0, 2).join(" | "));

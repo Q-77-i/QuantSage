@@ -389,6 +389,14 @@ export function markdownHref(apiBase: string, reportId: string, token: string | 
     : `${apiBase}/api/v1/reports/${encodeURIComponent(reportId)}/markdown`;
 }
 
+/** PDF 端点：**服务端渲染**，一键直接下载（与屏幕逐像素同款；不走打印对话框）。
+ *  公开页走 token 端点，登录页走受保护端点——两处都能导出。 */
+export function pdfHref(apiBase: string, reportId: string, token: string | null): string {
+  return token
+    ? `${apiBase}/api/v1/public/reports/${encodeURIComponent(token)}/pdf`
+    : `${apiBase}/api/v1/reports/${encodeURIComponent(reportId)}/pdf`;
+}
+
 /** 下载文件名：账户名 + 报告指纹短码（同名多份也不互相覆盖）。 */
 export function downloadName(accountName: string, reportHash: string): string {
   const safe = accountName.replace(/[\\/:*?"<>|\s]+/g, "-").slice(0, 40) || "report";

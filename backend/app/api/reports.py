@@ -44,6 +44,7 @@ from app.report.builder import (
 from app.report.evidence import resolve_evidence
 from app.report.markdown import render_markdown
 from app.report.narrative import build_narrative
+from app.report.pdf import PdfRenderError, issue_export_token, render_report_pdf, verify_export_token
 from app.report.snapshot import (
     config_digest,
     data_snapshot,
@@ -349,6 +350,66 @@ async def report_markdown(
     return _markdown_response(row)
 
 
+@router.get("/reports/{report_id}/print")
+async def report_for_print(report_id: uuid.UUID, t: str = Query(...), db: Any = Depends(require_db)) -> dict[str, Any]:
+    """**打印页的取数口**（M7d）：凭一次性导出令牌读冻结产物。
+
+    渲染器（无会话 cookie 的浏览器）走的就是这条路；令牌由后端签发、默认 10 分钟过期、
+    签名绑死 report_id——它不改变分享状态，也不需要登录。
+    """
+    if not verify_export_token(str(report_id), t):
+        raise HTTPException(status_code=404, detail="导出链接无效或已过期")
+    row = await db.get_report_by_id(str(report_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="研报不存在")
+    return _public_payload(row)
+
+
+@router.get("/reports/{report_id}/pdf")
+async def report_pdf(
+    report_id: uuid.UUID,
+    user: dict[str, Any] = Depends(require_user),
+    db: Any = Depends(require_db),
+) -> Response:
+    """**一键导出 PDF**（服务端渲染，与屏幕同款）。越权与不存在同为 404。"""
+    row = await db.get_research_report(user["id"], str(report_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="研报不存在")
+    return await _pdf_response(
+        str(report_id),
+        (row["report"].get("account") or {}).get("name"),
+        str(row.get("report_hash") or ""),
+    )
+
+
+@router.get("/public/reports/{token}/pdf")
+async def public_report_pdf(token: str, db: Any = Depends(require_db)) -> Response:
+    """**匿名**导出：分享链接里的「导出 PDF」走这条（凭 share token）。"""
+    row = await db.get_report_by_token(token)
+    if row is None:
+        raise HTTPException(status_code=404, detail="分享链接不存在或已撤销")
+    return await _pdf_response(
+        str(row["id"]),
+        (row["report"].get("account") or {}).get("name"),
+        str(row.get("report_hash") or ""),
+    )
+
+
+async def _pdf_response(
+    report_id: str, account_name: str | None, report_hash: str
+) -> Response:
+    try:
+        content = await render_report_pdf(report_id)
+    except PdfRenderError as exc:
+        raise HTTPException(status_code=500, detail=f"PDF 渲染失败：{exc}") from exc
+    name = _safe_name(account_name or "")
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": _disposition(name, report_hash, suffix=".pdf")},
+    )
+
+
 @router.get("/public/reports/{token}")
 async def public_report(token: str, db: Any = Depends(require_db)) -> dict[str, Any]:
     """**匿名只读**：凭分享 token 取冻结产物（撤销即 404）。"""
@@ -435,33 +496,45 @@ async def public_report_markdown(token: str, db: Any = Depends(require_db)) -> R
 
 def _markdown_response(row: dict[str, Any]) -> Response:
     body = render_markdown(row["report"], report_hash_value=row.get("report_hash"))
-    name = (row["report"].get("account") or {}).get("name") or "report"
+    name = (row["report"].get("account") or {}).get("name") or ""
     return Response(
         content=body,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": _disposition(name)},
+        headers={
+            "Content-Disposition": _disposition(name, str(row.get("report_hash") or ""), suffix=".md")
+        },
     )
 
 
-def _disposition(name: str) -> str:
-    """`Content-Disposition` 里的文件名：HTTP 头是 latin-1，中文必须走 RFC 5987。
+def _disposition(name: str, report_hash: str, *, suffix: str) -> str:
+    """附件名 = **`{账户名}-{报告指纹前 8 位}{后缀}`**，两段编码都给。
 
-    两段都给：`filename` 是 ASCII 兜底（老客户端读它），`filename*` 是 UTF-8 真名
-    （现代浏览器优先）。中文名直接塞进 `filename` 会让 starlette 在编码头时就抛。
+    三条要点（前两条是用户实测反馈，第三条是 starlette 的硬约束）：
+
+    1. **名字必须能区分开**：一个账户会有很多份研报（不同快照各一份），只叫账户名必然重名；
+       带上 `report_hash` 前 8 位，同一份报告每次导出同名、不同报告天然不同名；
+    2. **ASCII 兜底也要有意义且唯一**：全中文的账户名过去退化成 `report`——那是句废话。
+       没有 ASCII 字符时兜底 `quantsage`，指纹照样带上（`quantsage-31c1ae55.pdf`）；
+    3. HTTP 头是 latin-1 ⇒ 中文只能进 `filename*`（RFC 5987），塞进 `filename` 会让
+       starlette 在编码头时就抛。**这一段用双引号写 f-string**：`f'…UTF-8''{x}'` 会被 Python
+       当成相邻字面量的**隐式拼接**（第二段没有 `f` 前缀 ⇒ 花括号原样输出），实测踩过一次。
     """
     from urllib.parse import quote
 
-    safe = _safe_name(name)
-    ascii_fallback = "".join(ch for ch in safe if ch.isascii() and ch.isalnum()) or "report"
-    return (
-        f'attachment; filename="{ascii_fallback}.md"; '
-        f"filename*=UTF-8''{quote(safe + '.md')}"
-    )
+    stem = _safe_name(name) or "quantsage"
+    short = (report_hash or "")[:8] or "unknown"
+    filename = f"{stem}-{short}{suffix}"
+    ascii_stem = "".join(ch for ch in stem if ch.isascii() and ch.isalnum()) or "quantsage"
+    ascii_name = f"{ascii_stem}-{short}{suffix}"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def _safe_name(name: str) -> str:
-    """文件名只留安全字符（中文保留，路径分隔符与控制字符去掉）。"""
-    cleaned = "".join(
+    """文件名只留安全字符（中文保留，路径分隔符与控制字符去掉）。
+
+    **空了就返回空**，由 `_disposition` 统一给兜底名（原先这里兜 "report"，于是
+    「全中文 + 无 hash」会拼出 `report-unknown.pdf`——名字里带 "report" 正是用户嫌的那件事）。
+    """
+    return "".join(
         ch for ch in str(name) if ch.isprintable() and ch not in '/\\:*?"<>|'
     )[:60]
-    return cleaned or "report"

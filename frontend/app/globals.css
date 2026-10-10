@@ -400,14 +400,26 @@
 
 /* ── 打印 / 存 PDF（M7c）────────────────────────────────────────────────────
    研报页的「打印」就是导出 PDF 的那条路（SPEC v1.32 拍板：不塞 Playwright 进服务端）。
-   三条：① 页头、按钮、动作条一概不印——纸上只有报告本身；② 白底黑字（浏览器默认会把
-   深色主题的背景色带进 PDF，深底打印既费墨又难读）；③ 卡片整块不跨页断开。 */
+   分页靠浏览器，所以这里的规则**必须与具体某份研报的内容无关**——写死了只对某一份好看的
+   规则，下一份研报（更长的复盘、更多的块）就会再犯。四条：
+
+   ① **不印屏幕上的东西**：页头、按钮、动作条、开发指示器（Next 在 dev 下挂一个 fixed 的
+      圆形挂件，生产构建没有它——但打印样式不该依赖构建方式）；
+   ② **白底黑字**：浏览器会把深色主题的背景色带进 PDF，深底既费墨又难读；
+   ③ **分页只让原子单元不跨页**：卡片 / 引用 / 图 / 表格行。**容器（`section` / `article`）
+      一律 `auto`**——版块可以比一页还高，强行 `avoid` 会让浏览器把整块溢出或**切在行上**
+      （用户报过「一行被切成两半」）；段落再用 `orphans/widows` 兜住两端各两行；
+   ④ **表格跨页时表头重复**（`thead` 每页重印），长表因此可读。 */
 @media print {
   header,
   nav,
   button,
   [data-report-actions],
-  [data-print-hide] {
+  [data-print-hide],
+  nextjs-portal,
+  nextjs-dev-tools-button,
+  [data-next-badge-root],
+  [data-nextjs-toast] {
     display: none !important;
   }
 
@@ -437,11 +449,71 @@
     max-width: none !important;
   }
 
+  /* **打印就是文档流**：flex / grid 的跨页碎片化在各浏览器实现程度不一（Chromium 对
+     flex 容器的分页尤其保守），纸上一律退化成 block——间距用相邻兄弟 margin 补回（`gap`
+     在 block 布局里不生效）。这条与具体研报无关：任何一份报告的树都这么退。 */
+  article,
+  main,
   section,
+  header,
+  footer,
+  div,
+  dl,
+  dt,
+  dd,
+  ul,
+  ol,
+  li,
+  figure,
+  blockquote {
+    display: block;
+  }
+  article > * + *,
+  article section > * + *,
+  article section > div > * + *,
+  article [data-review] > * + * {
+    margin-top: 0.75rem;
+  }
+
+  /* **原子单元内部的版式要保留**：卡片永不跨页（上面 ③ 的 avoid），它里面的三列指标 /
+     头部行 / 理由行天生撞不上页边界——一刀切摊平只会让纸上「一行一个数」，很难看。
+     故只对**会跨页的竖排容器**退化，卡片内部按标记恢复。 */
+  [data-print-grid="3"] {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  [data-print-flex] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.5rem;
+  }
+  /* 卡片自身的间距由内容决定，不再由「相邻兄弟 margin」兜（那会给卡片内部也加一圈） */
+  article [data-review] > * + * {
+    margin-top: 0.5rem;
+  }
+
+  /* 容器可断、原子单元不可断——**这条是关键**：见上面 ③ */
+  section,
+  article,
+  main {
+    break-inside: auto;
+  }
   article[data-review],
   blockquote,
-  table {
+  figure,
+  dl,
+  tr,
+  [role="img"] {
     break-inside: avoid;
+  }
+  p,
+  li {
+    orphans: 2;
+    widows: 2;
+  }
+  thead {
+    display: table-header-group;
   }
 
   a {

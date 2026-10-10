@@ -16,6 +16,8 @@ dependencies = [
     # 适配器要求 mcp>=1.24,<2；上游已到 2.x，必须钉住
     "mcp==1.30.0",
     # checkpoint-postgres 只声明裸 psycopg，binary extra 需自行添加（否则走源码编译）
+    # M7d：研报 PDF 导出走服务端渲染；用 channel="chrome" 复用本机浏览器，不额外下载
+    "playwright==1.63.0",
     "psycopg[binary,pool]==3.3.6",
     "psycopg-pool==3.3.3",
     # ── 运行期 ──
