@@ -43,16 +43,25 @@ export function CurveChart({
   series,
   ariaLabel,
   height = 300,
+  formatValue,
 }: {
   dates: string[];
   series: CurveSeries[];
   ariaLabel: string;
   height?: number;
+  /**
+   * 数值格式化（tooltip 与 y 轴共用一处）。默认按「净值」口径（4 位小数）——
+   * 研报页喂的是**金额**（元），走 `lib/format` 的 `amount()`，别让 50 万显示成 `500000.0000`。
+   */
+  formatValue?: (value: number) => string;
 }) {
   const isDark = useTheme().resolvedTheme === "dark";
   const option = useMemo(
-    () => (dates.length === 0 ? null : buildOption(dates, series, chartTokens(isDark))),
-    [dates, series, isDark],
+    () =>
+      dates.length === 0
+        ? null
+        : buildOption(dates, series, chartTokens(isDark), formatValue),
+    [dates, series, isDark, formatValue],
   );
   const { hostRef } = useEChart(option);
 
@@ -67,7 +76,13 @@ export function CurveChart({
   );
 }
 
-function buildOption(dates: string[], series: CurveSeries[], t: ChartTokens): EChartsCoreOption {
+function buildOption(
+  dates: string[],
+  series: CurveSeries[],
+  t: ChartTokens,
+  formatValue?: (value: number) => string,
+): EChartsCoreOption {
+  const show = formatValue ?? ((value: number) => value.toFixed(2));
   return {
     animation: false,
     backgroundColor: "transparent",
@@ -94,7 +109,7 @@ function buildOption(dates: string[], series: CurveSeries[], t: ChartTokens): EC
       borderWidth: 1,
       padding: [6, 10],
       textStyle: { color: t.ink, fontSize: 12, fontFamily: CHART_FONT },
-      formatter: (params: unknown) => tooltipHtml(params, series, t),
+      formatter: (params: unknown) => tooltipHtml(params, series, t, formatValue),
     },
     xAxis: {
       type: "category",
@@ -114,7 +129,7 @@ function buildOption(dates: string[], series: CurveSeries[], t: ChartTokens): EC
         color: t.axis,
         fontSize: 11,
         fontFamily: CHART_FONT,
-        formatter: (value: number) => value.toFixed(2),
+        formatter: show,
       },
     },
     series: series.map((item) => ({
@@ -143,7 +158,13 @@ function buildOption(dates: string[], series: CurveSeries[], t: ChartTokens): EC
   };
 }
 
-function tooltipHtml(params: unknown, series: CurveSeries[], t: ChartTokens): string {
+function tooltipHtml(
+  params: unknown,
+  series: CurveSeries[],
+  t: ChartTokens,
+  formatValue?: (value: number) => string,
+): string {
+  const show = formatValue ?? ((value: number) => value.toFixed(4));
   const list = (Array.isArray(params) ? params : [params]) as { dataIndex?: number; name?: string }[];
   const first = list[0];
   if (!first || first.dataIndex === undefined) return "";
@@ -155,7 +176,7 @@ function tooltipHtml(params: unknown, series: CurveSeries[], t: ChartTokens): st
       return (
         `<div style="display:flex;align-items:center;gap:6px;margin-top:2px">` +
         `${dot}<span>${item.name}</span>` +
-        `<span style="margin-left:auto;padding-left:16px">${value.toFixed(4)}</span></div>`
+        `<span style="margin-left:auto;padding-left:16px">${show(value)}</span></div>`
       );
     })
     .join("");

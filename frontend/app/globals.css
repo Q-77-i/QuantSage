@@ -397,3 +397,54 @@
     border-top: 1px solid var(--hairline);
   }
 }
+
+/* ── 打印 / 存 PDF（M7c）────────────────────────────────────────────────────
+   研报页的「打印」就是导出 PDF 的那条路（SPEC v1.32 拍板：不塞 Playwright 进服务端）。
+   三条：① 页头、按钮、动作条一概不印——纸上只有报告本身；② 白底黑字（浏览器默认会把
+   深色主题的背景色带进 PDF，深底打印既费墨又难读）；③ 卡片整块不跨页断开。 */
+@media print {
+  header,
+  nav,
+  button,
+  [data-report-actions],
+  [data-print-hide] {
+    display: none !important;
+  }
+
+  :root,
+  :root[data-theme="dark"],
+  html.dark {
+    --background: #ffffff;
+    --foreground: #111111;
+    --card: #ffffff;
+    --card-foreground: #111111;
+    --muted: #f4f4f2;
+    --muted-foreground: #555555;
+    --ink-2: #333333;
+    --ink-3: #555555;
+    --border: #cccccc;
+    --hairline: #dddddd;
+    --brand: #111111;
+    --brand-ink: #ffffff;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+
+  article {
+    max-width: none !important;
+  }
+
+  section,
+  article[data-review],
+  blockquote,
+  table {
+    break-inside: avoid;
+  }
+
+  a {
+    text-decoration: underline;
+  }
+}

@@ -904,3 +904,207 @@ export interface PaperAccountRequest {
   end?: string;
   costs: { fees: boolean; slippage: boolean; slippage_bps: number };
 }
+
+// ── M7 绩效研报 ────────────────────────────────────────────────────────────
+
+/** 正文结构版本（服务端 `report.version`）；M8 追加块时递增 */
+export type ReportBlockKind = "fact" | "inference";
+
+/** 一个块：`kind` 是 claim 分级，`numbers` 是「可复算」的数字（键路径 → 值），`evidence` 是证据键 */
+export interface ReportBlock {
+  id: string;
+  kind: ReportBlockKind;
+  title: string;
+  text?: string;
+  numbers?: Record<string, number | null>;
+  evidence?: string[];
+  /** 仅推断块（综述）有：模型身份与缺席原因 */
+  model?: string;
+  prompt_version?: string;
+  note?: string | null;
+}
+
+/** 一条证据：决策当时的来源快照 + 语料行补充 + 两者的对照结论 */
+export interface ReportEvidence {
+  event_id: string;
+  day: string;
+  title: string | null;
+  summary: string | null;
+  event_time: string | null;
+  available_at: string | null;
+  source: string | null;
+  original_source: string | null;
+  content_hash: string | null;
+  source_url: string | null;
+  industries: string[];
+  direction_norm: string | null;
+  found: boolean;
+  revised: boolean;
+  corpus_hash: string | null;
+  decision_ids: string[];
+}
+
+export interface ReportMetrics {
+  total_return: number;
+  annual_return: number;
+  max_drawdown: number;
+  sharpe: number | null;
+  volatility: number | null;
+  win_rate: number | null;
+  trade_count: number;
+  final_equity: number;
+  benchmark_return: number | null;
+  excess_return: number | null;
+}
+
+export interface ReportAccount {
+  id: string;
+  name: string;
+  status: string;
+  strategy: string;
+  strategy_name: string | null;
+  symbols: string[];
+  initial_cash: number;
+  start: string;
+  as_of: string;
+  data_end: string;
+}
+
+export interface ReportEquityPoint {
+  date: string;
+  equity: number;
+  benchmark: number | null;
+}
+
+export interface ReportSymbolRow {
+  symbol: string;
+  trips: number;
+  closed: number;
+  wins: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  unmarked: number;
+  contribution_pp: number;
+}
+
+export interface ReportSignalRow {
+  label: string;
+  trips: number;
+  closed: number;
+  wins: number;
+  pnl: number;
+  unmarked: number;
+}
+
+export interface ReportReflection {
+  text: string | null;
+  model: string;
+  prompt_version?: string;
+  note: string | null;
+}
+
+/** 一条复盘：已到期（settled）或未到期（open）；未到期没有教训 */
+export interface ReportReviewItem {
+  decision_id: string;
+  symbol: string;
+  entry_date: string;
+  exit_date: string | null;
+  settled: boolean;
+  pnl: number | null;
+  return_pct: number | null;
+  benchmark_pct: number | null;
+  alpha_pp: number | null;
+  window_days: number;
+  entry_reason: string;
+  exit_reason: string;
+  direction: string | null;
+  evidence_key: string | null;
+  reflection: ReportReflection | null;
+  sources: PaperSources | null;
+  evidence: ReportEvidence | null;
+}
+
+/** 定了但没交易的决策（驳回 / 过期 / 未成交）——只列状态，不做反事实收益 */
+export interface ReportUnfilledItem {
+  decision_id: string;
+  symbol: string;
+  trade_date: string;
+  side: "buy" | "sell";
+  status: string;
+  status_label: string;
+  reject_code: string | null;
+  reject_reason: string | null;
+  evidence: ReportEvidence | null;
+}
+
+export interface ReportReview {
+  summary: {
+    settled: number;
+    open: number;
+    unfilled: number;
+    lessons: number;
+    saved?: number;
+    reused?: number;
+    as_of: string;
+  };
+  settled: ReportReviewItem[];
+  open: ReportReviewItem[];
+  unfilled: ReportUnfilledItem[];
+}
+
+/** 冻结产物的完整正文（`report` 字段） */
+export interface ReportBody {
+  version: number;
+  kind: string;
+  account: ReportAccount;
+  metrics: ReportMetrics;
+  benchmark: { kind: string | null; note?: string; total_return?: number | null };
+  equity_curve: ReportEquityPoint[];
+  attribution: {
+    summary: Record<string, number>;
+    symbols: ReportSymbolRow[];
+    direction: ReportSignalRow[];
+    industry: ReportSignalRow[];
+  };
+  review: ReportReview | null;
+  blocks: ReportBlock[];
+  evidence: ReportEvidence[];
+  snapshot: {
+    bars?: { digest?: string };
+    events?: { digest?: string; days?: number; rows?: number };
+    market_end?: string | null;
+    review_hash?: string;
+  };
+  warnings: string[];
+}
+
+/** 生成 / 取回报告的回执 */
+export interface ReportEnvelope {
+  id: string;
+  created_at: string | null;
+  report: ReportBody;
+  report_hash: string;
+  snapshot_hash: string;
+  share_token: string | null;
+  share_path: string | null;
+  reused: boolean;
+}
+
+/** 公开只读（`/public/reports/{token}`）——**不含任何身份字段** */
+export interface PublicReport {
+  id: string;
+  report: ReportBody;
+  report_hash: string;
+  snapshot_hash: string;
+  created_at: string | null;
+  shared_at: string | null;
+}
+
+export interface ReportSummary {
+  id: string;
+  created_at: string;
+  snapshot_hash: string;
+  report_hash: string;
+  share_token: string | null;
+  share_path: string | null;
+}

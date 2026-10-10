@@ -12,7 +12,9 @@ import { PaperForm } from "@/components/paper/paper-form";
 import { PositionsTable } from "@/components/paper/positions-table";
 import { StepControls } from "@/components/paper/step-controls";
 import { usePaperAccount, usePaperSessions, useSymbolNames } from "@/components/paper/use-paper";
+import { useAccountReports } from "@/components/research/use-report";
 import { Select } from "@/components/ui/form-controls";
+import { api, describeError } from "@/lib/api";
 import type { PaperAccountDetail } from "@/lib/types";
 
 export default function PaperPage() {
@@ -142,6 +144,9 @@ function PaperView() {
         <div className="mt-4 flex flex-col gap-6">
           <AccountCard detail={detail} />
 
+          {/* 出研报：绩效研报是账户的产物，入口跟着账户走（页头不加导航项，M5b 记过窄屏溢出） */}
+          <ReportEntry accountId={detail.account.id} sessionName={detail.account.name} />
+
           <Section
             title={
               detail.pending.length
@@ -199,5 +204,71 @@ function PaperView() {
 function Bootstrap() {
   return (
     <div className="mt-8 h-40 animate-pulse rounded-[var(--radius)] border border-border bg-muted/60" />
+  );
+}
+
+/**
+ * 「出研报」入口：生成 → 跳到报告页；**同一批数据已有报告时不再重算**（后端幂等复用，
+ * 回执 `reused=true`），这时直接把已有那份打开——文案照实说，不假装又算了一遍。
+ */
+function ReportEntry({ accountId, sessionName }: { accountId: string; sessionName: string }) {
+  const router = useRouter();
+  const { reports, reload } = useAccountReports(accountId);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reused, setReused] = useState(false);
+
+  const latest = reports?.[0] ?? null;
+
+  const generate = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.createReport(accountId);
+      setReused(result.reused);
+      await reload();
+      router.push(`/research/${result.id}`);
+    } catch (cause) {
+      setError(describeError(cause, "出研报失败，稍后重试"));
+    } finally {
+      setBusy(false);
+    }
+  }, [accountId, reload, router]);
+
+  return (
+    <div className="flex flex-wrap items-center gap-3" data-report-entry>
+      <button
+        type="button"
+        disabled={busy || !accountId}
+        onClick={() => void generate()}
+        className="h-8 rounded-[var(--radius)] bg-brand px-3 text-xs text-brand-ink disabled:opacity-50"
+      >
+        {busy ? "生成中…" : "出研报"}
+      </button>
+      <span className="text-xs text-ink-3">
+        绩效研报：指标 / 归因 / 逐笔复盘（含教训）/ 证据链，可分享给未登录的人看
+      </span>
+      {latest ? (
+        <a
+          href={`/research/${latest.id}`}
+          className="text-xs underline"
+          data-report-entry="latest"
+        >
+          看最近一份（{latest.created_at.slice(0, 10)}
+          {latest.share_token ? " · 已分享" : ""}）
+        </a>
+      ) : null}
+      {reused ? (
+        <span className="text-xs text-ink-3">
+          这批数据已有报告，打开的就是那一份（未重算、未再调用模型）
+        </span>
+      ) : null}
+      {error ? (
+        <span role="alert" className="text-xs text-destructive">
+          {error}
+          <span className="ml-1 text-ink-3">（会话「{sessionName}」）</span>
+        </span>
+      ) : null}
+    </div>
   );
 }

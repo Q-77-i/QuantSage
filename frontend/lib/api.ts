@@ -42,6 +42,9 @@ import type {
   ThreadSummary,
   User,
   WatchlistItem,
+  PublicReport,
+  ReportEnvelope,
+  ReportSummary,
 } from "./types";
 
 /** 后端端口。只在本机联调时改（见 .env.local 说明）。 */
@@ -289,6 +292,38 @@ export const api = {
       `/api/v1/paper/decisions/${encodeURIComponent(decisionId)}/${action}`,
       { method: "POST" },
     ),
+
+  // ── 绩效研报（M7）──────────────────────────────────────
+
+  /** 生成并冻结一份报告（同 (账户, 快照) **幂等复用**：`reused=true` 时没新建、也没再花钱） */
+  createReport: (accountId: string) =>
+    request<ReportEnvelope>("/api/v1/reports", jsonInit("POST", { account_id: accountId })),
+
+  /** 某账户已出的报告摘要（`/paper` 的入口状态用） */
+  reports: (accountId: string) =>
+    request<{ reports: ReportSummary[] }>(
+      `/api/v1/reports?account_id=${encodeURIComponent(accountId)}`,
+    ),
+
+  report: (id: string) => request<ReportEnvelope>(`/api/v1/reports/${encodeURIComponent(id)}`),
+
+  /** 生成 / 取回分享链接（幂等：已分享过返回同一个 token） */
+  shareReport: (id: string) =>
+    request<{ id: string; share_token: string; share_path: string; shared_at: string | null }>(
+      `/api/v1/reports/${encodeURIComponent(id)}/share`,
+      { method: "POST" },
+    ),
+
+  /** 撤销分享：旧链接随即失效（公开端点 404） */
+  unshareReport: (id: string) =>
+    request<{ id: string; share_token: null; share_path: null }>(
+      `/api/v1/reports/${encodeURIComponent(id)}/share`,
+      { method: "DELETE" },
+    ),
+
+  /** **匿名只读**：凭分享 token 取冻结产物（未登录的浏览器走的就是这条路） */
+  publicReport: (token: string) =>
+    request<PublicReport>(`/api/v1/public/reports/${encodeURIComponent(token)}`),
 };
 
 /**
