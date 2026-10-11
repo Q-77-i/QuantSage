@@ -44,6 +44,7 @@ class RoleContext:
     chat: BaseChatModel | None = None
     data_dir: Path | None = None
     fast_model: str = field(default_factory=lambda: get_settings().research_fast_model)
+    deep_model: str = field(default_factory=lambda: get_settings().research_deep_model)
     timeout: float = field(default_factory=lambda: get_settings().research_role_timeout)
     thinking: bool = field(default_factory=lambda: get_settings().research_thinking)
 

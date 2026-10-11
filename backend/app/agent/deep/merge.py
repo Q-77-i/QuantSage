@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.deep.types import ROLE_LABELS, EvidenceRef, RoleResult
+from app.agent.deep.types import ROLES, ROLE_LABELS, EvidenceRef, RoleResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +54,14 @@ class MergedEvidence:
 
 
 def merge(results: Sequence[RoleResult]) -> MergedEvidence:
-    """归并。输入顺序即渲染顺序（调用方按 `ROLES` 给），**不重排**。"""
+    """归并。**先按 `ROLES` 固定排序**再合并。
+
+    并行 fan-out 的完成顺序每次都可能不同，而报告要冻结、要算指纹（`report_hash`）——
+    顺序不稳会让同一份输入产出不同的报告。故角色顺序在这里定死，不依赖调用方给的次序。
+    """
+    order = {role: index for index, role in enumerate(ROLES)}
+    results = sorted(results, key=lambda r: order.get(r.role, len(order)))
+
     evidence: list[EvidenceRef] = []
     seen: set[str] = set()
     duplicates = 0

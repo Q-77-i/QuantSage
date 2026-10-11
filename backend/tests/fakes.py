@@ -121,6 +121,8 @@ class FakeDatabase:
         # 绩效研报（M7）：report_id → 行；顺序另记，列表倒序给「最新在前」
         self.reports: dict[str, dict[str, Any]] = {}
         self._report_order: list[str] = []
+        self.runs: dict[str, dict[str, Any]] = {}
+        self._run_order: list[str] = []
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -516,8 +518,9 @@ class FakeDatabase:
     # ── 绩效研报（M7）──────────────────────────────────────
 
     async def create_research_report(
-        self, *, report_id: str, user_id: int, account_id: str, snapshot: dict[str, Any],
+        self, *, report_id: str, user_id: int, account_id: str | None, snapshot: dict[str, Any],
         snapshot_hash: str, report: dict[str, Any], report_hash: str,
+        kind: str = "paper_account_report", subject: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         row = {
             "id": report_id,
@@ -530,6 +533,9 @@ class FakeDatabase:
             "share_token": None,
             "shared_at": None,
             "created_at": datetime.now(UTC),
+            # M8：深研报落同一张表（account_id 为 None），kind / subject 区分来源
+            "kind": kind,
+            "subject": subject,
         }
         self.reports[report_id] = row
         self._report_order.append(report_id)
@@ -560,6 +566,62 @@ class FakeDatabase:
             if row["user_id"] == user_id and row["account_id"] == account_id
         ]
         return out
+
+    # ── 深路径运行记录（M8）────────────────────────────────
+
+    async def create_research_run(
+        self, *, run_id: str, user_id: int, question: str, subject: dict[str, Any],
+        status: str = "running", events: list[dict[str, Any]] | None = None,
+        budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "id": run_id,
+            "user_id": user_id,
+            "question": question,
+            "subject": subject,
+            "status": status,
+            "events": list(events or []),
+            "budget": dict(budget or {}),
+            "report_id": None,
+            "error": None,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
+        self.runs[run_id] = row
+        self._run_order.append(run_id)
+        return {"id": run_id, "created_at": row["created_at"]}
+
+    async def update_research_run(
+        self, run_id: str, *, status: str | None = None,
+        events: list[dict[str, Any]] | None = None, budget: dict[str, Any] | None = None,
+        report_id: str | None = None, error: str | None = None,
+    ) -> bool:
+        row = self.runs.get(run_id)
+        if row is None:
+            return False
+        if status is not None:
+            row["status"] = status
+        if events is not None:
+            row["events"] = list(events)
+        if budget is not None:
+            row["budget"] = dict(budget)
+        if report_id is not None:
+            row["report_id"] = report_id
+        if error is not None:
+            row["error"] = error
+        row["updated_at"] = datetime.now(UTC)
+        return True
+
+    async def get_research_run(self, user_id: int, run_id: str) -> dict[str, Any] | None:
+        row = self.runs.get(run_id)
+        return None if row is None or row["user_id"] != user_id else dict(row)
+
+    async def list_research_runs(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        return [
+            {k: v for k, v in self.runs[run_id].items() if k not in ("events", "budget")}
+            for run_id in list(reversed(self._run_order))[:limit]
+            if self.runs[run_id]["user_id"] == user_id
+        ]
 
     async def set_report_share(
         self, report_id: str, user_id: int, *, token: str | None

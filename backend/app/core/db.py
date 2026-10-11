@@ -199,6 +199,31 @@ SCHEMA = (
     # 幂等复用按 (账户, 快照) 查：同一份输入不出第二份报告
     "CREATE INDEX IF NOT EXISTS research_reports_account_snapshot_idx "
     "ON research_reports (account_id, snapshot_hash)",
+    # ── M8：深路径运行记录（过程可视化的真源）+ 报告容器扩列 ──
+    # 深研报落**同一张** research_reports：分享 / 撤销 / 公开只读 / Markdown / PDF 全部按
+    # report id 工作，另起一张表等于把 M7 的六个端点重写一遍（SPEC §9「不得重做」）。
+    """
+    CREATE TABLE IF NOT EXISTS research_runs (
+        id          UUID PRIMARY KEY,
+        user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        question    TEXT        NOT NULL,
+        subject     JSONB       NOT NULL,
+        status      TEXT        NOT NULL,
+        events      JSONB       NOT NULL DEFAULT '[]'::jsonb,
+        budget      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+        report_id   UUID,
+        error       TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS research_runs_user_created_idx "
+    "ON research_runs (user_id, created_at DESC)",
+    # 三个幂等 ALTER：老行拿到 'paper_account_report'（M7 的账户报告），account_id 放开为可空
+    "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL "
+    "DEFAULT 'paper_account_report'",
+    "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS subject JSONB",
+    "ALTER TABLE research_reports ALTER COLUMN account_id DROP NOT NULL",
 )
 
 
@@ -748,22 +773,97 @@ class Database:
         *,
         report_id: str,
         user_id: int,
-        account_id: str,
+        account_id: str | None,
         snapshot: dict[str, Any],
         snapshot_hash: str,
         report: dict[str, Any],
         report_hash: str,
+        kind: str = "paper_account_report",
+        subject: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """落一份冻结报告。`account_id=None` = 深研报（M8，没有账户主体）。"""
         row = await self._one(
             "INSERT INTO research_reports "
-            "(id, user_id, account_id, snapshot, snapshot_hash, report, report_hash) "
-            "VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s, %s) "
+            "(id, user_id, account_id, snapshot, snapshot_hash, report, report_hash, kind, subject) "
+            "VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s) "
             "RETURNING id, created_at",
             (report_id, user_id, account_id, Jsonb(snapshot), snapshot_hash,
-             Jsonb(report), report_hash),
+             Jsonb(report), report_hash, kind,
+             Jsonb(subject) if subject is not None else None),
         )
         assert row is not None  # RETURNING 必有一行
         return row
+
+    # ── M8 深路径运行记录 ──
+
+    async def create_research_run(
+        self,
+        *,
+        run_id: str,
+        user_id: int,
+        question: str,
+        subject: dict[str, Any],
+        status: str = "running",
+        events: list[dict[str, Any]] | None = None,
+        budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = await self._one(
+            "INSERT INTO research_runs (id, user_id, question, subject, status, events, budget) "
+            "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+            (run_id, user_id, question, Jsonb(subject), status,
+             Jsonb(events or []), Jsonb(budget or {})),
+        )
+        assert row is not None
+        return row
+
+    async def update_research_run(
+        self,
+        run_id: str,
+        *,
+        status: str | None = None,
+        events: list[dict[str, Any]] | None = None,
+        budget: dict[str, Any] | None = None,
+        report_id: str | None = None,
+        error: str | None = None,
+    ) -> bool:
+        """按需更新（只写传了的列）。返回是否命中一行。"""
+        sets: list[str] = ["updated_at = now()"]
+        params: list[Any] = []
+        if status is not None:
+            sets.append("status = %s")
+            params.append(status)
+        if events is not None:
+            sets.append("events = %s")
+            params.append(Jsonb(events))
+        if budget is not None:
+            sets.append("budget = %s")
+            params.append(Jsonb(budget))
+        if report_id is not None:
+            sets.append("report_id = %s::uuid")
+            params.append(report_id)
+        if error is not None:
+            sets.append("error = %s")
+            params.append(error)
+        row = await self._one(
+            f"UPDATE research_runs SET {', '.join(sets)} WHERE id = %s::uuid RETURNING id",
+            (*params, run_id),
+        )
+        return row is not None
+
+    async def get_research_run(self, user_id: int, run_id: str) -> dict[str, Any] | None:
+        return await self._one(
+            "SELECT id, question, subject, status, events, budget, report_id, error, "
+            "created_at, updated_at FROM research_runs WHERE user_id = %s AND id = %s::uuid",
+            (user_id, run_id),
+        )
+
+    async def list_research_runs(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        """摘要列表（不带事件）——事件动辄上百条，列表页不需要。"""
+        return await self._all(
+            "SELECT id, question, subject, status, report_id, error, created_at, updated_at "
+            "FROM research_runs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+            (user_id, limit),
+        )
 
     async def find_research_report(
         self, user_id: int, account_id: str, snapshot_hash: str
@@ -779,8 +879,9 @@ class Database:
 
     async def get_research_report(self, user_id: int, report_id: str) -> dict[str, Any] | None:
         return await self._one(
+            # M8：深研报与账户报告同表，`kind` / `subject` 必须带出来（区分两类报告）
             "SELECT id, created_at, account_id, snapshot, snapshot_hash, report, report_hash, "
-            "share_token, shared_at FROM research_reports "
+            "share_token, shared_at, kind, subject FROM research_reports "
             "WHERE user_id = %s AND id = %s::uuid",
             (user_id, report_id),
         )

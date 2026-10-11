@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -82,6 +83,26 @@ class EvidenceRef:
     def key(self) -> str:
         return evidence_key(self.event_id, self.day)
 
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> EvidenceRef:
+        """从 `to_payload()` 的形状回程构造（状态过 checkpointer 只能存纯 JSON）。"""
+        return cls(
+            event_id=str(payload.get("event_id") or ""),
+            day=str(payload.get("day") or ""),
+            title=str(payload.get("title") or ""),
+            event_time=payload.get("event_time"),
+            available_at=payload.get("available_at"),
+            event_type=payload.get("event_type"),
+            summary=payload.get("summary"),
+            source=payload.get("source"),
+            original_source=payload.get("original_source"),
+            source_url=payload.get("source_url"),
+            content_hash=payload.get("content_hash"),
+            industries=tuple(payload.get("industries") or ()),
+            direction_norm=payload.get("direction_norm"),
+            importance_score=payload.get("importance_score"),
+        )
+
     def to_payload(self) -> dict[str, Any]:
         return {
             "key": self.key,
@@ -122,6 +143,20 @@ class RoleResult:
     @property
     def ok(self) -> bool:
         return not self.errors
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> RoleResult:
+        """回程构造（与 `to_payload` 对偶；`label` 是只读派生字段，不进构造）。"""
+        return cls(
+            role=str(payload.get("role") or ""),
+            findings=tuple(payload.get("findings") or ()),
+            numbers=dict(payload.get("numbers") or {}),
+            evidence=tuple(EvidenceRef.from_payload(e) for e in payload.get("evidence") or ()),
+            notes=tuple(payload.get("notes") or ()),
+            errors=tuple(payload.get("errors") or ()),
+            usage=dict(payload.get("usage") or {}),
+            model=payload.get("model"),
+        )
 
     def to_payload(self) -> dict[str, Any]:
         return {

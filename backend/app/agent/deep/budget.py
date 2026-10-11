@@ -87,6 +87,25 @@ class Budget:
             return "cost_usd"
         return None
 
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any] | None) -> Budget:
+        """从 `to_payload()` 回程构造（新进程 resume 时把用掉的预算接着算，不从头再来）。"""
+        payload = payload or {}
+        limits = payload.get("limits") or {}
+        return cls(
+            limits=Limits(
+                llm_calls=int(limits.get("llm_calls") or 40),
+                tokens=int(limits.get("tokens") or 200_000),
+                seconds=float(limits.get("seconds") or 300.0),
+                cost_usd=float(limits.get("cost_usd") or 0.50),
+            ),
+            llm_calls=int(payload.get("llm_calls") or 0),
+            tokens_in=int(payload.get("tokens_in") or 0),
+            tokens_out=int(payload.get("tokens_out") or 0),
+            cost_usd=float(payload.get("cost_usd") or 0.0),
+            elapsed_s=float(payload.get("elapsed_s") or 0.0),
+        )
+
     def to_payload(self) -> dict[str, Any]:
         return {
             "llm_calls": self.llm_calls,

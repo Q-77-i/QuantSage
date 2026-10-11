@@ -18,7 +18,6 @@ SSE 帧手写而非引库：帧格式极简（`event:` + 单行 `data:` + 空行
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -28,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.api.sse import sse_frame
 from app.agent.graph import astream_chat
 from app.agent.history import messages_to_history
 from app.core.auth import require_db, require_user
@@ -91,9 +91,7 @@ def _detach(task: asyncio.Task[None]) -> None:
     task.add_done_callback(_done)
 
 
-def sse_frame(event: str, payload: dict[str, Any]) -> str:
-    """编码一个 SSE 帧。payload 走 json.dumps，换行会被转义，不会截断帧。"""
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+# 帧编码已抽到 `app/api/sse.py`（M8 起三处共用）；这里只保留导入名，行为一字未改
 
 
 def normalize_thread_id(raw: str | None) -> str:

@@ -108,13 +108,76 @@ def render(decision, brief, merged, budget, wall, timings) -> str:
     return "\n".join(lines)
 
 
+async def run_deep(question: str, *, as_of: datetime, symbols: tuple[str, ...] | None, mode: str | None) -> int:
+    """M8b：跑**整条深路径**（真模型 + 真数据），产出端到端读数与报告摘要。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from app.agent.deep.runner import astream_deep_run
+    from app.agent.deep.types import Brief
+    from app.report.deep import REPORT_KIND
+
+    decision = await route_question(question, force=mode) if mode else await route_question(question)
+    brief = build_brief(question, decision=decision, as_of=as_of, symbols=symbols)
+    if not brief.symbols:
+        print("没有解析出标的——请在问题里写明代码或全名，或用 --symbols 指定")
+        return 1
+
+    ctx = RoleContext(brief=brief, budget=Budget())
+    run_id = f"cli-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    started = time.perf_counter()
+    frames: list[tuple[str, dict]] = []
+    async for frame in astream_deep_run(
+        ctx=ctx, checkpointer=InMemorySaver(), run_id=run_id, brief=brief
+    ):
+        frames.append(frame)
+
+    elapsed = round(time.perf_counter() - started, 1)
+    names = [name for name, _ in frames]
+    done = next((payload for name, payload in frames if name == "done"), {})
+    report_payload = next((payload for name, payload in frames if name == "report"), {})
+
+    print(f"路由：{decision.path}（{decision.reason}）")
+    print(f"标的：{'、'.join(brief.symbols)}　时点：{brief.as_of.isoformat()}")
+    print(f"帧序列：{names.count('node_start')} 个 node_start / {names.count('node_end')} 个 node_end"
+          f"{' / 有 interrupt' if 'interrupt' in names else ''}")
+    print(f"**端到端墙钟 {elapsed}s**（F2 读数）")
+    print(f"状态：{done.get('status')}　report_hash：{str(done.get('report_hash'))[:16]}")
+    print("预算：" + json.dumps(ctx.budget.to_payload(), ensure_ascii=False))
+
+    report = report_payload.get("report")
+    if report:
+        print(f"报告 kind：{report.get('kind')}（期望 {REPORT_KIND}）　块：{[b['id'] for b in report['blocks']]}")
+        print(f"证据 {len(report['evidence'])} 条　缺口 {len(report.get('gaps') or [])} 条")
+        debate = report.get("debate") or []
+        rounds = {turn["round"] for turn in debate}
+        print(f"辩论 {len(rounds)} 轮 / {len(debate)} 次发言（硬上限 3）")
+        conclusion = next(b for b in report["blocks"] if b["id"] == "conclusion")
+        print("\n结论：\n" + str(conclusion.get("text"))[:800])
+        if report.get("gaps"):
+            print("\n缺口：" + "；".join(report["gaps"]))
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    target = OUT / "deep.json"
+    target.write_text(json.dumps({
+        "question": question, "route": decision.to_payload(), "brief": brief.to_payload(),
+        "elapsed_seconds": elapsed, "budget": ctx.budget.to_payload(),
+        "frames": [name for name, _ in frames],
+        "node_events": next((p.get("events") for n, p in frames if n == "done"), []),
+        "report": report,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n证据：{target}")
+    return 0 if report else 1
+
+
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="M8a 深度研究取证")
+    parser = argparse.ArgumentParser(description="M8 深度研究取证")
     parser.add_argument("question", nargs="?", default="分析一下贵州茅台现在值不值得买")
     parser.add_argument("--symbols", default="", help="逗号分隔；给了就跳过路由解析")
     parser.add_argument("--as-of", default="", help="YYYY-MM-DD（缺省取行情末端当日 15:00）")
     parser.add_argument("--mode", default="", choices=["", "deep", "quick"], help="跳过判定")
     parser.add_argument("--json", default="", help="把证据包写到该路径（默认 logs/m8/research.json）")
+    parser.add_argument("--deep", action="store_true", help="跑整条深路径（含辩论与综合，真模型）")
     args = parser.parse_args()
 
     as_of = (
@@ -123,6 +186,11 @@ async def main() -> int:
         else default_as_of()
     )
     symbols = tuple(s.strip() for s in args.symbols.split(",") if s.strip()) or None
+
+    if args.deep:
+        return await run_deep(
+            args.question, as_of=as_of, symbols=symbols, mode=args.mode or None
+        )
 
     decision, brief, merged, budget, wall, timings, settings = await gather(
         args.question, symbols=symbols, as_of=as_of, mode=args.mode or None

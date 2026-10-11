@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -30,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.api.sse import sse_frame
 from app.api.backtest import CostOptions, normalize_run_id
 from app.api.strategies import normalize_strategy_id
 from app.backtest.batch import (
@@ -263,9 +263,7 @@ def _spec_of(item: PreparedStrategy, pick: StrategyPick, symbol: str, params: di
 # ── SSE ────────────────────────────────────────────────────
 
 
-def sse_frame(event: str, payload: dict[str, Any]) -> str:
-    """编码一个 SSE 帧（与 `api/chat.py` 同形；那边的不复用是为了不碰 chat 那份代码）。"""
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+# 帧编码已抽到 `app/api/sse.py`（M8 起三处共用；原来是两份逐字相同的手写副本）
 
 
 #: 断线后仍在跑的 pump 任务。与 `api/chat.py::_DETACHED` 同一个理由：asyncio 只持弱引用
