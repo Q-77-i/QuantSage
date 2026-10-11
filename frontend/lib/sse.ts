@@ -55,6 +55,12 @@ function parseFrame(block: string): SseFrame | null {
 export interface PostStreamOptions {
   signal?: AbortSignal;
   onFrame: (frame: SseFrame) => void;
+  /**
+   * 开流后的响应头回调（M8c）。**与 `streamChat` 的 `onThreadId` 同因**：
+   * 服务端在响应头里回的 id（`X-Run-Id`）是「中途断连也能拿到」的兜底通道，
+   * 而帧载荷里不一定每条都带它。
+   */
+  onResponse?: (response: Response) => void;
 }
 
 /**
@@ -83,6 +89,7 @@ export async function streamPost(
   }
   if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
 
+  options.onResponse?.(response);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

@@ -43,14 +43,30 @@ export function ReportView({
   return (
     <article className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
-        <h1 className="font-heading text-xl font-semibold">
-          {body.account.name} · 策略复盘研报
-        </h1>
-        <p className="text-sm text-ink-3">
-          {body.account.strategy_name ?? body.account.strategy} ｜ 标的{" "}
-          {body.account.symbols.join("、")} ｜ 区间 {body.account.start} → {body.account.as_of} ｜{" "}
-          <span className="text-foreground">数据止于 {body.account.data_end}</span>
-        </p>
+        {body.account ? (
+          <>
+            <h1 className="font-heading text-xl font-semibold">
+              {body.account.name} · 策略复盘研报
+            </h1>
+            <p className="text-sm text-ink-3">
+              {body.account.strategy_name ?? body.account.strategy} ｜ 标的{" "}
+              {body.account.symbols.join("、")} ｜ 区间 {body.account.start} → {body.account.as_of} ｜{" "}
+              <span className="text-foreground">数据止于 {body.account.data_end}</span>
+            </p>
+          </>
+        ) : (
+          <>
+            {/* 深研报（M8）：没有账户主体，头换成「问题 / 标的 / 数据截止」——**同一份渲染器** */}
+            <h1 className="font-heading text-xl font-semibold">
+              {body.brief?.question ?? "深度研究"} · 深度研究报告
+            </h1>
+            <p className="text-sm text-ink-3">
+              标的 {(body.brief?.symbols ?? []).join("、") || "（未指定）"} ｜ 数据截止{" "}
+              <span className="text-foreground">{body.brief?.as_of?.slice(0, 10) ?? "—"}</span>
+              {body.run ? ` ｜ 用时 ${body.run.elapsed_s}s · 成本 $${body.run.cost_usd}` : ""}
+            </p>
+          </>
+        )}
         <p className="font-mono text-xs text-ink-3" data-fingerprint>
           {fingerprintLine(reportHash, body.snapshot?.bars?.digest)}
         </p>
@@ -64,9 +80,9 @@ export function ReportView({
 
       <section data-block-id="warnings" className="border-t border-border pt-4">
         <h2 className="text-sm font-medium">如实标注</h2>
-        {body.warnings.length ? (
+        {(body.warnings ?? body.gaps ?? []).length ? (
           <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-3">
-            {body.warnings.map((warning) => (
+            {(body.warnings ?? body.gaps ?? []).map((warning) => (
               <li key={warning}>· {warning}</li>
             ))}
           </ul>
@@ -171,7 +187,14 @@ function BlockBody({
       return (
         <div className="flex flex-col gap-3">
           {block.text ? <p className="text-sm text-ink-3">{block.text}</p> : null}
-          <ReviewCards review={body.review} dataEnd={body.account.data_end} />
+          <ReviewCards review={body.review} dataEnd={body.account?.data_end ?? ""} />
+        </div>
+      );
+    case "run_summary":
+      return (
+        <div>
+          <p className="text-sm">{block.text}</p>
+          <NumberChips numbers={block.numbers} />
         </div>
       );
     case "narrative":
@@ -189,10 +212,13 @@ function BlockBody({
         </div>
       );
     default:
-      // M8 追加的块：兜底渲染 text + note，这一页不必为它改一行
+      // M8 追加的块：兜底渲染 text + **数字条** + note，这一页不必为它改一行。
+      // 数字条不能省——事实块的「可复算」部分就是那些数字，只渲染正文等于把自证能力藏起来
+      // （捕获脚本第一版就是这么发现角色块只显示文字的）。
       return (
         <div>
           {block.text ? <p className="text-sm leading-relaxed">{block.text}</p> : null}
+          <NumberChips numbers={block.numbers} />
           {block.note ? <p className="mt-1 text-xs text-ink-3">{block.note}</p> : null}
         </div>
       );

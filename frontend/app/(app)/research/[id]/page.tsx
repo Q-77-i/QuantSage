@@ -13,6 +13,7 @@ import { useCallback } from "react";
 import { ReportActions } from "@/components/research/report-actions";
 import { ReportView } from "@/components/research/report-view";
 import { useReport } from "@/components/research/use-report";
+import { reportTitle } from "@/lib/research";
 
 export default function ResearchPage() {
   const params = useParams<{ id: string }>();
@@ -62,7 +63,7 @@ export default function ResearchPage() {
           <ReportActions
             reportId={envelope.id}
             reportHash={envelope.report_hash}
-            accountName={envelope.report.account.name}
+            accountName={reportTitle(envelope.report)}
             shareToken={envelope.share_token}
             onShareChange={onShareChange}
           />

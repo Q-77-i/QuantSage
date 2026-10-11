@@ -916,7 +916,8 @@ export interface ReportBlock {
   kind: ReportBlockKind;
   title: string;
   text?: string;
-  numbers?: Record<string, number | null>;
+  /** 可复算的数字：键路径 → 值。M7 是数值、M8 的深研报是**已格式化的字符串**（如 `-11.75%`） */
+  numbers?: Record<string, number | string | null>;
   evidence?: string[];
   /** 仅推断块（综述）有：模型身份与缺席原因 */
   model?: string;
@@ -1056,7 +1057,8 @@ export interface ReportReview {
 export interface ReportBody {
   version: number;
   kind: string;
-  account: ReportAccount;
+  /** 账户报告（M7）才有；深研报（M8）为 null，头由 `brief` 渲染 */
+  account?: ReportAccount;
   metrics: ReportMetrics;
   benchmark: { kind: string | null; note?: string; total_return?: number | null };
   equity_curve: ReportEquityPoint[];
@@ -1075,10 +1077,55 @@ export interface ReportBody {
     market_end?: string | null;
     review_hash?: string;
   };
-  warnings: string[];
+  warnings?: string[];
+  /** 深研报（M8）：问题 / 标的 / 时点 */
+  brief?: { question?: string; symbols?: string[]; as_of?: string };
+  run?: { elapsed_s?: number; cost_usd?: number; llm_calls?: number; tokens?: number };
+  gaps?: string[];
 }
 
 /** 生成 / 取回报告的回执 */
+/** 一次深度研究的摘要（列表用，不含事件） */
+export interface ResearchRunSummary {
+  id: string;
+  question: string;
+  subject: Record<string, unknown>;
+  status: string;
+  report_id: string | null;
+  error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 运行详情：`events` 是过程可视化的真源，`report` 是完成后的冻结产物 */
+export interface ResearchRunDetail extends ResearchRunSummary {
+  events: RunEventPayload[];
+  budget: Record<string, unknown>;
+  report: ResearchReportBody | null;
+  done?: boolean;
+}
+
+/** 事件载荷：**与落库事件同形**（服务端刻意如此，实时流与回放才能共用一套视图） */
+export interface RunEventPayload {
+  phase: "start" | "end" | "interrupt";
+  node?: string;
+  at?: number;
+  seconds?: number | null;
+  status?: string;
+  payload?: { kind: string; detail: string; options: string[] };
+}
+
+/** 深研报正文（M8 的 blocks 与 M7 同一结构） */
+export interface ResearchReportBody {
+  kind: string;
+  brief?: Record<string, unknown>;
+  run?: Record<string, unknown>;
+  blocks: ReportBlock[];
+  evidence: ReportEvidence[];
+  gaps?: string[];
+  debate?: unknown[];
+}
+
 export interface ReportEnvelope {
   id: string;
   created_at: string | null;

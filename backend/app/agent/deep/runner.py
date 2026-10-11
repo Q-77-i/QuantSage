@@ -45,21 +45,30 @@ Frame = tuple[str, dict[str, Any]]
 
 @dataclass
 class RunTrace:
-    """一次运行的过程记录（落 `research_runs.events`）。"""
+    """一次运行的过程记录（落 `research_runs.events`）。
+
+    每个事件都带 **`at`（相对本次运行的偏移秒）**——运行页要画的是**甘特条**，
+    只有时长没有起点是画不出来的（并行的那几条得知道「从第几秒开始」）。
+    """
 
     events: list[dict[str, Any]] = field(default_factory=list)
     _open: dict[str, float] = field(default_factory=dict)
+    _t0: float = field(default_factory=time.perf_counter)
+
+    def at(self) -> float:
+        """相对本次运行的偏移秒（事件与 interrupt 都写它）。"""
+        return round(time.perf_counter() - self._t0, 2)
 
     def node_start(self, node: str) -> dict[str, Any]:
         self._open[node] = time.perf_counter()
-        event = {"phase": "start", "node": node}
+        event = {"phase": "start", "node": node, "at": self.at()}
         self.events.append(event)
         return event
 
     def node_end(self, node: str, *, status: str = "ok") -> dict[str, Any]:
         started = self._open.pop(node, None)
         seconds = round(time.perf_counter() - started, 2) if started else None
-        event = {"phase": "end", "node": node, "seconds": seconds, "status": status}
+        event = {"phase": "end", "node": node, "seconds": seconds, "status": status, "at": self.at()}
         self.events.append(event)
         return event
 
@@ -186,7 +195,13 @@ async def astream_deep_run(
     pending = await interrupt_payload(graph, config)
     if pending is not None:
         trace.close_open_nodes(status="interrupted")
-        yield "interrupt", {"run_id": run_id, **pending}
+        # 待批载荷也记进事件流：**断连重连的客户端只有 `GET /research/runs/{id}` 这条路**
+        # （SSE 帧是即时的，错过就没了）。前端从最后一条 `phase=interrupt` 里取它。
+        event = {"phase": "interrupt", "at": trace.at(), "payload": pending}
+        trace.events.append(event)
+        # **帧与落库事件同形**（`{phase, at, payload}`）——前端两条路（实时 / 回放）
+        # 因此能用同一套解析。摊平着发过一次，代价是前端多写一个分支且两处慢慢漂移。
+        yield "interrupt", dict(event)
         yield "done", {
             "run_id": run_id,
             "status": STATUS_AWAITING,

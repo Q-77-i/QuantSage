@@ -150,6 +150,8 @@ def test_full_run_streams_events_and_persists_report(env: dict[str, Any]) -> Non
     assert stored["report"]["kind"] == "deep_research_report"
     assert stored["report"]["blocks"][0]["id"] == "overview"
     assert stored["report"]["evidence"], "报告里必须有可回链的证据"
+    # 快照进正文（研报页的指纹行要显示它）——**它是这份报告可复现的凭据**
+    assert stored["report"]["snapshot"]["bars"]["digest"]
     assert stored["done"] is True
 
 
@@ -201,12 +203,22 @@ def test_interrupt_then_resume_completes_the_run(env: dict[str, Any], monkeypatc
         "question": "分析一下 600519 值不值得买", "mode": "deep",
         "as_of": f"{AS_OF}T15:00:00+08:00",
     }) as resp:
+        created_headers = dict(resp.headers)
         frames = _sse(resp)
 
     interrupt = next(payload for name, payload in frames if name == "interrupt")
-    assert interrupt["kind"] == "wording" and interrupt["options"] == ["continue", "stop"]
-    run_id = interrupt["run_id"]
-    assert client.get(f"/api/v1/research/runs/{run_id}").json()["status"] == "awaiting_approval"
+    # 帧与落库事件**同形**：`{phase, at, payload}`（前端两条路共用一套解析）
+    assert interrupt["phase"] == "interrupt"
+    assert interrupt["payload"]["kind"] == "wording"
+    assert interrupt["payload"]["options"] == ["continue", "stop"]
+    run_id = created_headers["x-run-id"]
+    stored = client.get(f"/api/v1/research/runs/{run_id}").json()
+    assert stored["status"] == "awaiting_approval"
+    # 断连重连的客户端只能走详情端点——待批载荷必须**也**落进事件流（SSE 帧错过就没了）
+    pending = [e for e in stored["events"] if e.get("phase") == "interrupt"]
+    assert pending and pending[-1]["payload"]["kind"] == "wording"
+    # 被 interrupt 的节点「起了没落」——收尾时补成 interrupted，而不是假装它没跑过
+    assert any(e.get("status") == "interrupted" for e in stored["events"])
 
     with client.stream("POST", f"/api/v1/research/runs/{run_id}/resume", json={"choice": "continue"}) as resp:
         resumed = _sse(resp)

@@ -182,7 +182,18 @@ function Row({ row }: { row: EvidenceRow }) {
 }
 
 /** 概览块里的数：**每个数都带标签**（两个裸数字是两句没有主语的话）。 */
-export function NumberChips({ numbers }: { numbers: Record<string, number | null> | undefined }) {
+/**
+ * 数字条（事实块的「可复算」部分）。
+ *
+ * 值可能是**数值**（M7：由后端算好再格式化）也可能是**已格式化的字符串**（M8 深研报：
+ * `-11.75%` / `12.3 亿元`）——字符串直接显示，**不再二次格式化**（那是把 `-11.75%`
+ * 变成 `-11.75` 的经典错法）。
+ */
+export function NumberChips({
+  numbers,
+}: {
+  numbers: Record<string, number | string | null> | undefined;
+}) {
   const entries = Object.entries(numbers ?? {});
   if (!entries.length) return null;
   return (
@@ -191,7 +202,11 @@ export function NumberChips({ numbers }: { numbers: Record<string, number | null
         <div key={path} className="flex items-baseline gap-2">
           <dt className="text-ink-3">{numberLabel(path)}</dt>
           <dd className="font-mono tabular-nums">
-            {value === null || value === undefined ? EMPTY : amount(value, { digits: 2 })}
+            {value === null || value === undefined
+              ? EMPTY
+              : typeof value === "string"
+                ? value
+                : amount(value, { digits: 2 })}
           </dd>
         </div>
       ))}

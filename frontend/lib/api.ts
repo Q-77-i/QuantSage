@@ -44,6 +44,8 @@ import type {
   WatchlistItem,
   PublicReport,
   ReportEnvelope,
+  ResearchRunDetail,
+  ResearchRunSummary,
   ReportSummary,
 } from "./types";
 
@@ -306,6 +308,14 @@ export const api = {
     ),
 
   report: (id: string) => request<ReportEnvelope>(`/api/v1/reports/${encodeURIComponent(id)}`),
+
+  // ── 深度研究（M8）────────────────────────────────────────────────────
+  /** 我的深度研究运行列表（摘要，不带事件） */
+  researchRuns: () => request<{ runs: ResearchRunSummary[] }>("/api/v1/research/runs"),
+
+  /** 一次运行的详情：**事件回放的真源**（断连重连与事后回看都走它） */
+  researchRun: (id: string) =>
+    request<ResearchRunDetail>(`/api/v1/research/runs/${encodeURIComponent(id)}`),
 
   /** 生成 / 取回分享链接（幂等：已分享过返回同一个 token） */
   shareReport: (id: string) =>

@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { OptimizationsPanel } from "@/components/space/optimizations-panel";
 import { PaperPanel } from "@/components/paper/sessions-panel";
 import { RunsPanel } from "@/components/space/runs-panel";
+import { ResearchPanel } from "@/components/space/research-panel";
 import { StrategiesPanel } from "@/components/space/strategies-panel";
 import { ThreadsPanel } from "@/components/space/threads-panel";
 import { WatchlistPanel } from "@/components/space/watchlist-panel";
@@ -26,6 +27,7 @@ const TABS = [
   { key: "strategies", label: "我的策略" },
   { key: "optimizations", label: "我的优化" },
   { key: "paper", label: "我的模拟盘" },
+  { key: "research", label: "深度研究" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -79,6 +81,7 @@ function SpaceTabs() {
         {active === "strategies" && <StrategiesPanel />}
         {active === "optimizations" && <OptimizationsPanel />}
         {active === "paper" && <PaperPanel />}
+        {active === "research" && <ResearchPanel />}
       </div>
     </main>
   );

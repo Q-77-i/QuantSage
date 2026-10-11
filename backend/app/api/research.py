@@ -151,6 +151,10 @@ async def _drive(
             status_candidate = str(payload["status"])
             try:
                 snapshot = deep_snapshot()
+                # 数据快照也放进正文（与 M7 的报告同形）：研报页的指纹行要显示它，
+                # 缺了就会显示「数据快照 —」——而**快照正是这份报告可复现的凭据**，不能只存库里。
+                # ⚠ 必须在算 report_hash **之前**加：hash 覆盖的是落库的同一棵树。
+                report = {**report, "snapshot": snapshot}
                 row = await db.create_research_report(
                     report_id=str(uuid.uuid4()),
                     user_id=user_id,

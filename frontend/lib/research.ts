@@ -33,6 +33,8 @@ export type BlockView =
   | "attribution"
   | "review"
   | "narrative"
+  /** M8 深研报：运行摘要（模型档 / 调用数 / token / 成本 / 用时） */
+  | "run_summary"
   | "unknown";
 
 /** 已知块 → 专用渲染器；其余一律 `unknown`（兜底渲染 `text` + note）。 */
@@ -48,9 +50,21 @@ export function blockView(block: ReportBlock): BlockView {
       return "review";
     case "narrative":
       return "narrative";
+    case "run_summary":
+      return "run_summary";
     default:
       return "unknown";
   }
+}
+
+/**
+ * 报告的展示名（下载文件名、分享页标题都取它）。
+ *
+ * 两种报告各有各的主体：账户报告用账户名（M7），深研报用**问题**（M8）——
+ * 缺一个就退回另一个，绝不返回空串（空串会变成 `-{指纹}` 这种没法认的文件名）。
+ */
+export function reportTitle(body: ReportBody): string {
+  return body.account?.name ?? body.brief?.question ?? "研究报告";
 }
 
 /** claim 分级徽章：事实（中性描边）/ 推断（warn 描边）。PRD 要求它可见。 */
@@ -370,8 +384,30 @@ const NUMBER_LABELS: Record<string, string> = {
   "metrics.final_equity": "期末权益",
 };
 
+/** 深研报（M8）的运行摘要键 → 中文标签。键来自服务端的数字路径，改一处即可。 */
+const RUN_LABELS: Record<string, string> = {
+  "run.llm_calls": "调用次数",
+  "run.tokens": "token",
+  "run.cost_usd": "成本（美元）",
+  "run.elapsed_s": "用时（秒）",
+  "run.evidence_count": "证据条数",
+  "run.degraded_count": "降级角色数",
+  "run.debate_rounds": "辩论轮数",
+};
+
+/**
+ * 数字路径 → 展示标签。
+ *
+ * 深研报（M8）的两类路径要特殊对待，否则界面上会出现 `facts.market.区间收益` 这种读数：
+ *   * `facts.<角色>.<标签>` —— 角色标签本身就是中文，**去掉前两段**即可；
+ *   * `run.<字段>` —— 走上面的映射表。
+ */
 export function numberLabel(path: string): string {
-  return NUMBER_LABELS[path] ?? path.split(".").pop() ?? path;
+  if (path.startsWith("facts.")) {
+    const rest = path.split(".").slice(2).join(".");
+    return rest || path;
+  }
+  return RUN_LABELS[path] ?? NUMBER_LABELS[path] ?? path.split(".").pop() ?? path;
 }
 
 // ── 分享与导出 ────────────────────────────────────────────────────────────

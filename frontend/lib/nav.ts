@@ -20,18 +20,18 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { key: "optimize", href: "/optimize", label: "优化" },
   { key: "factor", href: "/factor", label: "因子" },
   { key: "paper", href: "/paper", label: "模拟盘" },
+  { key: "research", href: "/research", label: "深度研究" },
   { key: "space", href: "/space", label: "个人空间" },
 ] as const;
 
 /**
  * 不在导航里、但**属于**某一项的路径（点进来时高亮它所属的模块）。
  *
- * 研报页 `/research/<id>` 是某个模拟盘账户的产物（入口就在 `/paper`），
- * 故归到「模拟盘」——否则从研报页看页头，会像「哪儿都没在」。
+ * ⚠ 这里曾有一条 `"/research": "/paper"`：M7 时研报页是模拟盘账户的产物，归过去说得通。
+ * M8 之后 `/research` 已经是**深度研究的一级入口**（有自己的导航项），那条别名就过期了
+ * ——它让深度研究的页面点亮「模拟盘」（用户当场发现）。**新增一级功能区时回来清一遍别名**。
  */
-const ALIASES: Record<string, string> = {
-  "/research": "/paper",
-};
+const ALIASES: Record<string, string> = {};
 
 /** 路径 → 当前项（没有匹配到就返回 `null`，例如公开分享页不该点亮任何一项）。 */
 export function activeHref(pathname: string | null): string | null {

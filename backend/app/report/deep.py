@@ -188,7 +188,8 @@ def assemble_deep_report(
             text=(
                 f"问题：{body['brief']['question']}\n"
                 f"标的：{'、'.join(body['brief']['symbols']) or '（未指定）'}\n"
-                f"数据截止：{body['brief']['as_of']}（全部证据按 `available_at` 过滤，不偷看未来）"
+                # 块正文是**纯文本**（前端按 text 渲染，不解析 markdown）——别在这里写反引号
+                f"数据截止：{body['brief']['as_of']}（全部证据按 available_at 过滤，不偷看未来）"
             ),
             numbers={
                 "run.evidence_count": body["run"]["evidence_count"],

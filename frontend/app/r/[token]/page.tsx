@@ -14,6 +14,7 @@ import { useEffect } from "react";
 import { PublicExport } from "@/components/research/report-actions";
 import { ReportView } from "@/components/research/report-view";
 import { usePublicReport } from "@/components/research/use-report";
+import { reportTitle } from "@/lib/research";
 
 export default function PublicReportPage() {
   const params = useParams<{ token: string }>();
@@ -58,7 +59,7 @@ export default function PublicReportPage() {
         actions={
           <PublicExport
             token={token ?? ""}
-            accountName={report.report.account.name}
+            accountName={reportTitle(report.report)}
             reportHash={report.report_hash}
           />
         }

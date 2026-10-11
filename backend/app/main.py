@@ -199,8 +199,9 @@ app.add_middleware(
     # 会话 cookie 要跨源发送（前端 3001 ↔ API 8000，同 site 不同 origin）。
     # 凭据模式下 allow_origins 不能是 "*"，上面已是显式列表。
     allow_credentials=True,
-    # 会话号在断连时靠响应头兜底回传（SPEC §6）；跨源下浏览器读不到未暴露的响应头
-    expose_headers=["X-Thread-Id"],
+    # 兜底通道靠响应头回传（SPEC §6 会话号 / M8 运行号）；**跨源下浏览器读不到未暴露的响应头**
+    # ——这是同类坑的第三次（前两次：CORS 漏放行 PUT、缺 X-Thread-Id），新增一个要读的头就回这里加
+    expose_headers=["X-Thread-Id", "X-Run-Id"],
 )
 
 for router in (

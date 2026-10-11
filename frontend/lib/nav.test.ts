@@ -27,9 +27,12 @@ describe("activeHref", () => {
     expect(activeHref("/papers")).toBeNull();
   });
 
-  it("研报页归到「模拟盘」（它是模拟盘账户的产物，入口也在那儿）", () => {
-    expect(activeHref("/research/225eb8a3-9f56")).toBe("/paper");
-    expect(isActive("/research/225eb8a3-9f56", "/paper")).toBe(true);
+  it("研报页与深度研究都归「深度研究」（M8 起它是一级入口，不再是模拟盘的附属）", () => {
+    expect(activeHref("/research")).toBe("/research");
+    expect(activeHref("/research/225eb8a3-9f56")).toBe("/research");
+    expect(activeHref("/research/runs/abc")).toBe("/research");
+    // 反过来钉住那次错高亮：深度研究的页面**不该**点亮模拟盘
+    expect(isActive("/research", "/paper")).toBe(false);
   });
 
   it("不在导航里的页面（公开分享页 / 打印页）不点亮任何一项", () => {
