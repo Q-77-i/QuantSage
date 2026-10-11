@@ -25,7 +25,13 @@ backend/app/
 ├── api/                    # + auth.py / watchlist.py / etl.py / paper.py / dashboard.py / calendar.py
 │                           #   optimize.py（批量与网格，SSE 进度，M5b）/ factor.py（因子报告，M5c）
 │                           #   reports.py（研报容器 / 分享 / 公开只读 / 复盘与教训，M7）
-├── agent/                  # 深路径 fan-out 角色 A 股化（PIT 基本面 / 政策面）
+│                           #   sse.py（SSE 帧编码共用，M8 从 chat / optimize 抽出）/ research.py（深路径四端点，M8）
+├── agent/                  # 快路径 = 现有 ReAct 图（graph / prompts / tools / history）
+│   └── deep/               # 深路径（M8）：types / router（意图路由 + 问题→brief）/ roles/（五个取证角色：
+│                           #   market / news / fundamental / policy / factor，取数是代码、解读是 flash）
+│                           #   merge（证据归并 + 缺口清单）/ debate（Bull⇄Bear ≤3 轮）/ synthesize（单点综合，pro）
+│                           #   risk_gate（三类闸门，纯函数）/ budget（步数·token·时间·成本四计数器）
+│                           #   graph（StateGraph + interrupt）/ runner（落库 / 事件 / SSE 桥 / resume）
 ├── backtest/               # + a_share_rules.py / benchmark.py（全市场等权代理，M5a）
 │                           #   batch.py（多策略×多标的，并发 2，M5b）/ overfit.py（Deflated Sharpe，M5b）
 ├── factor/                 # 因子分析（M5c，独立数据管道，不属回测引擎）：
@@ -52,6 +58,7 @@ backend/app/
 │                           #   evidence.py（来源快照 → 语料行 join，含修订标注）/ snapshot.py（数据指纹与 report_hash）
 │                           #   narrative.py（flash 综述，超时与降级）/ builder.py（冻结产物组装 + claim 校验闸门）
 │                           #   markdown.py（Markdown 导出，含证据链）/ pdf.py + pdf_worker.py（M7d：服务端渲染导出 PDF，子进程起 Chrome）
+│                           #   deep.py（M8：深路径运行产物 → 同一 blocks 结构与同一道 claim 闸门）
 ├── strategy/               # 用户策略与沙箱（M4）：sandbox.py（子进程执行器：配额/超时/输出上限）
 │                           #   worker.py（沙箱子进程入口）/ static_check.py（AST 前视检查，纯函数 + 规则表）
 │                           #   params.py（PARAMS schema 校验，纯函数）/ templates/（模板源码，服务端为唯一真源）
@@ -63,7 +70,7 @@ scripts/                    # + generate_calendar.py（生成冻结日历）/ au
 │                           #   spike_rag_encoder.py（M3 运行时实测，结论见 §4）/ build_rag_eval.py（评测集：生成/池化/标注/报告）
 frontend/app/               # + (app)/（受保护路由组：守卫 + 页头）login/ register/ space/（个人空间）paper/（模拟盘，M6）
 │                           #   strategies/（策略工作台，M4）dashboard/（研究首页）research/[id]/（研报页，M7）
-│                           #   optimize/（网格与批量，M5b）factor/（因子报告，M5c）
+│                           #   optimize/（网格与批量，M5b）factor/（因子报告，M5c）research/runs/[id]/（深路径运行页，M8）
 │                           #   r/[token]/（公开只读分享页，M7——**不在守卫组内**）
 │                           #   自选股不单开路由，是 space/ 的一个页签（M1c 定）；模拟盘另加 space/ 页签（M6）
 frontend/components/        # + auth-provider.tsx space/ strategies/（编辑器/参数表单/检查面板）dashboard/ evidence/ agent-run/ calendar/
@@ -958,14 +965,141 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 
 ## 9. M8 深度研报多 Agent
 
-- 意图路由：快路径（RAG 直通）⇄ 深路径（多 Agent）
-- 深路径拓扑（规划报告 §四 已定稿）：并行取证 fan-out（节点内 try/except）→ 证据归并 → Bull⇄Bear 辩论（≤3 轮硬上限）→ 单点综合撰写 → 代码化风控闸门 → 超限时 `interrupt()` 人工审批
-- **取证角色 A 股化**：行情技术面 / 新闻事件（RAG，PIT）/ **PIT 基本面事件**（announcement 语料按事件类型过滤：财报/业绩预告/分红/减持解禁，均自带 `available_at`；不引第二数据源）/ 因子量化 / 政策面（政策类事件语料）
-- **Agent 执行过程可视化**：SSE 事件扩展 `node_start` / `node_end`（阶段环、并行瀑布、节点耗时、token/成本，取 LangGraph 回调）；前端 Agent 运行面板，数据与 Langfuse trace 同源一致
-- 双档模型：取证/路由 `deepseek-flash`，辩论/综合 `deepseek-v4-pro`
-- 决策数据带来源标注，做进 UI（PRD §5 硬性要求）
+> 一句话形态：**M7 建容器、M8 建生成器**——把「一次提问」变成一份 **PIT 锁定**的深度研报，产物接 M7 的
+> `blocks` 容器（渲染 / 分享 / 导出 / 快照 / claim 闸门**全复用，不得重做**）。
+> 2026-10-11 用户拍板 D1–D4；底稿 D5–D12、12 条代码测绘事实与 F1–F7 实测清单见
+> `docs/private/Pn-n/P2-Mn/P2-M8.md`。
+> 切片：**M8a** 路由 + 并行取证 + 归并 + 降级 → **M8b** 辩论 + 综合 + 风控闸门 + HITL + 落库 → **M8c** 过程可视化。
 
-**验收**：完整研报生成；辩论严格 ≤3 轮；token 成本在预算内；拔掉任一数据源，系统降级而非崩溃；基本面结论均源自带 `available_at` 的公告事件；过程面板与 Langfuse trace 一致。
+### 图与状态
+
+- **独立 StateGraph**（不挂 chat 图）：五个取证节点同 superstep 并行 fan-out（**每节点自带 try/except**，
+  同 superstep 内任一节点抛异常会取消全部兄弟节点）→ `merge`（纯代码）→ `bull ⇄ bear` 条件边 →
+  `synthesize` → `risk_gate` → `END` / 回 `synthesize`（至多一次）/ `interrupt`。
+- **取证角色 = 代码取数 + LLM 解读，LLM 不持工具**：取数直调 `rag.retrieve.search()` / `duckdb_client` / `factor`
+  面板，**不得解析 `agent/tools.py` 给模型看的文本**（那份文本是给模型看的，结构化解析即假设）。一并收窄注入面：
+  语料文本无法触发工具调用。
+- 角色返回 `RoleResult{role, findings[], evidence_refs[], numbers{}, notes[], errors[], usage}`；**LLM 输出的每个
+  数字必须能在 `numbers` 里找到同源项**（claim 闸门在角色层的预演）。节点名即过程事件的键——**token 采集不得
+  沿用 `agent/graph.py` 里硬编码的 `"model"` 节点名**（照抄会静默丢 token）。
+- 深图用**独立 thread_id 命名空间**（= `run_id`），与 chat 共用同一个 Postgres checkpointer（两图结构不同，
+  同 thread 会互相污染）。
+
+### 取证角色（五个，A 股化）
+
+| 角色 | 取数（代码） | 解读 |
+|---|---|---|
+| 行情技术面 | `duckdb_client.bars()`：区间收益 / 波动率 / 均线位置 / 成交额 | flash |
+| 新闻事件 | `rag.retrieve.search(as_of=…)`（**PIT 服务端硬过滤**） | flash |
+| PIT 基本面 | `announcement` 语料按 `event_type` 过滤 + **类别→方向映射表** | flash |
+| 政策面 | `policy` 语料（`industries` 覆盖 100%） | flash |
+| 因子量化 | `app/factor/` 既有读数（IC / 分层） | flash（**不显著就写不显著**） |
+
+**公告类别 → 方向映射（D3，应用层，草案待终审）**：表进 Git，只在基本面角色解读时使用，**不写进
+`etl/store.py::DIRECTION_MAP`**——改语料会牵动既有回测与体检口径，M5a 的「golden 分毫不动」是硬判据。
+草案：业绩预增 / 中标 / 回购 → 利多；减持 / 诉讼 / 预亏 → 利空；融资定增 / 资产重组 → 不映射（方向取决于方案）。
+报告里署名「按 QuantSage 规则映射」，**不得写成平台标注**。
+
+### 辩论（≤3 轮硬上限）
+
+双方拿**同一份归并证据**，产出 `{stance, arguments[], citations[]}`；轮次由 `debate_round` + 条件边控制，
+**第 3 轮后无条件收敛**；默认 `MAX_DEBATE_ROUNDS=2`（省钱且仍能演示）。提前收敛判据必须**可断言**
+（双向新增论据为空，或引用集不再变化），不得是「感觉收敛了」。
+
+### 综合与风控闸门
+
+- 综合（**pro 档**）单点产出正文：结论 / 分歧点 / 风险提示，**只允许引用归并证据集里的 `event_id|day`**
+  （RAG 返回的 `day` 是字符串，与 claim 闸门的键形状要对齐）；失败（超时 / 报错）→ 降级为「代码版结论」
+  （证据汇总 + 缺口清单）并如实标注「本次未能生成综述」。
+- **闸门是纯函数，LLM 不可决定合规**（CLAUDE.md 关键决策 1），三类：
+  ① 正文数字无来源 → 回综合**重写一次**，仍不过则该段降级为纯文字并标注；
+  ② 绝对化 / 承诺性表述（词表）或具体买卖指令 → `interrupt()`；
+  ③ 预算超限（token / 时间 / 成本任一）→ `interrupt()`（人决定「加预算继续 / 用部分结果收尾」）。
+
+### HITL 与恢复
+
+`interrupt()` payload = `{kind, detail, options[]}`，运行状态转 `awaiting_approval`；
+`POST /research/runs/{id}/resume`（SSE）携 `Command(resume=…)` 续跑。**断连不取消**（沿用 P1 SPEC v0.15 的订正）：
+断开只是不再收帧，图跑完或停在 interrupt 照常落 checkpoint，重连从 `research_runs.events` 回放。
+
+### 模型与思考开关（F1–F1d 实测，2026-10-11）
+
+- **一律关思考**：`model_kwargs={"reasoning_effort": "none"}`（配置项 `RESEARCH_THINKING`，默认 `none`）。
+  同一条取证 prompt 实测：flash 开 **8.99s**/2,180 tok、**flash 关 0.84s**/66 tok、
+  pro 开 **107.03s**/10,783 tok、**pro 关 1.48s**/73 tok——**四条正文信息一致**、关闭档没有编造数字
+  （**单样本，非统计结论**，如实标注）。**深度由「多角色取证 + 对抗辩论 + 证据回链」的结构承担，
+  不由思维链长度承担**。
+  ⚠ **`reasoning_effort="minimal"` 不生效**（实测 12.78s / 2,973 tokens）——别拿它当「少想一点」。
+- 双档分工不变（取证 / 路由 flash，辩论 / 综合 pro），差别在**模型能力**而非思考档。
+- **API 侧并发几乎免费**：5 条 flash 并发墙钟 **2.6s**（单条 2.25s）⇒ fan-out 的瓶颈**只在本地 RAG 那条**
+  （rerank 稳态 ~1.8s 且**并发完全串行**：2 条 3.36s / 4 条 6.98s，MPS 锁如实生效）。
+
+### 意图路由与预算
+
+- 路由 = 一次 flash 结构化输出 `{path, symbols[], as_of?}`；**解析失败 / 超时（8s）一律回落 quick**；
+  请求可显式带 `mode=deep` 跳过判定；问题里的标的名走 M5a 名称字典解析，**不新造、也不需要 LLM**
+  （F7：字典加载 0.21s / 5,611 只 / **零重名**；六位码走正则、全名精确、简称包含匹配，多命中给候选）。
+- **快路径 = 现有 ReAct 图一行不动**，路由在端点前置。
+- 预算 `{llm_calls, tokens_in, tokens_out, cost_usd, elapsed_s}` 四计数器 + 硬上限；关思考后一次深路径
+  ≈ **$0.03–0.05（0.2–0.4 元）**，成本由**输入**（每次喂证据 2–4K tokens）主导；
+  **到限即在节点边界停**，不在 LLM 调用中途。
+
+### 过程可视化（M8c）
+
+- SSE 帧新增 `node_start` / `node_end{node, duration_ms, tokens, cost_usd}` / `debate` / `budget` / `interrupt` /
+  `report`（复用 `error` / `done`）；**帧编码抽到 `app/api/sse.py` 共用**——现有两处手写
+  （`api/chat.py` / `api/optimize.py`），只抽编码、不改既有行为。
+- 运行页 `(app)/research/runs/[id]`：阶段环 + **并行瀑布**（五条取证条的长度即真实耗时——MPS 精排是进程级锁
+  串行，**新闻那条最长，如实显示，不画成等长**）+ 预算条 + 审批卡 + 事件时间线。
+- 对话页只给「已启动深度研究」卡片（**不加新帧到 chat 流**，reducer 的未知帧本就原样放行）。
+- 研报页新增**运行摘要块**（冻结在 `meta.run`，分享页同样可见）：节点耗时 / token / 成本 / 模型档 / 降级与缺口清单。
+- **深路径每次 LLM 调用都要挂 Langfuse handler**——现状 handler 只挂 `main.py` 与 `chat.py` 两处，
+  M7 的报告 LLM 调用根本没被追踪；这是「过程与 trace 一致」这条验收的对账前提。
+
+### 端点（`/api/v1/research`，受保护；越权与不存在同为 404）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/research/runs` | 建运行并启动 → **SSE** |
+| POST | `/api/v1/research/runs/{id}/resume` | HITL 恢复 → SSE |
+| GET | `/api/v1/research/runs` | 本人的运行列表（摘要） |
+| GET | `/api/v1/research/runs/{id}` | 运行详情（事件回放：断连重连与事后回看都走它） |
+
+研报本体沿用 M7 端点（`/reports/{id}` / 分享 / Markdown / PDF **自动可用**），不新开端点。
+
+### 持久化
+
+新表 `research_runs`（`id` / `user_id` FK / `question` / `subject JSONB` / `status`
+（`running`｜`awaiting_approval`｜`done`｜`degraded`｜`failed`）/ `events JSONB`（节点事件——过程可视化与
+Langfuse 对账的**真源**）/ `budget JSONB` / `report_id UUID` / `error` / `created_at` / `updated_at`）。
+`research_reports` 三个幂等 ALTER：`kind TEXT NOT NULL DEFAULT 'paper_account_report'`、
+`account_id DROP NOT NULL`、`subject JSONB`。深研报用另一个 `REPORT_KIND`（`deep_research_report`）并
+递增 `REPORT_VERSION`；`validate_claims` / `snapshot` / `plain_json` 全部复用。
+
+### 前端（M8c）
+
+运行页 + `components/agent-run/`（run-panel / stage-ring / waterfall / budget-bar / approval-card）+ 研报页
+运行摘要块 + `lib/agent-run.ts`（帧 → 面板状态的纯 reducer，Vitest）。动手前先出 design brief（P1 口径）；
+瀑布与阶段环按 dataviz skill（单色相 ordinal，**不借 `--up/--down`**——那是涨跌 / 买卖专用色）。
+
+**验收**：完整研报生成（真实数据 + 真实模型；研报页与公开分享页各一证）；辩论严格 ≤3 轮；token 成本在预算内
+（含**压低上限触发一次 interrupt** 的全过程证据）；拔掉任一数据源降级而非崩溃（五个角色各注入一次故障，
+报告仍产出且缺口如实标注）；基本面结论均源自带 `available_at` 的公告事件（脚本断言 `event_type='announcement'`
+且 `available_at <= as_of`）；过程面板与 Langfuse trace 一致（节点名集合 + token 总数对账，
+`scripts/research_evidence.py`）。**claim 闸门对 M8 产物同样生效**（不过即拒收不落库）——这是 M7 对 M8 的硬约束。
+
+**F1–F7 已实测（2026-10-11，读数见底稿 §六）**：pro 档可调通；**思考是延迟与成本的绝对主导项且关掉不损质量**
+（见「模型与思考开关」）· **跨进程 resume 通过**——进程 A 停在 `interrupt()`、进程 B 重开 checkpointer 用
+`Command(resume=…)` 续跑到底，故 `research_runs` **不必自建恢复状态机** · `astream_events` 的节点事件
+**要自己埋**（`on_chain_start/end` 带 `metadata.langgraph_node` 可配对，但**被 interrupt 的节点只有 start
+没有 end**，且 interrupt 的 payload **不在事件流里**，要读 `aget_state().tasks[].interrupts[].value`）·
+MPS 精排**并发完全串行**（如实画瀑布）· 标的名解析不需要 LLM。
+
+**F2 口径（PRD「深路径 p95 ≤ 15s」）**：组件级估算 ≈ **12–15s**——关思考把「守不住」变成「可能守得住」，
+故**先不改 PRD**，等 M8b 端到端真实读数定夺（改口径需用户签）。
+
+**本轮不做**：Agent 下单接模拟盘 · RAGAS 生成质量指标 · 多专家视角并置 · DCF/comps 估值 · 定时自动研报与推送 ·
+A2A（只留 Agent 能力元数据这一零成本预留）· 报告版本历史 · 深研报的 PDF 服务端渲染（M7d 的通用能力**自动可用**，不另做）。
 
 ## 10. M9 轻量教学
 
@@ -1019,12 +1153,20 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 - M5 界面验证（**不属于自动化层**，同 M4c 口径）：基准叠加出图、自选股按名称搜、网格跑到热力图 + 点一格重跑、因子页出图，各出一条真浏览器证据。**已落地部分（M5a）抓到一类新问题：旧数据形状**——`meta.benchmark` 这类新增字段在 M5a 之前落库的记录里不存在，直取属性会整页白屏；断言「图例出现某条线」也不能用 `text=` 去撞（ECharts 画在 canvas 上，DOM 里没有该文本，撞上了是撞到别处的同名文案）——**改读画布像素**数三个 series token
 - 前端：Vitest 只测纯函数（日历日期映射、瀑布图数据映射、证据面板分组、自选股分组视图与 symbol 校验 + 加自选表单提示口径；M4c 增：findings → 编辑器标注映射、`PARAMS` schema → 表单初值与请求体、运行请求体只在非空时带区间、**错误体还原**（422 的 `findings` / 沙箱的 `kind`，畸形响应不当崩）、`strategy="user"` 旧记录的处置函数；M5c 增：请求体构造 → 查询串、报告 → IC 图 / 分层曲线 / 多空曲线的数据映射（含 `net` 缺失与空 `per_day` 不当崩）、`notes` 分组与「不显著」态判据（IC 的 t 绝对值 < 2 时页面文案口径）），不引组件测试框架（沿用 P1 口径）。**M5 增量**（M5b 为主）：网格输入 → 笛卡尔展开与边界校验、矩阵（`params → metrics`）→ 热力图数据映射、SSE 帧解析沿用 `lib/sse.ts` 既有纯函数（**不新写一套**）、名称搜索输入 → 请求参数的匹配口径
 - M4c 界面验证（**不属于自动化层，单列一节**）：`frontend/scripts/capture-strategies.mjs` 驱动 Playwright 走一遍真浏览器——断言波浪线出现、面板报「会拦住运行」、点「保存并运行」被 422 拦下、参数表单按 schema 生成，并出四张截图（`logs/m4c/workbench-ui.md`）。**这一层抓到的问题自动化层结构上看不见**：CORS 预检（TestClient 不走 CORS）、浏览器路由时序（深链与列表选择竞争）、编辑器事件语义（`setValue` 的回声）、sticky 遮挡（只有窄屏真看一眼才发现）
+- M8 增量（离线）：意图路由（结构化解析 / 坏输出回落 quick / 超时回落，假模型驱动）；**降级矩阵**——五个取证角色各注入一次取数失败，断言 `errors` 有它、其余角色照跑、报告仍产出；**辩论轮次**——造一个永不收敛的假模型断言**第 3 轮强制收敛**，另造一个首轮即收敛的断言提前停；综合**只引用归并证据集**（造一条不在集合里的引用断言被拒）；**风控闸门三类各自的命中/放行成对样例**（词表命中与合法表述各一条，**防误拦**）；预算四计数器与到限即停（上限由 monkeypatch 压低）；角色输出的数字必须在同源 `numbers` 里找得到（claim 闸门在角色层的预演）
+- M8 增量（HTTP 矩阵）：四端点未登录 401 · 越权与不存在同为 404 · **非 `awaiting_approval` 状态 resume 409** · 运行中重复 resume 409 · 显式 `mode` 合法与非法取值；深研报产物过 `validate_claims`（不过即拒收不落库）
+- M8 增量（集成，真实 Postgres + 真实 checkpointer）：`research_runs` 幂等建表与 `research_reports` **三个 ALTER 连跑两次 lifespan** 不报错；**interrupt → resume → 落库 → 取报告**端到端一条；**进程重启后 resume**（HITL 的持久性只有真 checkpointer 能证）；深研报在 M7 容器上的**分享 / 公开只读 / Markdown / PDF 原样可用**（新建一套即回归失败）
+- M8 增量（取证脚本，不属于自动化层）：`scripts/research_evidence.py` 对账过程事件与 Langfuse trace（**节点名集合 + token 总数相等 + 耗时在容差内**）；一次真实运行的 token / 成本读数入 `logs/m8/`
+- M8 界面验证：`capture-m8.mjs` 走真浏览器——运行页**真的在动**（阶段推进与瀑布条增长，按 `data-status` 与**元素宽度**断言而非文案）、**审批卡真的拦住**（interrupt 后流水停下、批准后继续）、研报页运行摘要块的数值与运行记录一致、**五条取证条不等长**（MPS 锁的如实呈现）
 - 离线用例继续走真实 Parquet，不 mock 查询层（沿用 P1 口径）
 
 ## 13. 变更记录
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.43 | 2026-10-11 | M8 | **M8a 落地回填（路由 + 并行取证 + 归并 + 降级）**。① **交付**：`app/agent/deep/`（types / numbers / budget / router / merge + roles 五角色与 base）、`duckdb_client.symbol_rank()`（某标的在全市场截面的排名与分位，一条窗口函数 SQL）、`scripts/run_research.py`（取证 CLI → `logs/m8/research.json`）；`core/llm.py` 加 `DEEP_MODEL` / `THINKING_OFF` / `complete()`（带 usage，`ask_once` 行为一字未改），`core/config.py` 加九个 `research_*` 项。② **真数据读数**（600519 / 2026-09-30 / 问「值不值得买」）：路由判 deep；五角色全绿、20 条要点、**16 条证据**（去重 1）、**0 缺口**；**并行墙钟 20.94s（五条之和 34.95s）**——新闻角色冷启动载精排模型 ~18s、**热进程 ~2s**；预算 5 次调用 / 2,763 tokens / **$0.0015**。③ **降级分两层定死**：可预期降级（RAG 不可用 / 解读超时 / 该时点无材料）→ 角色自记 `errors`；**意外异常原样上抛**，由 fan-out 节点兜（M8b）——一处收口胜过五处各写一遍。④ **数字可追溯的判据修正**（真数据逮到，重要）：第一版只把 `numbers` 的值当允许集，结果 `600519`、标签里的 `20`（「20 日均线」）、日期里的 `08/15` 全被判成编造，**五条要点剔到只剩一条**——**闸门写窄比写宽糟得多**（清空整份研报 vs 放过照抄）。新口径 = 材料全文 + `numbers` 键值 + 证据标题摘要 + 标的代码，且比对按**数字主体核**（语料表格单位在表头、值是 `67969.50`，模型补单位写成 `67969.50万元` 不是编造）。代价如实记：**换单位的改写会放行**（真值仍在 `numbers`，M8b 风控闸门是第二层）。⑤ **标的名解析的三条真实规则**：真字典里存在「值得买」（300785）⇒ 命中片段**包含去冗** + **候选并列时如实全列不猜**；**代码在场时名字匹配只认 ≥3 字片段**（否则「事件驱动机会」会把「捷昌驱动」「驱动力」拉进来）；行首序号正则要点号后不跟数字（否则 `12.34%` 被剥成 `34%`）。⑥ **因子角色不跑 IC 管道**（那是 M5c 的活）：只报**该标的的截面分位与动量**，材料渲染用格式化后的数值而非原始 dict（M7 的教训：给原始浮点，模型会逐字复述 `1.864711309668321`）。⑦ **回归**：离线 **1190 passed**（新增 67，既有零改动），唯一一条红是既有的 `test_etl.py::test_backfill_only_requests_missing_days` 日期定时炸弹 |
+| v1.42 | 2026-10-11 | M8 | **开工前 F1–F7 实测读数回填，并据此改一条设计**。① **思考（reasoning）是延迟与成本的绝对主导项**：同一条取证 prompt 实测 flash 开 **8.99s**/2,180 tok、**flash 关 0.84s**/66 tok、pro 开 **107.03s**/10,783 tok、**pro 关 1.48s**/73 tok——**四条正文信息一致**（单样本，非统计结论）。故 **M8 一律关思考**（`model_kwargs={"reasoning_effort":"none"}`，配置项 `RESEARCH_THINKING` 默认 none）：**深度由「多角色取证 + 对抗辩论 + 证据回链」的结构承担，不由思维链长度承担**；双档分工（取证/路由 flash、辩论/综合 pro）不变，差别在模型能力。⚠ **`reasoning_effort="minimal"` 不生效**（12.78s / 2,973 tokens），别当「少想一点」用。② **F4 跨进程 resume 通过**（进程 A 停在 `interrupt()`、进程 B 重开 checkpointer 用 `Command(resume=…)` 续跑到底，usage 正常）⇒ `research_runs` **不必自建恢复状态机**。③ **F5：节点事件要自己埋**——`astream_events(v2)` 的 `on_chain_start/end` 带 `metadata.langgraph_node` 可按 run_id 配对，但**被 interrupt 的节点只有 start 没有 end**，且 interrupt payload **不在事件流里**，得读 `aget_state().tasks[].interrupts[].value`。④ **F3：MPS 精排并发完全串行**（2 条 3.36s / 4 条 6.98s ≈ n × 1.75s；首跑 3.18s 是 MPS 预热假象）——并行瀑布里检索那条**照实画成 n 倍长**。⑤ **F1b API 侧并发几乎免费**（5 条 flash 并发 2.6s vs 单条 2.25s）⇒ fan-out 瓶颈只在本地检索。⑥ **F7 标的名解析不需要 LLM**（字典 0.21s / 5,611 只 / 零重名；六位码走正则、全名精确、简称包含匹配）。⑦ **成本重估**：一次深路径 ≈ **$0.03–0.05**（成本由输入主导），比 v1.41 的 $0.1 低一个量级。⑧ **PRD「深路径 p95 ≤ 15s」先不改**——组件级估算 12–15s，「守不住」变成「可能守得住」，等 M8b 端到端读数定夺（改口径需用户签） |
+| v1.41 | 2026-10-11 | M8 | **M8 细化为可执行规格（开工前，用户已拍板 D1–D4）**。① **形态定为「生成器」**：M7 建容器、M8 建生成器，产物走 M7 的 `blocks` 容器与同一道 claim 闸门，**渲染 / 分享 / 导出 / 快照一律复用不重做**；深路径是**独立 StateGraph**（不挂 chat 图），与 chat 共用 Postgres checkpointer 但**独立 thread 命名空间**（两图结构不同，同 thread 会互相污染）。② **四条拍板**：入口 = 对话页自动路由 + 研报页显式入口；闸门 = **三类**（无来源数字→重写一次仍不过则降级、绝对化与买卖指令→`interrupt()`、预算超限→`interrupt()`）；公告**类别→方向映射走 M8 应用层**（**不动 `etl/store.py::DIRECTION_MAP`**，语料与回测零改动，M5a 的 golden 零位移是硬判据）；切片 = M8a 路由+取证+归并 / M8b 辩论+综合+闸门+HITL+落库 / M8c 过程可视化。③ **取证角色 = 代码取数 + LLM 解读，LLM 不持工具**——注入面收窄（语料文本无法触发工具调用）、证据天然带来源三元组、可离线用假模型测；角色输出的数字必须能在同源 `numbers` 里找到（claim 闸门在角色层的预演）。④ **过程可视化的真源是 `research_runs.events`**（新表）：断连重连 / HITL 恢复 / 事后回看 / 与 Langfuse 对账四合一；SSE 帧新增 `node_start`/`node_end`/`debate`/`budget`/`interrupt`/`report`，**帧编码抽到 `app/api/sse.py` 共用**（现有 chat / optimize 两处手写，只抽不改行为）。⑤ **四条代码测绘事实决定写法**：chat 图的 token 过滤**硬编码节点名 `"model"`**（照抄会静默丢 token）；claim 闸门的证据键是 `event_id|day` 而 RAG 的 `day` 是字符串（**形状要对齐**）；`research_reports.account_id` 是 **NOT NULL**（三个幂等 ALTER：`kind` / `account_id DROP NOT NULL` / `subject`）；**Langfuse handler 只挂了 `main.py` 与 `chat.py` 两处，M7 的报告 LLM 调用根本没被追踪**（M8 必须挂，否则「一致」这条验收没有对账对象）。⑥ **如实预告一条口径冲突**：PRD「深路径 p95 ≤ 15s」预判守不住（MPS 精排单次 3–5s 且**进程级锁串行** + 多轮 pro），F2 实测后按 M5c 先例**改 NFR 措辞并回填，需用户签**。⑦ §1 结构、§12 测试增量（离线 / HTTP / 集成 / 取证 / 界面验证）同步。底稿、12 条测绘事实与 F1–F7 实测清单：`docs/private/Pn-n/P2-Mn/P2-M8.md` |
 | v1.40 | 2026-10-10 | 全局 UI | **页头导航加当前项指示（用户反馈：切换模块后分不清自己在哪）**。① **视觉**：当前项 = **品牌色文字 + 品牌浅底（12% 不透明度）+ 中等字重**，与中性的 hover 面（`bg-muted`）明确区分——品牌色对页面底的对比度浅色 **6.46** / 深色 **5.31**，都过 AA（红绿留给涨跌、`--warn` 留给「需要人看一眼」，都不借用）；② **无障碍**：带 `aria-current="page"`；③ **判据抽成纯函数** `lib/nav.ts`（带 7 条用例）——`/` 只有**精确**相等才算当前项（前缀匹配会让全站点亮「对话」），子路径与末尾斜杠归同一项，**研报页 `/research/<id>` 归到「模拟盘」**（它是模拟盘账户的产物、入口也在那儿），公开分享页与打印页不点亮任何一项；④ 七个手写 `Link` 换成清单驱动（`NAV_ITEMS`，新增一项只改一处）；⑤ 界面验证 **23/23**（新增「页头点亮当前项」一条，按 `data-active` 断言而非颜色） |
 | v1.39 | 2026-10-10 | M7d | **一键导出 PDF（服务端渲染）落地 —— 取代 v1.32「PDF = 前端打印样式」的决定**。用户实测后两条反馈指向同一处：打印对话框不是导出（还得在对话框里选存储位置），而打印版式为了分页安全必须退化成文档流（卡片摊平）。现在：① **`GET /reports/{id}/pdf`**（受保护，越权 404）与 **`GET /public/reports/{token}/pdf`**（匿名）直接回 `application/pdf` 附件——**一键下载真文件，不弹对话框**；② **渲染在子进程**（`app/report/pdf_worker.py`，同沙箱 worker 的思路：浏览器崩了不拖垮 API、超时可控），用**本机已装的 Chrome**（`channel="chrome"`，实测零浏览器下载；无 Chrome 的环境自动回落 Playwright 自带浏览器）；③ 渲染器打开**打印专用页** `frontend/app/print/[id]?t=<一次性令牌>`（与研报页同一份 `ReportView`），令牌 = `HMAC(JWT_SECRET, report_id|exp)`、默认 10 分钟、**不新增密钥也不改分享状态**；④ 前端按钮拆成 **「导出 PDF」（下载）/「导出 Markdown」/「打印」（次要，纸面场景）**，公开页同样三件。⑤ **实施期逮到一处 Python 陷阱**：`f'…UTF-8''{quote(x)}'` 被当成**相邻字面量的隐式拼接**（第二段没有 `f` 前缀 ⇒ 花括号原样输出），响应头实测露馅，已改用双引号书写并留注释。⑥ **读数**：真实导出 200 / `application/pdf` / 500KB / **4.2s**（含 Chrome 冷启动）；界面验证 **22/22**（新增「一键下载到真文件」与「下载名带报告指纹」两条，断言 `%PDF` 头、体积与文件名）；离线 1123 / 集成 97 / 前端全绿。依赖：`playwright==1.63.0`（3 个小包）。⑦ **附件命名（用户反馈：「总不能叫 report 吧，不只有一篇研报」）**：附件名 = **`{账户名}-{报告指纹前 8 位}.{pdf\|md}`**——一个账户会有很多份研报（不同快照各一份），只叫账户名必然重名；**ASCII 兜底同样带指纹**（全中文名过去退化成 `report`，那是句废话，现在兜 `quantsage-<hash>`）。文件名由 `Content-Disposition` 决定（跨源下前端的 `download` 属性会被浏览器忽略，所以这条必须落在服务端） |
 | v1.38 | 2026-10-10 | M7c 修订 | **打印版式定向恢复（用户反馈「绩效那里一行一个数，过于丑陋」）**。上一轮为了分页安全对 flex/grid 一刀切退化成 block，把**原子单元内部**的版式也摊平了。正解：**卡片永不跨页**（`break-inside: avoid`），它内部的栅格天生撞不上页边界 ⇒ 只退化**会跨页的竖排容器**，卡片内部按标记（`data-print-grid` / `data-print-flex`）恢复三列指标 / 头部行 / 理由行。分页不变量仍全绿（20/20） |

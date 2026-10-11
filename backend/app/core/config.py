@@ -109,6 +109,21 @@ class Settings(BaseSettings):
     # ── 模型（T3 使用）──
     deepseek_api_key: SecretStr = SecretStr("")
 
+    # ── 深度研报多 Agent（M8）──
+    research_fast_model: str = "deepseek/deepseek-flash"  # 取证 / 路由
+    research_deep_model: str = "deepseek/deepseek-v4-pro"  # 辩论 / 综合
+    # 思考开关：默认关。实测同一条取证 prompt——flash 开 8.99s/2,180 tok vs 关 0.84s/66 tok；
+    # pro 开 107.03s/10,783 tok vs 关 1.48s/73 tok，且四条正文信息一致（单样本，SPEC §9）。
+    research_thinking: bool = False
+    research_role_timeout: float = 60.0
+    # 预算四计数器的硬上限：到限在**节点边界**停，不在 LLM 调用中途（M8 SPEC §9「预算」）
+    research_max_llm_calls: int = 40
+    research_max_tokens: int = 200_000
+    research_max_seconds: float = 300.0
+    research_max_cost_usd: float = 0.50
+    # 辩论轮数：默认 2（省钱且仍能演示），硬上限 3（PRD 要求 ≤3）
+    research_debate_rounds: int = 2
+
     # ── Langfuse（默认 Cloud；自托管时把 base_url 指向 http://127.0.0.1:3000）──
     langfuse_base_url: str = "https://cloud.langfuse.com"
     langfuse_public_key: SecretStr = SecretStr("")

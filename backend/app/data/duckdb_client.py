@@ -229,6 +229,68 @@ def cross_section(
     }
 
 
+def symbol_rank(
+    symbol: str,
+    trade_date: str,
+    *,
+    adjust: str = "qfq",
+    data_dir: Path | None = None,
+) -> dict[str, object] | None:
+    """某标的在**某交易日全市场截面**里的位置（涨跌幅与成交额的排名与分位）。
+
+    给 M8 的因子角色用：它要回答的是「今天在全市场里排第几」，不是跑一条 IC 管道
+    （那是 M5c 的活，全市场按日 ~0.6–0.9s，一次深度研究不该为它多花这一秒）。
+
+    分位口径 = **排在它前面（含自己）的比例**：第 1 名 → 1.0、最后一名 → 1/total。
+    `change_pct` 缺失的行不参与排名（`rank() ... NULLS LAST` 仍会给它们名次，故先滤掉）。
+    该日无任何有价 bar 时返回 `None`——调用方按「取不到」处理，不编数。
+    """
+    con = connect(data_dir)
+    try:
+        rows = _fetch(
+            con,
+            f"""
+            WITH day AS (
+                SELECT symbol, change_pct, amount
+                FROM {BARS_VIEW}
+                WHERE adjustment = ? AND trade_date = ?
+                  AND close IS NOT NULL AND open IS NOT NULL
+                  AND high IS NOT NULL AND low IS NOT NULL
+                  AND change_pct IS NOT NULL
+            ),
+            ranked AS (
+                SELECT symbol, change_pct, amount,
+                       rank() OVER (ORDER BY change_pct DESC) AS rank_change,
+                       rank() OVER (ORDER BY amount DESC NULLS LAST) AS rank_amount,
+                       count(*) OVER () AS total
+                FROM day
+            )
+            SELECT * FROM ranked WHERE symbol = ?
+            """,
+            [adjust, trade_date, symbol],
+        )
+    finally:
+        con.close()
+    if not rows:
+        return None
+    row = rows[0]
+    total = int(row["total"])
+    rank_change = int(row["rank_change"])
+    payload: dict[str, object] = {
+        "trade_date": trade_date,
+        "symbol": symbol,
+        "change_pct": float(row["change_pct"]),
+        "amount": float(row["amount"]) if row.get("amount") is not None else None,
+        "rank_change": rank_change,
+        "total": total,
+        "percentile_change": (total - rank_change + 1) / total,
+    }
+    if row.get("rank_amount") is not None:
+        payload["rank_amount"] = int(row["rank_amount"])
+        payload["percentile_amount"] = (total - int(row["rank_amount"]) + 1) / total
+    return payload
+
+
 def event_coverage(data_dir: Path | None = None) -> dict[str, object]:
     """本地事件语料的覆盖区间与总条数——**从数据里查出来的**，不写死「最近 3 个月」。
 
