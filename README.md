@@ -297,7 +297,9 @@ QuantSage/
 
 ```bash
 cd backend
-uv run python scripts/download_bars.py                 # 行情：21 片全市场日线（年度整片）
+uv run python scripts/download_bars.py                 # 行情：按需刷新（两级门禁，未变则零下载）
+uv run python scripts/download_bars.py --status        # 行情：门禁记忆 / 最近一次刷新
+uv run python scripts/download_bars.py --skip-download # 行情：用本地分片重物化（零网络会话）
 uv run python scripts/download_events.py --backfill    # 事件：回填 92 天（≈ 归档保留期）
 uv run python scripts/download_events.py --status      # 覆盖 / 缺口 / 最近一次运行
 uv run python scripts/audit_calendar.py                # 交易日历 × 行情全期双向对账
@@ -323,7 +325,7 @@ uv run python scripts/audit_calendar.py                # 交易日历 × 行情�
 - **深路径首问慢在冷启动**：本地检索模型首次加载 ~18s，实测跨进程端到端 **40.5s（冷启动）/ 约 23s（预热后）**、10 次 LLM 调用、$0.0156——PRD 口径据此定为「冷启动 ≤ 60s、预热 ≤ 30s」，不假装更快
 - **检索精排是 CPU 上的 cross-encoder**：`p95 7.55s`，与 PRD 原「检索 p95 ≤ 500ms」冲突，处置见 `docs/specs/P2-Mn.md`；深路径的并行瀑布里检索那条因此最长（照实画，不截断）
 - **事件语料的日增量默认不跑**（`ETL_ENABLED=false`）：定时任务要显式打开，或走 `POST /api/v1/etl/run` 手动触发。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**——这也是启动时自动补缺口的原因
-- **行情不随日增量更新**：`cn-daily` 是年度整片，日更需重下整片（21 次会话 / ~99MB）；**当前是手动跑 `scripts/download_bars.py`**，自动化已规划为 M2d。后果是**行情与事件语料天然不同步**——实测行情止于 2026-09-30 而事件已到 10-08，首页因此**并列显示两个「截至」**，体检也有 X5/X6 两条在量落后
+- **行情按需自动刷新，但源侧是 T+1**：`cn-daily` 的源侧发布形态是**按年整片、内容寻址**（没有日增量可拉），所以调度器做的是「先便宜探一次源侧发布标识，变了才重下变了的那些片」——默认每天 21:40（`BARS_REFRESH_ENABLED`，默认关），日常约 99MB / 6–7 分钟，源侧没更新时零下载。**源侧当晚发布的是前一个交易日的行情**，且**事件归档按自然日发布**——所以行情与语料本来就可能不同日，首页因此**并列显示两个「截至」**（悬停可看到「源侧止于哪天」，用来区分是我们没拉还是源侧没发），体检也有 X5/X6 两条在量落后
 - **浏览器走查为人工核对**，前端只对纯函数做单测，未引组件测试框架
 
 ---
