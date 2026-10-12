@@ -10,7 +10,7 @@
  */
 
 import { count, dayOnly, EMPTY, num, weekday } from "./format";
-import type { EventCalendar, EventFeed, EventFeedItem } from "./types";
+import type { EventCalendar, EventFeedItem } from "./types";
 
 /** 类型的中文名。展示层翻译，与 `events-table.tsx` 的 DIRECTION 表同一个姿态。 */
 export const TYPE_LABELS: Record<string, string> = {
@@ -109,11 +109,16 @@ export function latestDay(calendar: EventCalendar | null): string | null {
   return days.length ? days[days.length - 1].date : null;
 }
 
-/** 日期带头上那句话：选中日的条数与高分条数。 */
+/**
+ * 日期带头上那句话：**选中日 + 条数 + 高分条数 + 类型拆分**。
+ *
+ * 开头那枚日期不是装饰：这一块与大盘块、KPI 行看的是**不同的日子**（事件语料按日增量、
+ * 行情是整片 release，两者天然不同步），块头不写自己的日期，读者就得靠上下文猜。
+ */
 export function daySummary(calendar: EventCalendar | null, selected: string | null): string {
   const day = (calendar?.days ?? []).find((row) => row.date === selected);
   if (!day) return EMPTY;
-  const parts = [`共 ${count(day.total)} 条`];
+  const parts = [`${day.date}`, `共 ${count(day.total)} 条`];
   if (day.high > 0) parts.push(`${count(day.high)} 条重要度 ≥ ${num(calendar?.high_score ?? null, { digits: 0 })}`);
   const types = Object.entries(day.by_type)
     .sort(([, a], [, b]) => b - a)
@@ -124,52 +129,10 @@ export function daySummary(calendar: EventCalendar | null, selected: string | nu
 
 // ── 快讯流 ────────────────────────────────────────────────────────────────
 
-/**
- * 列表键 = `event_id@available_at`。
- *
- * **不能只用 `event_id`**：平台对同题事件按月复用 id（`events-table` 实测 84 天里 18 例），
- * 单用 id 会让翻页去重误删真实条目，React 列表也会撞键。
- */
+/** 列表键 = `event_id@available_at`。**不能只用 `event_id`**：平台对同题事件按月复用 id
+ * （`events-table` 实测 84 天里 18 例），单用 id 会让 React 列表撞键。 */
 export function feedKey(item: EventFeedItem): string {
   return `${item.event_id}@${item.available_at ?? ""}`;
-}
-
-/**
- * 还能不能加载更多。
- *
- * 判据是 `offset < total`：`offset` 始终指向**下一页的服务端位置**（`appendFeed` 维护），
- * 故它与 `total` 的比较一直有效。**不要用 `items.length` 判**——去重会丢掉重复条目，
- * 于是「手里有几条」与「服务端取到第几条」不再相等（正确的是后者）。
- */
-export function canLoadMore(feed: EventFeed | null): boolean {
-  return feed !== null && feed.offset < feed.total;
-}
-
-/** 已加载多少 / 共多少。 */
-export function feedProgress(feed: EventFeed | null): string {
-  if (!feed) return EMPTY;
-  return `${count(feed.items.length)} / ${count(feed.total)}`;
-}
-
-/**
- * 追加一页。`date` 变了就**整份换掉**（换了一天还往上叠是错的），同一天才做去重合并。
- *
- * 返回值的 `offset` 被改写成**下一页的服务端位置**（`next.offset + next.count`），
- * 不是「这一份从哪里开始」——`canLoadMore` 与下一次请求都靠它。
- */
-export function appendFeed(current: EventFeed | null, next: EventFeed): EventFeed {
-  const offset = next.offset + next.count;
-  if (!current || current.date !== next.date) return { ...next, offset };
-  const seen = new Set(current.items.map(feedKey));
-  const items = [...current.items];
-  for (const item of next.items) {
-    const key = feedKey(item);
-    if (!seen.has(key)) {
-      seen.add(key);
-      items.push(item);
-    }
-  }
-  return { ...next, items, offset };
 }
 
 /**

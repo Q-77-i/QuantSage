@@ -1296,3 +1296,33 @@ export interface EventFeedItem {
   /** 关联标的；字典里没有名字的给 `null`，**不编** */
   symbols: { code: string; name: string | null }[];
 }
+
+// ── 标的浏览（M10c）─────────────────────────────────────────────────────
+
+/** `GET /api/v1/market/cross-section`（M5a 起；M10c 起前端才第一次消费它） */
+export interface CrossSection {
+  trade_date: string | null;
+  total: number;
+  count: number;
+  items: CrossRow[];
+  adjust: string;
+  sort: string;
+  order: string;
+  /** 行业过滤（PIT 累积归属）；`null` = 全市场 */
+  industry: string | null;
+  limit: number;
+  /** 请求时的起点；前端把它推进成「下一页的服务端位置」后放回 */
+  offset: number;
+}
+
+export interface CrossRow {
+  symbol: string;
+  /** 名称来自事件语料抽出的字典（覆盖 96.7%）；没有的给 `null`，**不编** */
+  name: string | null;
+  close: number | null;
+  /** 百分数（`1.86` = +1.86%），**不是比例** */
+  change_pct: number | null;
+  amount: number | null;
+  /** 源侧 2026-08 起逐步停更、2026-09 起整列为空——界面不列这一栏 */
+  turnover_pct: number | null;
+}

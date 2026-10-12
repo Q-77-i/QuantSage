@@ -21,6 +21,7 @@ import type {
   BacktestRunDetail,
   BacktestRunSummary,
   BarsResponse,
+  CrossSection,
   DataFreshness,
   EventCalendar,
   EventFeed,
@@ -267,6 +268,24 @@ export const api = {
   /** 因子报告：**同步一次返回**（公开端点、不落库）；`costs=false` 时净曲线为 null */
   factorReport: (params: FactorQueryInput) =>
     request<FactorReport>(`/api/v1/factor/report${factorQuery(params)}`),
+
+  // ── 标的浏览（M10c）────────────────────────────────────────────────────
+  /**
+   * 某交易日的全市场截面（也可按**行业**过滤——走与板块块同一支 PIT 归属）。
+   *
+   * 分页用 `limit` / `offset`（服务端上限 500）；返回信封的 `total` 是**过滤后**的总数，
+   * 「还有没有下一页」看它。
+   */
+  crossSection: (params: {
+    date?: string;
+    sort?: string;
+    order?: "desc" | "asc";
+    q?: string;
+    industry?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) =>
+    request<CrossSection>(`/api/v1/market/cross-section${query({ ...params })}`),
 
   // ── 事件日历 / 快讯流（M10b）──────────────────────────────────────────
   /**

@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { activeHref, isActive, NAV_ITEMS } from "./nav";
+import { activeHref, isActive, NAV_ITEMS, QUICK_ENTRIES } from "./nav";
 
 describe("activeHref", () => {
   it("根路径只有精确相等才算（前缀匹配会让全站点亮「首页」）", () => {
@@ -61,6 +61,27 @@ describe("activeHref", () => {
   it("每一项都能被自己的 href 点亮（清单与判据不漂移）", () => {
     for (const item of NAV_ITEMS) {
       expect(activeHref(item.href)).toBe(item.href);
+    }
+  });
+});
+
+describe("首页快捷入口与页头", () => {
+  it("**顺序与页头完全对应**（去掉「首页」自己——你就站在这儿）", () => {
+    const expected = NAV_ITEMS.filter((item) => item.key !== "home").map((item) => item.href);
+    expect(QUICK_ENTRIES.map((entry) => entry.href)).toEqual(expected);
+  });
+
+  it("标签也与页头一致（文案可以更长，名字不该两个样）", () => {
+    const labels = new Map(NAV_ITEMS.map((item) => [item.href, item.label]));
+    for (const entry of QUICK_ENTRIES) {
+      expect(entry.label).toBe(labels.get(entry.href));
+    }
+  });
+
+  it("每张卡都有「去哪儿能干什么」，不是复述功能名", () => {
+    for (const entry of QUICK_ENTRIES) {
+      expect(entry.hint.length).toBeGreaterThan(8);
+      expect(entry.hint).not.toBe(entry.label);
     }
   });
 });

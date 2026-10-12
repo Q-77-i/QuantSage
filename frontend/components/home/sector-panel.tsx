@@ -3,10 +3,10 @@
 import { BarChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
-import type { EChartsCoreOption } from "echarts/core";
+import type { EChartsCoreOption, EChartsType } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { useTheme } from "next-themes";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Section } from "@/components/backtest/chart-frame";
 import { Button } from "@/components/ui/button";
@@ -45,12 +45,15 @@ export function SectorPanel({
   error,
   minSymbols,
   onMinSymbols,
+  onPick,
 }: {
   sectors: MarketSectors | null;
   loading: boolean;
   error: string | null;
   minSymbols: number;
   onMinSymbols: (next: number) => void;
+  /** 点一条进该行业的标的列表（M10c）——成分口径与这里同一支 PIT 归属 */
+  onPick: (industry: string) => void;
 }) {
   const [asTable, setAsTable] = useState(false);
   const rows = useMemo(() => sectorBars(sectors), [sectors]);
@@ -60,11 +63,14 @@ export function SectorPanel({
     <Section
       title="行业 / 概念板块"
       hint={
-        sectors ? `归属覆盖率 ${coverageText(sectors.coverage)}（按当日有价标的）` : undefined
+        sectors?.trade_date
+          ? `${sectors.trade_date} · 归属覆盖率 ${coverageText(sectors.coverage)}（按当日有价标的）`
+          : undefined
       }
     >
       {/* 一行筛选管住下面的图（dataviz：filters in one row above the charts） */}
       <div className="mt-3 flex flex-wrap items-center gap-3 text-sm" data-panel="sector-controls">
+        <span className="text-xs text-ink-3">点一条看该行业的标的</span>
         <label className="flex items-center gap-2 text-xs text-ink-3">
           样本下限
           <Select
@@ -105,9 +111,9 @@ export function SectorPanel({
           这个下限下没有板块——把样本下限调小些，或换一天看。
         </p>
       ) : asTable ? (
-        <SectorTable rows={table} />
+        <SectorTable rows={table} onPick={onPick} />
       ) : (
-        <SectorChart rows={rows} />
+        <SectorChart rows={rows} onPick={onPick} />
       )}
 
       {sectors?.note ? (
@@ -122,14 +128,28 @@ export function SectorPanel({
 
 // ── 图 ─────────────────────────────────────────────────────
 
-function SectorChart({ rows }: { rows: ReturnType<typeof sectorBars> }) {
+function SectorChart({
+  rows,
+  onPick,
+}: {
+  rows: ReturnType<typeof sectorBars>;
+  onPick: (industry: string) => void;
+}) {
   const isDark = useTheme().resolvedTheme === "dark";
-  const option = useMemo(
-    () =>
-      buildOption(rows, chartTokens(isDark === true)),
-    [rows, isDark],
-  );
-  const { hostRef } = useEChart(option);
+  const option = useMemo(() => buildOption(rows, chartTokens(isDark === true)), [rows, isDark]);
+  // `onInit` 只在建图那一刻跑一次，之后换 handler **不会**对着已有实例重注册 ⇒
+  // 必须「稳定 handler + ref 读最新值」（同 `grid-heatmap` 的写法）。
+  const onPickRef = useRef(onPick);
+  useEffect(() => {
+    onPickRef.current = onPick;
+  }, [onPick]);
+  const onInit = useCallback((chart: EChartsType) => {
+    chart.on("click", (params: unknown) => {
+      const industry = (params as { data?: { industry?: string } }).data?.industry;
+      if (typeof industry === "string") onPickRef.current(industry);
+    });
+  }, []);
+  const { hostRef } = useEChart(option, onInit);
 
   return (
     <div
@@ -194,6 +214,7 @@ function buildOption(
         barCategoryGap: "40%",
         data: rows.map((row) => ({
           value: row.value,
+          industry: row.industry, // 点击回传用；ECharts 会把整条 data 项带进 params
           itemStyle: {
             color: tokens.divergePct[row.rampIndex],
             // 圆角只在**远离零线的那一端**（dataviz：圆角数据端锚在基线上）
@@ -218,7 +239,13 @@ function buildOption(
 
 // ── 表格孪生 ───────────────────────────────────────────────
 
-function SectorTable({ rows }: { rows: ReturnType<typeof sectorTable> }) {
+function SectorTable({
+  rows,
+  onPick,
+}: {
+  rows: ReturnType<typeof sectorTable>;
+  onPick: (industry: string) => void;
+}) {
   return (
     <div className="mt-3 overflow-x-auto" data-table="sectors">
       <table className="w-full text-sm">
@@ -235,7 +262,13 @@ function SectorTable({ rows }: { rows: ReturnType<typeof sectorTable> }) {
           {rows.map((row) => (
             <tr key={row.industry} className="border-b border-border/60 last:border-0">
               <td className="py-1.5 pr-3">
-                {row.industry}
+                <button
+                  type="button"
+                  className="underline-offset-2 hover:underline"
+                  onClick={() => onPick(row.industry)}
+                >
+                  {row.industry}
+                </button>
                 {/* 均值与中位数差得远 ⇒ 这一档被少数极端值主导，值得多看一眼中位数 */}
                 {row.skewed ? (
                   <span

@@ -22,6 +22,10 @@ export interface NavItem {
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: "home", href: "/", label: "首页" },
+  // 第 10 项（2026-10-13 用户点头）。**M10c 时我写的「不进页头」被推翻了**，理由是它现在
+  // 是两条路由的一级浏览面，而快捷入口行只在首页上、从 `/stocks/600519` 回不去。
+  // 代价如实记：窄屏下导航自己横向滚（M5b 定的缓解手段，加第 5、6 项时都用它兜过）。
+  { key: "stocks", href: "/stocks", label: "标的浏览" },
   { key: "chat", href: "/chat", label: "对话" },
   { key: "backtest", href: "/backtest", label: "回测" },
   { key: "strategies", href: "/strategies", label: "策略" },
@@ -63,3 +67,29 @@ export function activeHref(pathname: string | null): string | null {
 export function isActive(pathname: string | null, href: string): boolean {
   return activeHref(pathname) === href;
 }
+
+
+/**
+ * 首页快捷入口。**顺序与 `NAV_ITEMS` 完全对应**（去掉「首页」自己——你就站在这儿），
+ * 故正好 9 张 = 3×3。`nav.test.ts` 里有一条用例把这件事钉住。
+ *
+ * 与页头同序不是为了好看：两处顺序不一致时，用户建立的「第几项是什么」的位置记忆会互相打架。
+ * 文案则两处不同——页头要**功能名**（短、能横扫），这里要「去哪儿能干什么」。
+ */
+export interface QuickEntry {
+  href: string;
+  label: string;
+  hint: string;
+}
+
+export const QUICK_ENTRIES: readonly QuickEntry[] = [
+  { href: "/stocks", label: "标的浏览", hint: "全市场列表与个股页：K 线、事件、加自选" },
+  { href: "/chat", label: "对话", hint: "就一个标的或一条新闻追问，带 PIT 语义的检索" },
+  { href: "/backtest", label: "回测", hint: "跑一段历史，看 PIT / 非 PIT 两口径差多少" },
+  { href: "/strategies", label: "策略", hint: "写策略，运行前先静态拦下未来函数" },
+  { href: "/optimize", label: "优化", hint: "参数网格扫描、批量回测与过拟合检验" },
+  { href: "/factor", label: "因子", hint: "检验新闻信号与价格动量有没有截面预测力" },
+  { href: "/paper", label: "模拟盘", hint: "纸上交易，每笔决策先过审批闸门再成交" },
+  { href: "/research", label: "深度研究", hint: "多 Agent 并行取证 → 多空辩论 → 出研报" },
+  { href: "/space", label: "个人空间", hint: "自选股、会话、回测与研报记录" },
+] as const;

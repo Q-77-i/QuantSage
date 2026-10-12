@@ -12,8 +12,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  appendFeed,
-  canLoadMore,
   daySummary,
   feedKey,
   FEED_TYPES,
@@ -27,7 +25,7 @@ import {
   TYPE_CHOICES,
 } from "./event-feed";
 import { EMPTY } from "./format";
-import type { EventCalendar, EventFeed, EventFeedItem } from "./types";
+import type { EventCalendar, EventFeedItem } from "./types";
 
 function item(overrides: Partial<EventFeedItem> = {}): EventFeedItem {
   return {
@@ -45,20 +43,6 @@ function item(overrides: Partial<EventFeedItem> = {}): EventFeedItem {
     source_url: null,
     content_hash: "abc",
     symbols: [{ code: "600519", name: "贵州茅台" }],
-    ...overrides,
-  };
-}
-
-function feed(overrides: Partial<EventFeed> = {}): EventFeed {
-  return {
-    date: "2026-09-30",
-    total: 100,
-    count: 20,
-    offset: 0,
-    limit: 20,
-    types: ["news"],
-    min_importance: null,
-    items: [item()],
     ...overrides,
   };
 }
@@ -137,6 +121,8 @@ describe("日期带", () => {
 
   it("选中日的摘要含总数、高分条数与类型拆分", () => {
     const text = daySummary(calendar(days), "2026-09-29");
+    // 开头那枚日期不是装饰：这一块与大盘块看的是不同的日子（事件按日增量、行情整片 release）
+    expect(text.startsWith("2026-09-29")).toBe(true);
     expect(text).toContain("共 6,512 条");
     expect(text).toContain("909 条重要度 ≥ 60");
     expect(text).toContain("新闻 4,000");
@@ -144,58 +130,12 @@ describe("日期带", () => {
   });
 });
 
-describe("快讯流", () => {
-  it("列表键是 event_id@available_at——同题事件按月复用 id，只用 id 会误删", () => {
+describe("列表键", () => {
+  it("是 `event_id@available_at`——同题事件按月复用 id，只用 id 会让 React 列表撞键", () => {
     const a = item({ event_id: "news:1", available_at: "2026-09-30T20:45:00+08:00" });
     const b = item({ event_id: "news:1", available_at: "2026-10-08T03:19:00+08:00" });
     expect(feedKey(a)).not.toBe(feedKey(b));
-  });
-
-  it("追加一页做去重合并", () => {
-    const first = feed({
-      items: [item({ event_id: "a" }), item({ event_id: "b" })],
-      offset: 0,
-      count: 2,
-      total: 4,
-    });
-    // 第二页里 `b` 是重复的（去重的目标场景：服务端顺序不稳时会出现）
-    const second = feed({
-      items: [item({ event_id: "b" }), item({ event_id: "c" })],
-      offset: 2,
-      count: 2,
-      total: 4,
-    });
-    const merged = appendFeed(first, second);
-    expect(merged.items.map((row) => row.event_id)).toEqual(["a", "b", "c"]);
-    // `offset` 指向**下一页的服务端位置**（2 + 2 = 4），不是「这一份从哪开始」
-    expect(merged.offset).toBe(4);
-    expect(canLoadMore(merged)).toBe(false);
-    expect(merged.total).toBe(4);
-  });
-
-  it("**换了一天整份换掉**，不往上一页上叠", () => {
-    const today = feed({ date: "2026-09-30", items: [item({ event_id: "a" })], total: 9 });
-    const other = feed({ date: "2026-09-29", items: [item({ event_id: "z" })], total: 3 });
-    const result = appendFeed(today, other);
-    expect(result.date).toBe("2026-09-29");
-    expect(result.items.map((row) => row.event_id)).toEqual(["z"]);
-    expect(result.total).toBe(3);
-    expect(result.offset).toBe(20); // 也要重算，否则沿用上一天的位置会跳过条目
-  });
-
-  it("第一页直接落（不需要 current），但 `offset` 同样改写成下一页的位置", () => {
-    const only = feed({ offset: 0, count: 20, total: 100 });
-    const landed = appendFeed(null, only);
-    expect(landed.items).toEqual(only.items);
-    expect(landed.offset).toBe(20);
-    expect(canLoadMore(landed)).toBe(true);
-  });
-
-  it("还有没有下一页：`offset`（下一页的服务端位置）与 `total` 比", () => {
-    expect(canLoadMore(feed({ offset: 0, count: 20, total: 100 }))).toBe(true);
-    expect(canLoadMore(feed({ offset: 80, count: 20, total: 100 }))).toBe(true);
-    expect(canLoadMore(feed({ offset: 100, count: 0, total: 100 }))).toBe(false);
-    expect(canLoadMore(null)).toBe(false);
+    expect(feedKey(a)).toBe("news:1@2026-09-30T20:45:00+08:00");
   });
 });
 

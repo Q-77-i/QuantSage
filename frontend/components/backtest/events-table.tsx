@@ -77,8 +77,13 @@ export function EventsTable({
   );
 }
 
-/** 行尾来源单元格：合着看 `original_source`，展开看 `source` 与 `content_hash`。 */
-function SourceCell({ event }: { event: MarketEvent }) {
+/**
+ * 行尾来源单元格：合着看 `original_source`，展开看 `source` 与 `content_hash`。
+ *
+ * **导出给 M10c 的个股页复用**——那里的事件时间线与这里展示的是同一件事，
+ * 展开的形状（`▸` 转角、三元组顺序）不该各写一份。
+ */
+export function SourceCell({ event }: { event: MarketEvent }) {
   return (
     <td className="px-2 align-middle">
       <details className="group">

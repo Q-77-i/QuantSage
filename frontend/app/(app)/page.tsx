@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { EventFeedPanel } from "@/components/home/event-feed-panel";
@@ -9,16 +10,9 @@ import { SectorPanel } from "@/components/home/sector-panel";
 import { useEvents } from "@/components/home/use-events";
 import { useHome } from "@/components/home/use-home";
 import { asOf } from "@/lib/market-home";
+import { QUICK_ENTRIES } from "@/lib/nav";
 
-/** 快捷入口。文案是「去哪儿能干什么」，不是功能名——页头已经有功能名了。 */
-const ENTRIES = [
-  { href: "/chat", label: "对话", hint: "就一个标的或一条新闻追问，带 PIT 语义的检索" },
-  { href: "/backtest", label: "回测", hint: "跑一段历史，看 PIT / 非 PIT 两口径差多少" },
-  { href: "/research", label: "深度研究", hint: "多 Agent 并行取证 → 多空辩论 → 出研报" },
-  { href: "/paper", label: "模拟盘", hint: "纸上交易，每笔决策先过审批闸门再成交" },
-  { href: "/strategies", label: "策略", hint: "写策略，运行前先静态拦下未来函数" },
-  { href: "/space", label: "个人空间", hint: "自选股、会话、回测与研报记录" },
-] as const;
+
 
 /**
  * 研究首页（M10a）——**登录后的落地页**。
@@ -38,6 +32,7 @@ export default function HomePage() {
   const { overview, sectors, loading, error, reload } = useHome(minSymbols);
   const events = useEvents(typeKey, importanceKey);
   const stamps = asOf(overview);
+  const router = useRouter();
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-6">
@@ -82,26 +77,27 @@ export default function HomePage() {
           error={null}
           minSymbols={minSymbols}
           onMinSymbols={setMinSymbols}
+          onPick={(industry) => router.push(`/stocks?industry=${encodeURIComponent(industry)}`)}
         />
 
         <EventFeedPanel
           calendar={events.calendar}
           feed={events.feed}
           day={events.day}
+          page={events.page}
           loading={events.loading}
-          more={events.more}
           error={events.error}
           typeKey={typeKey}
           importanceKey={importanceKey}
           onType={setTypeKey}
           onImportance={setImportanceKey}
           onSelect={events.select}
-          onLoadMore={events.loadMore}
+          onGo={events.goPage}
         />
       </div>
 
       <nav className="mt-8 grid gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-3">
-        {ENTRIES.map((entry) => (
+        {QUICK_ENTRIES.map((entry) => (
           <Link
             key={entry.href}
             href={entry.href}

@@ -4,17 +4,17 @@ import { useState } from "react";
 
 import { Section } from "@/components/backtest/chart-frame";
 import { Row } from "@/components/research/panels";
-import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/form-controls";
+import { Pager } from "@/components/ui/pager";
 import {
-  canLoadMore,
   daySummary,
   feedItemView,
-  feedProgress,
   IMPORTANCE_CHOICES,
+  PAGE_SIZE,
   stripDays,
   TYPE_CHOICES,
 } from "@/lib/event-feed";
+import { pageOf } from "@/lib/paging";
 import { EMPTY, eventStamp } from "@/lib/format";
 import { evidenceRows } from "@/lib/research";
 import type { EventCalendar, EventFeed } from "@/lib/types";
@@ -38,28 +38,28 @@ export function EventFeedPanel({
   calendar,
   feed,
   day,
+  page,
   loading,
-  more,
   error,
   typeKey,
   importanceKey,
   onType,
   onImportance,
   onSelect,
-  onLoadMore,
+  onGo,
 }: {
   calendar: EventCalendar | null;
   feed: EventFeed | null;
   day: string | null;
+  page: number;
   loading: boolean;
-  more: boolean;
   error: string | null;
   typeKey: string;
   importanceKey: string;
   onType: (key: string) => void;
   onImportance: (key: string) => void;
   onSelect: (day: string) => void;
-  onLoadMore: () => void;
+  onGo: (page: number) => void;
 }) {
   const strip = stripDays(calendar, day);
   const items = feed?.items ?? [];
@@ -133,11 +133,6 @@ export function EventFeedPanel({
           max={calendar?.end ?? undefined}
           onChange={(event) => event.target.value && onSelect(event.target.value)}
         />
-        {feed ? (
-          <span className="num text-xs text-ink-3" data-feed-progress>
-            已载 {feedProgress(feed)} 条
-          </span>
-        ) : null}
       </div>
 
       {error ? (
@@ -160,15 +155,12 @@ export function EventFeedPanel({
               <FeedItem key={feedItemView(item).key} item={item} />
             ))}
           </ol>
-          <div className="mt-2 flex items-center gap-3">
-            {canLoadMore(feed) ? (
-              <Button variant="outline" size="sm" disabled={more} onClick={onLoadMore}>
-                {more ? "加载中…" : "加载更多"}
-              </Button>
-            ) : (
-              <span className="text-xs text-ink-3">这一天的事件已经到底了。</span>
-            )}
-          </div>
+          <Pager
+            total={feed?.total ?? null}
+            limit={feed?.limit ?? PAGE_SIZE}
+            page={feed ? pageOf(feed.offset, feed.limit) : page}
+            onGo={onGo}
+          />
         </>
       )}
     </Section>

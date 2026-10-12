@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, describeError } from "@/lib/api";
-import { appendFeed, importanceOf, latestDay, PAGE_SIZE, typesOf } from "@/lib/event-feed";
+import { importanceOf, latestDay, PAGE_SIZE, typesOf } from "@/lib/event-feed";
+import { offsetOf } from "@/lib/paging";
 import type { EventCalendar, EventFeed } from "@/lib/types";
 
 /**
@@ -19,20 +20,19 @@ export function useEvents(typeKey: string, importanceKey: string) {
   const [calendar, setCalendar] = useState<EventCalendar | null>(null);
   const [day, setDay] = useState<string | null>(null);
   const [feed, setFeed] = useState<EventFeed | null>(null);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
 
   const types = typesOf(typeKey);
   const minImportance = importanceOf(importanceKey);
 
-  /** 拉一页。`offset` 为 null 表示「重取第一页」。 */
+  /** 拉某一页（**替换**而不是追加——列表是「第 N 页」不是流水账）。 */
   const load = useCallback(
-    async (target: string, offset: number | null) => {
+    async (target: string, targetPage: number) => {
       const ticket = ++seq.current;
-      if (offset === null) setLoading(true);
-      else setMore(true);
+      setLoading(true);
       setError(null);
       try {
         const next = await api.eventFeed({
@@ -40,19 +40,16 @@ export function useEvents(typeKey: string, importanceKey: string) {
           types: types ?? undefined,
           minImportance: minImportance ?? undefined,
           limit: PAGE_SIZE,
-          offset: offset ?? 0,
+          offset: offsetOf(targetPage, PAGE_SIZE),
         });
         if (ticket !== seq.current) return;
-        setFeed((current) => (offset === null ? appendFeed(null, next) : appendFeed(current, next)));
+        setFeed(next);
       } catch (cause) {
         if (ticket !== seq.current) return;
         setError(describeError(cause, "取事件流失败"));
-        if (offset === null) setFeed(null);
+        setFeed(null);
       } finally {
-        if (ticket === seq.current) {
-          setLoading(false);
-          setMore(false);
-        }
+        if (ticket === seq.current) setLoading(false);
       }
     },
     [types, minImportance],
@@ -79,10 +76,15 @@ export function useEvents(typeKey: string, importanceKey: string) {
     };
   }, []);
 
-  // 日期或筛选变了就重取第一页（`day` 还没定下来时不动）
+  // 换筛选回第一页——否则「第 5 页的公告筛选」多半是空白
   useEffect(() => {
-    if (day) void load(day, null);
-  }, [day, load]);
+    setPage(1);
+  }, [typeKey, importanceKey]);
+
+  // 日期、页码或筛选变了就重取（`day` 还没定下来时不动）
+  useEffect(() => {
+    if (day) void load(day, page);
+  }, [day, page, load]);
 
   // 卸下时作废在途回调
   useEffect(() => () => void ++seq.current, []);
@@ -90,13 +92,15 @@ export function useEvents(typeKey: string, importanceKey: string) {
   return {
     calendar,
     day,
+    page,
     feed,
     loading,
-    more,
     error,
-    select: setDay,
-    loadMore: () => {
-      if (day && feed) void load(day, feed.offset);
+    // 换日期同时回第一页（换一天还停在第 5 页多半是空白）
+    select: (next: string) => {
+      setDay(next);
+      setPage(1);
     },
+    goPage: setPage,
   };
 }

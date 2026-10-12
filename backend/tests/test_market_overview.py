@@ -193,3 +193,77 @@ def test_overview_503_when_data_missing(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: tmp_path / "空")
     assert client.get("/api/v1/market/overview").status_code == 503
     assert client.get("/api/v1/market/sectors").status_code == 503
+
+
+# ── 行业钻取：截面按 PIT 归属过滤（M10c）──────────────────────────────────
+
+
+def test_cross_section_industry_filter_uses_pit_cutoff(market_dir: Path) -> None:
+    """**与板块块同一支口径**：`available_at` 在收盘之后的事件对当日不可见。
+
+    E2 把 300750 挂进「半导体」但发生在 16:00 ⇒ 用 `industry=半导体` 查当日截面时它不该出现。
+    """
+    body = client.get(
+        "/api/v1/market/cross-section", params={"date": DAY2.isoformat(), "industry": "半导体"}
+    ).json()
+    assert body["total"] == 3
+    assert {row["symbol"] for row in body["items"]} == {"600519", "600000", "000001"}
+    assert body["industry"] == "半导体"
+
+
+def test_cross_section_industry_total_equals_sector_symbols(market_dir: Path) -> None:
+    """**本段最重要的一条**：钻进去的列表 `total` 必须等于板块条上的成分数。
+
+    两个数走的是 SQL 里同一支归属、同一个**当日截面池**（四价齐全且有收盘）。这条曾经红过：
+    板块块那边多要了 `change_pct IS NOT NULL`，于是同一个「当日截面」有了两个定义，
+    实测医药生物 786 vs 787。**池子不因「有没有加筛选」而变**——那正是本用例守的东西。
+    """
+    sectors = client.get(
+        "/api/v1/market/sectors", params={"date": DAY2.isoformat(), "min_symbols": 3}
+    ).json()
+    assert sectors["items"], "夹具里应当有行业（否则这条断言是空的）"
+    for row in sectors["items"]:
+        listing = client.get(
+            "/api/v1/market/cross-section",
+            params={"date": DAY2.isoformat(), "industry": row["industry"]},
+        ).json()
+        assert listing["total"] == row["symbols"], f"{row['industry']}: {listing['total']} vs {row['symbols']}"
+
+
+def test_cross_section_industry_composes_with_sort_and_paging(market_dir: Path) -> None:
+    """行业过滤与既有的排序 / 分页**叠加**，不是互斥的几条路。
+
+    （`q` 也能叠加，但它走名称字典，那个夹具在 `test_market_cross_section.py` 里——
+    这里不重复造一份字典，避免两个文件各自维护一套。）
+    """
+    body = client.get(
+        "/api/v1/market/cross-section",
+        params={
+            "date": DAY2.isoformat(),
+            "industry": "半导体",
+            "sort": "change_pct",
+            "order": "desc",
+        },
+    ).json()
+    assert [row["symbol"] for row in body["items"]] == ["600519", "600000", "000001"]
+    paged = client.get(
+        "/api/v1/market/cross-section",
+        params={
+            "date": DAY2.isoformat(),
+            "industry": "半导体",
+            "sort": "change_pct",
+            "order": "desc",
+            "limit": 1,
+            "offset": 1,
+        },
+    ).json()
+    assert paged["total"] == 3 and [row["symbol"] for row in paged["items"]] == ["600000"]
+
+
+def test_cross_section_unknown_industry_is_empty_not_500(market_dir: Path) -> None:
+    """认不出的行业名是**有意义的空**（当天没人提它），不是错误。"""
+    body = client.get(
+        "/api/v1/market/cross-section",
+        params={"date": DAY2.isoformat(), "industry": "不存在的行业"},
+    ).json()
+    assert body["total"] == 0 and body["items"] == []

@@ -165,6 +165,7 @@ def cross_section(
     sort: str = "change_pct",
     order: str = "desc",
     symbols: list[str] | None = None,
+    industry: str | None = None,
     limit: int = 50,
     offset: int = 0,
     data_dir: Path | None = None,
@@ -179,6 +180,9 @@ def cross_section(
     不填 0（0 会被读成「换手率极低」，那是另一回事）。
 
     排序带 `NULLS LAST`：换手率大面积为空，让空值沉底比随数据库默认行为漂移可预期。
+
+    `industry` 按 **PIT 累积归属**过滤（`tags_source` 的同一支）——板块块点一条进来的
+    就是这批标的，故列表的 `total` 与条上标的只数**必须相等**。
     """
     if sort not in CROSS_SECTION_SORTS:
         raise ValueError(f"不支持的排序键 {sort!r}")
@@ -205,6 +209,14 @@ def cross_section(
             "open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL",
         ]
         params: list = [adjust, trade_date]
+        if industry is not None:
+            # 半连接（`IN (子查询)`）而不是 JOIN：截面的行本来就不该被标签数量放大
+            where.append(
+                "symbol IN (SELECT DISTINCT s.sym FROM "
+                f"{tags_source()}"
+                " WHERE i.ind = ? AND s.sym <> '' AND available_at <= CAST(? AS TIMESTAMPTZ))"
+            )
+            params.extend([industry, _pit_cutoff(str(trade_date))])
         if symbols is not None:
             if not symbols:
                 return {"trade_date": trade_date, "total": 0, "count": 0, "items": []}
@@ -289,6 +301,23 @@ def symbol_rank(
         payload["rank_amount"] = int(row["rank_amount"])
         payload["percentile_amount"] = (total - int(row["rank_amount"]) + 1) / total
     return payload
+
+
+def tags_source() -> str:
+    """PIT 累积归属的「事件 → (行业, 标的) 配对」展开源。**两个消费方共用同一支**：
+    板块块按 `ind` 分组、行业钻取按 `ind` 过滤。口径必须是同一支，否则点进板块条看到的
+    成分与条上那个数字对不上。
+
+    ⚠ 写法是横向积（`FROM …, UNNEST(…) AS …`），**不是同一条 SELECT 里写两个 `unnest`**
+    ——后者 DuckDB 会按**位置 zip**、短的补 NULL，一条「1 个行业 × 3 只标的」的事件
+    只产出 1 个正确配对，不报错、只静默少算（M10a 实测踩过）。
+    """
+    return f"{EVENTS_VIEW}, UNNEST(industries) AS i(ind), UNNEST(symbols) AS s(sym)"
+
+
+def _pit_cutoff(trade_date: str) -> str:
+    """当日收盘时刻（北京时间）。归属取「截至这一刻已可得的事件」。"""
+    return f"{trade_date} 15:00:00+08"
 
 
 def _latest_trade_date(con: duckdb.DuckDBPyConnection, adjust: str) -> str | None:
@@ -454,18 +483,14 @@ def sector_performance(
             trade_date = _latest_trade_date(con, adjust)
             if trade_date is None:
                 return {"trade_date": None, "rows": [], "coverage": {"total": 0, "covered": 0}}
-        cutoff = f"{trade_date} 15:00:00+08"  # 收盘时刻（A 股 15:00 收盘）
+        cutoff = _pit_cutoff(trade_date)
         rows = _fetch(
             con,
             f"""
-            -- ⚠ 两个 `unnest` 必须写成 `FROM …, UNNEST(…)`（横向**笛卡尔积**）。
-            -- 写在同一条 SELECT 里（`SELECT unnest(a), unnest(b)`）时 DuckDB 按**位置 zip**、
-            -- 短的补 NULL——一条「1 个行业 × 3 只标的」的事件只会产出 1 个正确配对。
-            -- 这个坑不会报错、不会崩，只是**静默少算**，故在 `tests/test_market_overview.py`
-            -- 里有一条专门的多标的夹具钉住它。
+            -- 展开源的写法（为什么是横向积而不是多个 unnest）见 `tags_source`
             WITH tag AS (
                 SELECT i.ind AS ind, s.sym AS sym
-                FROM {EVENTS_VIEW}, UNNEST(industries) AS i(ind), UNNEST(symbols) AS s(sym)
+                FROM {tags_source()}
                 WHERE available_at <= CAST(? AS TIMESTAMPTZ)
                   AND len(industries) > 0 AND len(symbols) > 0
             ),
@@ -473,9 +498,16 @@ def sector_performance(
                 SELECT DISTINCT ind, sym FROM tag
                 WHERE ind IS NOT NULL AND sym IS NOT NULL AND sym <> ''
             ),
+            -- 池子 = **当日截面**（四价齐全且有收盘），与 `cross_section` 逐字同一个定义。
+            -- 这里**不**再额外要求 `change_pct IS NOT NULL`：多一个条件就多一个「当日截面」的
+            -- 定义，于是板块条上的成分数与点进去的列表 total 会差几只（实测医药生物 786 vs 787，
+            -- 差的就是那天没有涨跌幅的那几只）。`avg`/`median` 本身就忽略 NULL，不需要预筛。
+            -- **池子不因「有没有加筛选」而变**，这是一条要守住的纪律。
             px AS (
                 SELECT symbol, change_pct, amount FROM {BARS_VIEW}
-                WHERE adjustment = ? AND trade_date = ? AND change_pct IS NOT NULL
+                WHERE adjustment = ? AND trade_date = ?
+                  AND close IS NOT NULL AND open IS NOT NULL
+                  AND high IS NOT NULL AND low IS NOT NULL
             )
             SELECT clean.ind AS industry,
                    count(*) AS symbols,
@@ -498,7 +530,9 @@ def sector_performance(
             ),
             px AS (
                 SELECT symbol FROM {BARS_VIEW}
-                WHERE adjustment = ? AND trade_date = ? AND change_pct IS NOT NULL
+                WHERE adjustment = ? AND trade_date = ?
+                  AND close IS NOT NULL AND open IS NOT NULL
+                  AND high IS NOT NULL AND low IS NOT NULL
             )
             SELECT (SELECT count(*) FROM px) AS total,
                    count(*) AS covered

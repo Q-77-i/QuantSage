@@ -122,32 +122,29 @@ async function main() {
   check("内容哈希做了截断（不是 64 位全文）", hashText.length > 0 && hashText.length <= 16, hashText);
   await toggle.click();
 
-  // ── 5. 翻页：不重、不漏、真的变多 ─────────────────────────
+  // ── 5. 翻页：真分页，换一整批 ────────────────────────────
   console.log("\n[5] 翻页");
-  const before = await items().count();
-  const keysBefore = await page.$$eval('[data-feed="items"] [data-event]', (nodes) =>
-    nodes.map((node) => `${node.dataset.event}`),
+  const pageOne = await page.$$eval('[data-feed="items"] [data-event]', (nodes) =>
+    nodes.map((node) => node.dataset.event),
   );
-  const more = page.locator("button", { hasText: "加载更多" });
-  if ((await more.count()) === 0) {
-    check("有「加载更多」可点", false, "这一天的条数不足一页");
-  } else {
-    await more.click();
-    await page.waitForFunction(
-      (n) => document.querySelectorAll('[data-feed="items"] [data-event]').length > n,
-      before,
-    );
-    const after = await items().count();
-    const keysAfter = await page.$$eval('[data-feed="items"] [data-event]', (nodes) =>
-      nodes.map((node) => `${node.dataset.event}`),
-    );
-    check("追加后条数变多", after > before, `${before} → ${after}`);
-    check("追加后**逐条键唯一**（没有重复渲染）", new Set(keysAfter).size === keysAfter.length);
-    check(
-      "第一页的条目原样保留（是追加不是替换）",
-      keysBefore.every((key, index) => keysAfter[index] === key),
-    );
-  }
+  const label = await page.locator("[data-page-label]").innerText();
+  check("有页码指示（第 N / M 页）", label.includes("页"), label);
+  await page.locator('[data-pager] button', { hasText: "下一页" }).click();
+  await page.waitForTimeout(1200);
+  const pageTwo = await page.$$eval('[data-feed="items"] [data-event]', (nodes) =>
+    nodes.map((node) => node.dataset.event),
+  );
+  check(
+    "下一页：换了一整批（与第一页零交集、且条数不变）",
+    pageTwo.length === pageOne.length && pageTwo.every((key) => !pageOne.includes(key)),
+    `${pageOne.length} → ${pageTwo.length} 条`,
+  );
+  await page.locator('[data-pager] button', { hasText: "上一页" }).click();
+  await page.waitForTimeout(1200);
+  const backToOne = await page.$$eval('[data-feed="items"] [data-event]', (nodes) =>
+    nodes.map((node) => node.dataset.event),
+  );
+  check("上一页：逐条回到第一页", backToOne.join() === pageOne.join());
 
   // ── 6. 切筛选：公告档真的全是公告 ─────────────────────────
   console.log("\n[6] 切到「公告」");

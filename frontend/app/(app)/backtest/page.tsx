@@ -15,14 +15,9 @@ import { TradesTable } from "@/components/backtest/trades-table";
 import { useBacktest } from "@/components/backtest/use-backtest";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import {
-  buildRequest,
-  defaultForm,
-  formFromRequest,
-  hasErrors,
-  validateForm,
-} from "@/lib/backtest-form";
+import { buildRequest, defaultForm, formFromRequest, hasErrors, validateForm } from "@/lib/backtest-form";
 import type { FormState } from "@/lib/backtest-form";
+import { validateSymbol } from "@/lib/watchlist";
 import type { ChartHandle } from "@/lib/chart-handle";
 import type { BacktestRunDetail, RejectSummary, StoredBacktestRequest } from "@/lib/types";
 
@@ -54,9 +49,14 @@ export default function BacktestPage() {
   /** 重开的是用户策略那次时的提示条（M4c）；内置策略为 null */
   const [userNotice, setUserNotice] = useState<UserRunNotice | null>(null);
 
-  // 地址栏跟着当前这份报告走。`replace` 而不是 `push`：连跑几次不该在历史里堆一串
+  // 地址栏跟着当前这份报告走。`replace` 而不是 `push`：连跑几次不该在历史里堆一串。
+  // ⚠ **`?symbol=` 要一起带上**：M10c 的个股页用 `/backtest?symbol=600519` 把标的带过来，
+  // 跑完一次后如果只留 `?run=`，那个标的就被冲掉了——刷新或回退时表单会退回默认标的。
   useEffect(() => {
-    if (runId) router.replace(`/backtest?run=${runId}`, { scroll: false });
+    if (!runId) return;
+    const kept = new URLSearchParams(window.location.search).get("symbol");
+    const tail = kept ? `&symbol=${encodeURIComponent(kept)}` : "";
+    router.replace(`/backtest?run=${runId}${tail}`, { scroll: false });
   }, [runId, router]);
 
   function handleRun() {
@@ -94,6 +94,7 @@ export default function BacktestPage() {
     <>
       <Suspense fallback={null}>
         <RunDeepLink loadedId={runId} onLoad={loadRun} onRequest={handleLoaded} />
+        <SymbolDeepLink onSymbol={(symbol) => setForm((prev) => ({ ...prev, symbol }))} />
       </Suspense>
 
       <main className="mx-auto max-w-[1400px] px-4 py-6">
@@ -218,6 +219,21 @@ function RunDeepLink({
     });
   }, [target, loadedId, onLoad, onRequest]);
 
+  return null;
+}
+
+/**
+ * `?symbol=600519` → 预填表单的标的（M10c 的「去回测」入口）。
+ *
+ * **只预填、不自动跑**——点「去回测」的意图是「拿这个标的去挑策略」，不是「立刻回测」。
+ * 非法输入先过滤掉（`validateSymbol`）：`?symbol=abc` 预填进去只会让输入框先红一下。
+ */
+function SymbolDeepLink({ onSymbol }: { onSymbol: (symbol: string) => void }) {
+  const params = useSearchParams();
+  const target = params.get("symbol");
+  useEffect(() => {
+    if (target && validateSymbol(target) === null) onSymbol(target);
+  }, [target, onSymbol]);
   return null;
 }
 

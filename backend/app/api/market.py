@@ -100,6 +100,7 @@ async def get_cross_section(
     sort: SortKey = "change_pct",
     order: SortOrder = "desc",
     q: Annotated[str | None, Query(max_length=40)] = None,
+    industry: Annotated[str | None, Query(max_length=40)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict[str, Any]:
@@ -108,6 +109,9 @@ async def get_cross_section(
     `date` 缺省取行情里最后一个有价交易日（与 `/freshness` 同源）。`q` 走**代码前缀
     或名称子串**——名称来自事件语料抽出的字典（覆盖 96.8%），没有名字的标的仍能按
     代码搜到，此时 `name` 为 null。字典缺失时全部 `name` 为 null，**不是 500**。
+
+    `industry` 按 **PIT 累积归属**过滤（与 `/market/sectors` **同一支**口径）——首页板块条点一条
+    进来的就是这批标的，故列表的 `total` 与该条上的成分数**必须相等**；不等就是两处口径漂了。
 
     实测全市场排序 6–12ms（5,572 只有价），不落缓存。
     """
@@ -121,6 +125,7 @@ async def get_cross_section(
         sort=sort,
         order=order,
         symbols=symbols,
+        industry=industry,
         limit=limit,
         offset=offset,
     )
@@ -129,6 +134,10 @@ async def get_cross_section(
         "adjust": adjust,
         "sort": sort,
         "order": order,
+        "industry": industry,
+        # 回显分页参数：前端据此算「下一页从哪取」，不必自己记一份（M10b 的 feed 同）
+        "limit": limit,
+        "offset": offset,
         "items": [
             {
                 "symbol": row["symbol"],
