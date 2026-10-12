@@ -49,7 +49,8 @@ export function Workbench({ initialId }: { initialId: string | null }) {
     <main className="mx-auto max-w-[1400px] px-4 py-6">
       <h1 className="font-heading text-xl font-semibold">策略工作台</h1>
       <p className="mt-1 text-xs text-ink-3">
-        写策略 → 保存 → 运行。回测跑的是**库里保存的那份源码**，所以运行前会先检查一次。
+        写策略 → 保存 → 运行。回测跑的是<strong className="font-medium">库里保存的那份源码</strong>
+        ，所以运行前会先检查一次。
       </p>
 
       <div className="mt-5 lg:flex lg:gap-6">
