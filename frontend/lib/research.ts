@@ -337,7 +337,27 @@ export interface EvidenceRow {
 }
 
 /** 一条证据 → 展示行。**事发与可得并列**（PIT 语义最直观的展示位，与 `/paper` 的来源三元组同序）。 */
-export function evidenceRows(item: ReportEvidence): EvidenceRow[] {
+/**
+ * `evidenceRows` **真正读到的字段**。
+ *
+ * 收窄成结构子集（而不是只收 `ReportEvidence`）是为了让 M10b 的快讯条目**直接复用这一支**——
+ * 它俩要展示的是同一件事（一条事件的来源可追溯），行序与文案都该同源。让快讯去凑
+ * `day` / `found` / `revised` 那类它没有的字段才是假的复用。
+ */
+export type EvidenceFields = Pick<
+  ReportEvidence,
+  | "event_time"
+  | "available_at"
+  | "summary"
+  | "source"
+  | "original_source"
+  | "content_hash"
+  | "direction_norm"
+  | "industries"
+  | "source_url"
+>;
+
+export function evidenceRows(item: EvidenceFields): EvidenceRow[] {
   const rows: EvidenceRow[] = [];
   rows.push({ label: "事发", value: eventStamp(item.event_time) });
   rows.push({ label: "可得", value: eventStamp(item.available_at) });

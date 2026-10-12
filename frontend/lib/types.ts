@@ -1237,3 +1237,62 @@ export interface SectorRow {
   avg_pct: number | null;
   median_pct: number | null;
 }
+
+// ── 事件日历 / 快讯流（M10b）─────────────────────────────────────────────
+
+/** `GET /api/v1/events/calendar`（M10b）——日期带 */
+export interface EventCalendar {
+  start: string | null;
+  end: string | null;
+  high_score: number;
+  /** **只含真有事件的日子**：补零会被读成「那天数据缺失」，而那是另一回事 */
+  days: EventCalendarDay[];
+}
+
+export interface EventCalendarDay {
+  /** `YYYY-MM-DD`（北京时间口径，服务端已在 SQL 里分好组） */
+  date: string;
+  total: number;
+  /** 该日 `importance_score >= high_score` 的条数 */
+  high: number;
+  by_type: Record<string, number>;
+}
+
+/** `GET /api/v1/events/feed`（M10b）——某日的分页快讯流 */
+export interface EventFeed {
+  date: string | null;
+  total: number;
+  count: number;
+  offset: number;
+  limit: number;
+  /** 本次的类型白名单（null = 全部类型） */
+  types: string[] | null;
+  min_importance: number | null;
+  items: EventFeedItem[];
+}
+
+/**
+ * 一条快讯。
+ *
+ * **字段集刻意覆盖 `EvidenceFields`**（M7 证据行真正读的那几个），故可以直接喂
+ * `evidenceRows(item)`——两处展示的是同一件事，行序与文案都该同源。
+ */
+export interface EventFeedItem {
+  event_id: string;
+  event_type: string | null;
+  title: string | null;
+  summary: string | null;
+  /** 事发 */
+  event_time: string | null;
+  /** 平台首次可得——与事发之差就是这个项目的护城河展示位 */
+  available_at: string | null;
+  direction_norm: string | null;
+  industries: string[];
+  importance_score: number | null;
+  source: string | null;
+  original_source: string | null;
+  source_url: string | null;
+  content_hash: string | null;
+  /** 关联标的；字典里没有名字的给 `null`，**不编** */
+  symbols: { code: string; name: string | null }[];
+}

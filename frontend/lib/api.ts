@@ -22,6 +22,8 @@ import type {
   BacktestRunSummary,
   BarsResponse,
   DataFreshness,
+  EventCalendar,
+  EventFeed,
   EventsResponse,
   MarketOverview,
   MarketSectors,
@@ -265,6 +267,39 @@ export const api = {
   /** 因子报告：**同步一次返回**（公开端点、不落库）；`costs=false` 时净曲线为 null */
   factorReport: (params: FactorQueryInput) =>
     request<FactorReport>(`/api/v1/factor/report${factorQuery(params)}`),
+
+  // ── 事件日历 / 快讯流（M10b）──────────────────────────────────────────
+  /**
+   * 日期带：区间内每日的事件计数。`end` 缺省取语料里最后一个有事件的日子。
+   */
+  eventCalendar: (params: { start?: string; end?: string; highScore?: number } = {}) =>
+    request<EventCalendar>(
+      `/api/v1/events/calendar${query({
+        start: params.start,
+        end: params.end,
+        high_score: params.highScore,
+      })}`,
+    ),
+  /**
+   * 某日的分页快讯流。**默认类型由调用方给**——服务端不替调用方筛（重要度不跨类型可比，
+   * 不筛就是一张公告列表），界面把默认口径写在筛选行上。
+   */
+  eventFeed: (params: {
+    date?: string;
+    types?: readonly string[];
+    minImportance?: number;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const search = new URLSearchParams();
+    if (params.date) search.set("date", params.date);
+    for (const type of params.types ?? []) search.append("types", type);
+    if (params.minImportance !== undefined) search.set("min_importance", String(params.minImportance));
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    if (params.offset !== undefined) search.set("offset", String(params.offset));
+    const text = search.toString();
+    return request<EventFeed>(`/api/v1/events/feed${text ? `?${text}` : ""}`);
+  },
 
   // ── 研究首页（M10a）────────────────────────────────────────────────────
   /** 大盘总览：涨跌家数 / 涨跌停 / 成交额 / 等权代理 + 两个「截至」。公开端点。 */

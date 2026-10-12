@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { EventFeedPanel } from "@/components/home/event-feed-panel";
 import { OverviewPanel } from "@/components/home/overview-panel";
 import { SectorPanel } from "@/components/home/sector-panel";
+import { useEvents } from "@/components/home/use-events";
 import { useHome } from "@/components/home/use-home";
 import { asOf } from "@/lib/market-home";
 
@@ -31,7 +33,10 @@ const ENTRIES = [
  */
 export default function HomePage() {
   const [minSymbols, setMinSymbols] = useState(10);
+  const [typeKey, setTypeKey] = useState("feed"); // 「快讯（除公告）」——理由见 lib/event-feed.ts
+  const [importanceKey, setImportanceKey] = useState("any");
   const { overview, sectors, loading, error, reload } = useHome(minSymbols);
+  const events = useEvents(typeKey, importanceKey);
   const stamps = asOf(overview);
 
   return (
@@ -77,6 +82,21 @@ export default function HomePage() {
           error={null}
           minSymbols={minSymbols}
           onMinSymbols={setMinSymbols}
+        />
+
+        <EventFeedPanel
+          calendar={events.calendar}
+          feed={events.feed}
+          day={events.day}
+          loading={events.loading}
+          more={events.more}
+          error={events.error}
+          typeKey={typeKey}
+          importanceKey={importanceKey}
+          onType={setTypeKey}
+          onImportance={setImportanceKey}
+          onSelect={events.select}
+          onLoadMore={events.loadMore}
         />
       </div>
 

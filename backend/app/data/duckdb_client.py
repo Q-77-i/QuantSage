@@ -729,6 +729,117 @@ EVIDENCE_COLUMNS = (
 )
 
 
+#: 快讯流要的列 = 证据面板那批（事件/可得双戳 + 来源三元组 + 行业 + 方向）+ 三列。
+#: **从 `EVIDENCE_COLUMNS` 拼出来**，不是另抄一份——两处都靠「一条事件的来源可追溯」这条
+#: 硬要求吃饭，抄一份迟早漂移。
+FEED_COLUMNS = (*EVIDENCE_COLUMNS, "event_type", "importance_score", "symbols")
+
+
+def event_days(
+    start: str,
+    end: str,
+    *,
+    high_score: float = 60.0,
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> list[dict]:
+    """区间内**每日**的事件计数（总数 / 高分计数 / 按类型），供 M10 的日期带。
+
+    返回按日期升序、且**只含真有事件的日子**——「那天没有事件」与「那天不在窗口里」是两回事，
+    补零会把前者画成一个「零条的柱子」，读起来像数据缺失。
+
+    `high_score` 的阈值**由调用方给**（端点暴露成查询参数），不在本层写死：什么叫「高分」
+    是展示口径，不是数据事实。实测近 30 个自然日聚合 **74ms**。
+    """
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        rows = _fetch(
+            con,
+            f"""
+            SELECT event_time::DATE AS day, event_type,
+                   count(*) AS n,
+                   count(*) FILTER (WHERE importance_score >= ?) AS high
+            FROM {EVENTS_VIEW}
+            WHERE event_time::DATE BETWEEN ? AND ?
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+            """,
+            [high_score, start, end],
+        )
+    finally:
+        if own:
+            con.close()
+
+    # 摊平成「一天一行」：SQL 里直接出嵌套结构要么靠 `histogram()` 这类方言，要么拼字符串，
+    # 而这里最多 30 天 × 5 类 = 150 行，在 Python 里归并比在 SQL 里造结构清楚得多。
+    days: dict[str, dict] = {}
+    for row in rows:
+        day = row["day"].isoformat()
+        entry = days.setdefault(
+            day, {"date": day, "total": 0, "high": 0, "by_type": {}}
+        )
+        entry["total"] += int(row["n"])
+        entry["high"] += int(row["high"])
+        entry["by_type"][row["event_type"]] = int(row["n"])
+    return list(days.values())
+
+
+def event_feed(
+    day: str | None = None,
+    *,
+    types: list[str] | None = None,
+    min_importance: float | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> dict[str, object]:
+    """某一天的**全市场**事件分页流水，按 `importance_score` 降序（M10 快讯流）。
+
+    与 `events()` 的差别：那个按 `list_contains(symbols, ?)` 过滤**单标的**且不分页；
+    这个按**日**取全市场。`day` 缺省取语料里最后一个有事件的日子。
+
+    **排序键是 `(importance_score DESC, event_id)`**：只按分数排时同分条目的顺序由数据库定，
+    翻页会出现「第 2 页重复了第 1 页的两条」——加 `event_id` 是为了让**分页是确定的**
+    （`symbol_rank` / `cross_section` 的 `, symbol ASC` 是同一条纪律）。
+
+    `types` 是**白名单**（None = 全部类型）。这层不设默认值：默认看哪几类事件是**展示口径**，
+    该由调用方决定并写进响应（`note`），藏在数据层会让「为什么公告不见了」无从追查。
+    """
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        if day is None:
+            rows = _fetch(con, f"SELECT max(event_time)::DATE AS day FROM {EVENTS_VIEW}", [])
+            resolved = rows[0]["day"] if rows else None
+            if resolved is None:
+                return {"date": None, "total": 0, "count": 0, "items": []}
+            day = resolved.isoformat()
+
+        where = ["event_time::DATE = ?"]
+        params: list = [day]
+        if types:
+            where.append(f"event_type IN ({', '.join('?' for _ in types)})")
+            params.extend(types)
+        if min_importance is not None:
+            where.append("importance_score >= ?")
+            params.append(min_importance)
+        condition = " AND ".join(where)
+
+        total = _fetch(con, f"SELECT count(*) AS n FROM {EVENTS_VIEW} WHERE {condition}", params)[0]
+        items = _fetch(
+            con,
+            f"SELECT {', '.join(FEED_COLUMNS)} FROM {EVENTS_VIEW} WHERE {condition}"
+            " ORDER BY importance_score DESC NULLS LAST, event_id ASC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+    finally:
+        if own:
+            con.close()
+    return {"date": day, "total": int(total["n"]), "count": len(items), "items": items}
+
+
 def events_by_ids(event_ids: list[str], *, data_dir: Path | None = None) -> list[dict]:
     """按 `event_id` 批量取语料行（M7 证据面板）。
 

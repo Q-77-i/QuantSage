@@ -164,7 +164,11 @@ function EvidenceItem({ item }: { item: ReportEvidence }) {
   );
 }
 
-function Row({ row }: { row: EvidenceRow }) {
+/**
+ * 一行「标签 / 值」。**导出给 M10b 的快讯流复用**——两处展示的是同一件事（一条事件的
+ * 来源可追溯），行渲染（等宽哈希、外链文案、断行）也不该各写一份。
+ */
+export function Row({ row }: { row: EvidenceRow }) {
   return (
     <div className="flex gap-2 py-0.5">
       <dt className="w-16 shrink-0 text-ink-3">{row.label}</dt>

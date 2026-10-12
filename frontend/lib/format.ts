@@ -154,6 +154,27 @@ export function dayStamp(iso: string | null): string {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
+/**
+ * **只到日**：`2026-09-30` → `09-30`。日期带与按日分组头用它（`dayStamp` 一定带时分）。
+ *
+ * **走纯字符串切片，不过 `Date`**：服务端按日分组是在 SQL 里做完的（`event_time::DATE`），
+ * 交过来就是北京时间的日子；再拿 `Date` 解析一遍等于把同一个换算做第二次，两边必然漂。
+ */
+export function dayOnly(day: string | null): string {
+  if (!day) return EMPTY;
+  return day.length >= 10 ? day.slice(5, 10) : day;
+}
+
+const WEEKDAY = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", weekday: "short" });
+
+/** `2026-09-30` → `周三`。日期带上帮读者定位——「调休上班的周六」一眼看得出来。 */
+export function weekday(day: string | null): string {
+  if (!day) return EMPTY;
+  const parsed = new Date(`${day.slice(0, 10)}T00:00:00+08:00`);
+  if (Number.isNaN(parsed.getTime())) return EMPTY;
+  return WEEKDAY.format(parsed);
+}
+
 /** 截断长哈希一类。`abc…` 前 `n` 位（`content_hash` 展示用）。 */
 export function shortHash(value: string | null, n = 12): string {
   if (!value) return EMPTY;

@@ -62,6 +62,9 @@ EVENTS_SCHEMA = pa.schema(
         ("event_time", pa.timestamp("us", tz=CN_TZ)),
         ("available_at", pa.timestamp("us", tz=CN_TZ)),
         ("direction_norm", pa.string()),
+        # M10b 快讯流按它排序、按它筛高分；排序键是 (importance_score DESC, event_id)。
+        # 平台给的 0–100 分，**不跨类型可比**（公告满分 100、新闻满分 92），故夹具里两种都放。
+        ("importance_score", pa.float64()),
         ("factor_scores", pa.string()),
         # M5c 因子面板吃的就是这一列（带符号的因子值，实测覆盖 100%）：
         # 面板不解析 `factor_scores` 的 JSON，两个字段同源（|factor_value| = score / 100）
@@ -142,6 +145,7 @@ def write_events_parquet(
             "event_time": row["event_time"],
             "available_at": row.get("available_at", row["event_time"]),
             "direction_norm": row.get("direction_norm"),
+            "importance_score": row.get("importance_score"),
             "factor_scores": row.get("factor_scores", encode_factor_scores(row.get("score"))),
             "factor_value": row.get("factor_value"),
             "source": row.get("source"),
