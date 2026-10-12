@@ -53,6 +53,22 @@ SAMPLE_EVENTS: list[dict[str, object]] = [
         "source": "xiaoshi",
         "original_source": "上交所公告",
         "content_hash": "a1b2c3d4e5f60718",
+        # M10d：详情页要的那批（这条件造齐，另一条故意留空——空值与缺值必须显示成「—」）
+        "summary": "公司中标 12.6 亿元大额订单，占上年度营收 18%。",
+        "direction": "利多",
+        "confidence": 0.8,
+        "person": '["张三"]',
+        "stocks": '[{"code": "600519", "name": "贵州茅台", "reason": "中标主体"}, {"code": "000016", "name": "*ST康佳A", "reason": null}]',
+        "source_url": "https://example.invalid/a.pdf",
+        "quality_status": "stable",
+        "source_time_quality": "exact",
+        # 修订四件：**故意给一条被修订过的**（真实语料里当前全是默认值，那条渲染分支
+        # 只能靠夹具守住）
+        "record_version": 3,
+        "revision_id": "rev-abc123",
+        "revision_time": ts("2026-07-22 10:00:00"),
+        "is_corrected": True,
+        "correction_count": 2,
     },
     {
         "event_id": "evt-2",
@@ -63,6 +79,8 @@ SAMPLE_EVENTS: list[dict[str, object]] = [
         "source": "xiaoshi",
         "original_source": "证券时报",
         "content_hash": "ffeeddccbbaa0099",
+        # `stocks` 是**坏 JSON**：详情页必须给空数组 + 200，不能 500（一格坏数据不该炸整页）
+        "stocks": "{不是 JSON",
     },
 ]
 
@@ -477,3 +495,64 @@ def test_freshness_reports_the_source_boundary(data_dir: Path) -> None:
     assert body["source_checked_at"].startswith("2026-10-12")
     # 本地那半段不受影响
     assert body["latest_trade_date"] == str(trading_days(START, BAR_COUNT)[-1])
+
+
+# ── M10d：事件详情（单条证据链）────────────────────────────────
+
+
+def test_event_detail_returns_the_evidence_chain(data_dir: Path) -> None:
+    """一条事件的详情：正文 / 打标理由 / 人物 / 因子 / **修订史** 一次给全（M10d）。
+
+    修订那条**故意用夹具里被修订过的行**（`record_version=3` 且 `is_corrected`）：真实语料
+    当前 30.7 万行全是默认值（版本 1、未修订），这条渲染分支只有夹具能守住。
+    """
+    response = client.get("/api/v1/events/evt-1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"].startswith("公司中标")  # 正文只从详情出（快讯流那层不带）
+    assert body["direction"] == "利多" and body["confidence"] == 0.8
+    assert body["person"] == ["张三"]
+    assert body["source_url"] == "https://example.invalid/a.pdf"
+    # 每只标的带 reason；**空 reason 保留成 None**（显示成「—」是前端的事，不是不显示）。
+    # `name` 是本地字典解析的结果——夹具的数据目录里没有名称字典，故为 None（**缺名不编**）；
+    # 平台自己给的那个名字原样留在 `source_name`，两者不一致时读者能看出是哪一边的说法。
+    assert body["stocks"] == [
+        {"code": "600519", "name": None, "source_name": "贵州茅台", "reason": "中标主体"},
+        {"code": "000016", "name": None, "source_name": "*ST康佳A", "reason": None},
+    ]
+    # 修订史照原样出（不加工成「已修订 N 次」那种文案）
+    assert body["record_version"] == 3
+    assert body["revision_id"] == "rev-abc123"
+    assert body["is_corrected"] is True
+    assert body["correction_count"] == 2
+    assert body["date"] == "2026-07-21"  # 省略 day 时回显实际落在哪一天
+
+
+def test_event_detail_survives_a_broken_json_column(data_dir: Path) -> None:
+    """`stocks` 是坏 JSON 时给空数组 + **200**——一格坏数据不该让整页 500。"""
+    response = client.get("/api/v1/events/evt-2")
+
+    assert response.status_code == 200
+    assert response.json()["stocks"] == []
+
+
+def test_event_detail_day_is_optional_but_exact(data_dir: Path) -> None:
+    """`day` 给了就精确匹配：同一天的 200、错一天的 404（`event_id` 只在日分区内唯一）。"""
+    assert client.get("/api/v1/events/evt-1?day=2026-07-21").status_code == 200
+    assert client.get("/api/v1/events/evt-1?day=2026-07-22").status_code == 404
+
+
+def test_event_detail_404_for_unknown_id(data_dir: Path) -> None:
+    """查不到 → 404，不返回空壳。"""
+    assert client.get("/api/v1/events/news:does-not-exist").status_code == 404
+
+
+def test_feed_no_longer_carries_summary(data_dir: Path) -> None:
+    """D1：正文只从详情抽屉出——快讯流那层不再带 `summary`（每行少传几百字）。"""
+    body = client.get("/api/v1/events/feed").json()
+
+    assert body["items"], "夹具里应有事件"
+    assert "summary" not in body["items"][0]
+    # 该带的还在（来源三元组是 PRD 的硬要求）
+    assert body["items"][0]["original_source"]

@@ -79,6 +79,21 @@ EVENTS_SCHEMA = pa.schema(
         ("summary", pa.string()),
         ("industries", pa.list_(pa.string())),
         ("source_url", pa.string()),
+        # M10d 事件详情要用的列（生产语料本就有，30 列里剩下的那批）：
+        # 方向与置信、人物、三戳（报告可得 / 观察）、质量标注、去重键、修订四件
+        ("direction", pa.string()),
+        ("confidence", pa.float64()),
+        ("person", pa.string()),
+        ("reported_available_at", pa.timestamp("us", tz=CN_TZ)),
+        ("observed_at", pa.timestamp("us", tz=CN_TZ)),
+        ("quality_status", pa.string()),
+        ("source_time_quality", pa.string()),
+        ("dedup_key", pa.string()),
+        ("record_version", pa.int32()),
+        ("revision_id", pa.string()),
+        ("revision_time", pa.timestamp("us", tz=CN_TZ)),
+        ("is_corrected", pa.bool_()),
+        ("correction_count", pa.int32()),
     ]
 )
 
@@ -155,6 +170,20 @@ def write_events_parquet(
             # 传了 `industries` 就按它写；不传即 None（真实语料里 announcement 也是 0% 覆盖）
             "industries": list(row["industries"]) if row.get("industries") is not None else None,
             "source_url": row.get("source_url"),
+            # M10d：详情要用的那批。默认值与真实语料的常态一致（版本 1、未修订、无人物）
+            "direction": row.get("direction"),
+            "confidence": row.get("confidence"),
+            "person": row.get("person"),
+            "reported_available_at": row.get("reported_available_at"),
+            "observed_at": row.get("observed_at", row.get("available_at", row["event_time"])),
+            "quality_status": row.get("quality_status", "stable"),
+            "source_time_quality": row.get("source_time_quality", "exact"),
+            "dedup_key": row.get("dedup_key", row["event_id"]),
+            "record_version": row.get("record_version", 1),
+            "revision_id": row.get("revision_id"),
+            "revision_time": row.get("revision_time"),
+            "is_corrected": row.get("is_corrected", False),
+            "correction_count": row.get("correction_count", 0),
         }
         for row in rows
     ]

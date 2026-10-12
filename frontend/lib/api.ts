@@ -24,6 +24,7 @@ import type {
   CrossSection,
   DataFreshness,
   EventCalendar,
+  EventDetail,
   EventFeed,
   EventsResponse,
   MarketOverview,
@@ -319,6 +320,14 @@ export const api = {
     const text = search.toString();
     return request<EventFeed>(`/api/v1/events/feed${text ? `?${text}` : ""}`);
   },
+  /**
+   * 一条事件的完整证据链（M10d）。`day` 可省——`event_id` 只在日分区内唯一
+   * （平台对同题事件复用 id），省略时服务端取最新那条并在响应里回显 `date`。
+   */
+  eventDetail: (eventId: string, day?: string | null) =>
+    request<EventDetail>(
+      `/api/v1/events/${encodeURIComponent(eventId)}${day ? `?day=${day}` : ""}`,
+    ),
 
   // ── 研究首页（M10a）────────────────────────────────────────────────────
   /** 大盘总览：涨跌家数 / 涨跌停 / 成交额 / 等权代理 + 两个「截至」。公开端点。 */

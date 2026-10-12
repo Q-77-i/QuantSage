@@ -1283,12 +1283,14 @@ export interface EventFeed {
  *
  * **字段集刻意覆盖 `EvidenceFields`**（M7 证据行真正读的那几个），故可以直接喂
  * `evidenceRows(item)`——两处展示的是同一件事，行序与文案都该同源。
+ *
+ * **M10d 起不再带 `summary`**（D1）：正文只从详情抽屉出（`EventDetail`），
+ * 每行少传几百字；「正文以哪处为准」也就只有一个答案。
  */
 export interface EventFeedItem {
   event_id: string;
   event_type: string | null;
   title: string | null;
-  summary: string | null;
   /** 事发 */
   event_time: string | null;
   /** 平台首次可得——与事发之差就是这个项目的护城河展示位 */
@@ -1302,6 +1304,66 @@ export interface EventFeedItem {
   content_hash: string | null;
   /** 关联标的；字典里没有名字的给 `null`，**不编** */
   symbols: { code: string; name: string | null }[];
+}
+
+// ── 事件详情（M10d）────────────────────────────────────────────────────
+
+/**
+ * `GET /api/v1/events/{id}`：一条事件的完整证据链。
+ *
+ * 与 `EventFeedItem` 的差别是**多了六类真内容**：正文（`summary`）、人物、每只标的的
+ * `reason`、方向与因子分解、三个时刻（报告可得 / 平台可得 / 观察）、以及平台的修订标记。
+ * 所有这些在库里本来就有，M10d 之前只是没出库。
+ */
+export interface EventDetail {
+  event_id: string;
+  /** 这条**实际落在哪一天**：省略 `day` 查询时按最新取，回显就靠它 */
+  date: string | null;
+  event_type: string | null;
+  title: string | null;
+  summary: string | null;
+  event_time: string | null;
+  /** 平台首次可得（护城河展示位） */
+  available_at: string | null;
+  /** 平台**报告**的可得时刻：与 `available_at` 不一致时，差的就是平台自己的修正 */
+  reported_available_at: string | null;
+  /** 我们观察到它的时刻 */
+  observed_at: string | null;
+  /** 平台原词（中英混用） */
+  direction: string | null;
+  /** 归一后的方向（后端做） */
+  direction_norm: string | null;
+  confidence: number | null;
+  importance_score: number | null;
+  factor_value: number | null;
+  /** 落盘的双重编码 JSON，后端已解析成对象（解析失败给 `{}`） */
+  factor_scores: Record<string, unknown>;
+  industries: string[];
+  symbols: string[];
+  stocks: EventStockDetail[];
+  person: string[];
+  source: string | null;
+  original_source: string | null;
+  source_url: string | null;
+  content_hash: string | null;
+  quality_status: string | null;
+  source_time_quality: string | null;
+  dedup_key: string | null;
+  /** 修订四件：平台自己的标记。**照原样显示**，不加工成「已修订 N 次」那种文案 */
+  record_version: number | null;
+  revision_id: string | null;
+  revision_time: string | null;
+  is_corrected: boolean | null;
+  correction_count: number | null;
+}
+
+/** 一只被打标的标的：`name` 是本地字典解析结果（缺名给 null），`source_name` 是平台自己的 */
+export interface EventStockDetail {
+  code: string;
+  name: string | null;
+  source_name: string | null;
+  /** 平台为什么把它挂在这条事件上；没有理由时是 `null`（如实显示「—」，不编） */
+  reason: string | null;
 }
 
 // ── 标的浏览（M10c）─────────────────────────────────────────────────────

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 
@@ -27,6 +28,15 @@ SYMBOL_PATTERN = r"^\d{6}$"
 
 def _iso(value: object) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _day(value: object) -> str | None:
+    """`DATE` 列 → ISO 日期串。
+
+    单独一支：arrow 把 `DATE` 读回 `datetime.date`，而 **`date` 不是 `datetime` 的子类**
+    （反过来才是）——用 `_iso()` 取它会一律得到 `None`，静默丢字段。
+    """
+    return value.isoformat() if isinstance(value, (datetime, date)) else None
 
 
 def _event_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -65,12 +75,14 @@ def _feed_row(row: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
 
     `symbols` 出成 `{code, name}`：名称来自字典（覆盖 96.7%），**缺名就给 null 而不是编一个**
     ——快讯标题里通常已经写了公司名，多一个假的更糟。
+
+    **M10d 起不再带 `summary`**（D1）：正文只从详情抽屉出。每行白传几百字正文既浪费带宽，
+    又会让「正文到底以哪处为准」变成两个定义。
     """
     return {
         "event_id": row["event_id"],
         "event_type": row.get("event_type"),
         "title": row.get("title"),
-        "summary": row.get("summary"),
         "event_time": _iso(row.get("event_time")),
         "available_at": _iso(row.get("available_at")),
         "direction_norm": row.get("direction_norm"),
@@ -84,6 +96,79 @@ def _feed_row(row: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
             {"code": code, "name": names.get(code)}
             for code in (row.get("symbols") or [])
         ],
+    }
+
+
+def _json_column(raw: object, fallback: type) -> Any:
+    """落盘的 **JSON 文本列** → Python 对象。
+
+    `person` / `stocks` / `factor_scores` 三列落盘时是 JSON 文本（`stocks` 原样保留备审计），
+    经 arrow 读回是 str。**任何异常形状一律给 `fallback`，绝不抛**——详情页少一组不是故障，
+    而一条坏 JSON 让整页 500 是。空串、`null`、非法 JSON 都走这条路。
+    """
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return fallback()
+    else:
+        parsed = raw
+    return parsed if isinstance(parsed, fallback) else fallback()
+
+
+def _detail_row(row: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    """一条事件的详情（M10d）：七组要的字段一次给全。
+
+    `stocks` 每只带 **`reason`**（平台为什么把它挂在这条事件上）——这是「打标可解释」的
+    落点，快讯流那层看不到它。名称仍以本地字典为准（缺名给 null），但**平台的 name 原样
+    留在 `source_name`**：两者不一致时，读者能看出是哪一边的说法。
+    """
+    stocks: list[dict[str, Any]] = []
+    for item in _json_column(row.get("stocks"), list):
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "")
+        stocks.append(
+            {
+                "code": code,
+                "name": names.get(code),
+                "source_name": item.get("name"),
+                "reason": item.get("reason"),
+            }
+        )
+    return {
+        "event_id": row["event_id"],
+        # `day` 是这一条**实际落在哪一天**（省略 day 查询时按最新取，回显就靠它）
+        "date": _day(row.get("day")),
+        "event_type": row.get("event_type"),
+        "title": row.get("title"),
+        "summary": row.get("summary"),
+        "event_time": _iso(row.get("event_time")),
+        "available_at": _iso(row.get("available_at")),
+        "reported_available_at": _iso(row.get("reported_available_at")),
+        "observed_at": _iso(row.get("observed_at")),
+        "direction": row.get("direction"),
+        "direction_norm": row.get("direction_norm"),
+        "confidence": row.get("confidence"),
+        "importance_score": row.get("importance_score"),
+        "factor_value": row.get("factor_value"),
+        "factor_scores": _json_column(row.get("factor_scores"), dict),
+        "industries": list(row.get("industries") or []),
+        "symbols": list(row.get("symbols") or []),
+        "stocks": stocks,
+        "person": [str(name) for name in _json_column(row.get("person"), list)],
+        "source": row.get("source"),
+        "original_source": row.get("original_source"),
+        "source_url": row.get("source_url"),
+        "content_hash": row.get("content_hash"),
+        "quality_status": row.get("quality_status"),
+        "source_time_quality": row.get("source_time_quality"),
+        "dedup_key": row.get("dedup_key"),
+        "record_version": row.get("record_version"),
+        "revision_id": row.get("revision_id"),
+        "revision_time": _iso(row.get("revision_time")),
+        "is_corrected": row.get("is_corrected"),
+        "correction_count": row.get("correction_count"),
     }
 
 
@@ -158,6 +243,27 @@ async def get_feed(
         "min_importance": min_importance,
         "items": [_feed_row(row, names) for row in result["items"]],
     }
+
+
+@router.get("/{event_id}")
+async def get_event_detail(
+    event_id: str,
+    day: Annotated[date | None, Query()] = None,
+) -> dict[str, Any]:
+    """一条事件的详情（M10d）：正文全文 / 原文链接 / 每只标的的打标理由 / 人物 / 因子分解 /
+    **平台修订史**——七组要的字段一次给全。
+
+    `day` **可选**：`event_id` 只在日分区内唯一（平台对同题事件复用 id），省略时取
+    `event_time` 最新那条并在响应里回显 `date`。查不到 → **404**（不返回空壳）。
+
+    路径参数放在 `/calendar` 与 `/feed` **之后**声明是必须的——FastAPI 按声明顺序匹配，
+    反过来的话 `/{event_id}` 会把那两个静态路径一起吃掉。
+    """
+    row = await asyncio.to_thread(dc.event_detail, event_id, day=day.isoformat() if day else None)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"事件不存在：{event_id}")
+    names = await asyncio.to_thread(lambda: naming.primary_names(naming.load_dictionary()))
+    return _detail_row(row, names)
 
 
 @router.get("")

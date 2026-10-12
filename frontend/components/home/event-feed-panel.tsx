@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { Section } from "@/components/backtest/chart-frame";
+import { EventDetailSheet, type DetailTarget } from "@/components/events/event-detail-sheet";
 import { Row } from "@/components/research/panels";
 import { Input, Select } from "@/components/ui/form-controls";
 import { Pager } from "@/components/ui/pager";
@@ -63,6 +64,8 @@ export function EventFeedPanel({
 }) {
   const strip = stripDays(calendar, day);
   const items = feed?.items ?? [];
+  // 详情抽屉（M10d）：开哪一条由面板定，行只喊一声——行本身不该知道抽屉的存在
+  const [target, setTarget] = useState<DetailTarget | null>(null);
 
   return (
     <Section title="事件日历 / 快讯流" hint={daySummary(calendar, day)}>
@@ -152,7 +155,13 @@ export function EventFeedPanel({
         <>
           <ol className="mt-2" data-feed="items">
             {items.map((item) => (
-              <FeedItem key={feedItemView(item).key} item={item} />
+              <FeedItem
+                key={feedItemView(item).key}
+                item={item}
+                // `day` 一起带上：`event_id` 只在日分区内唯一（同题事件跨月复用 id），
+                // 不带的话详情会取到**最新**那条，而用户点的是这一天这条
+                onDetail={() => setTarget({ eventId: item.event_id, day })}
+              />
             ))}
           </ol>
           <Pager
@@ -163,11 +172,12 @@ export function EventFeedPanel({
           />
         </>
       )}
+      <EventDetailSheet target={target} onClose={() => setTarget(null)} />
     </Section>
   );
 }
 
-function FeedItem({ item }: { item: EventFeed["items"][number] }) {
+function FeedItem({ item, onDetail }: { item: EventFeed["items"][number]; onDetail: () => void }) {
   const [open, setOpen] = useState(false);
   const view = feedItemView(item);
   return (
@@ -203,10 +213,18 @@ function FeedItem({ item }: { item: EventFeed["items"][number] }) {
         {view.industries ? <span>{view.industries}</span> : null}
         <button
           type="button"
+          data-toggle="detail"
+          onClick={onDetail}
+          className="ml-auto rounded-[var(--radius)] px-1.5 hover:bg-muted hover:text-foreground"
+        >
+          详情
+        </button>
+        <button
+          type="button"
           aria-expanded={open}
           data-toggle="sources"
           onClick={() => setOpen((value) => !value)}
-          className="ml-auto rounded-[var(--radius)] px-1.5 hover:bg-muted hover:text-foreground"
+          className="rounded-[var(--radius)] px-1.5 hover:bg-muted hover:text-foreground"
         >
           {open ? "收起来源" : "来源"}
         </button>

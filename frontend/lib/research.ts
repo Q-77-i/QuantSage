@@ -348,14 +348,19 @@ export type EvidenceFields = Pick<
   ReportEvidence,
   | "event_time"
   | "available_at"
-  | "summary"
   | "source"
   | "original_source"
   | "content_hash"
   | "direction_norm"
   | "industries"
   | "source_url"
->;
+> & {
+  /**
+   * 摘要。**可选**：M10d 起快讯流不再带它（正文只从详情抽屉出，D1），而 M7 的证据行有。
+   * `evidenceRows` 里那条 `if (item.summary)` 因此是真正会走到两个分支的判断。
+   */
+  summary?: string | null;
+};
 
 export function evidenceRows(item: EvidenceFields): EvidenceRow[] {
   const rows: EvidenceRow[] = [];

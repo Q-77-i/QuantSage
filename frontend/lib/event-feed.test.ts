@@ -32,7 +32,6 @@ function item(overrides: Partial<EventFeedItem> = {}): EventFeedItem {
     event_id: "news:1",
     event_type: "news",
     title: "美国核心PCE物价指数公布",
-    summary: null,
     event_time: "2026-09-30T20:30:00+08:00",
     available_at: "2026-09-30T20:45:00+08:00",
     direction_norm: "bullish",

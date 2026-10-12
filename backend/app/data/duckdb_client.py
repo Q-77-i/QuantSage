@@ -763,10 +763,46 @@ EVIDENCE_COLUMNS = (
 )
 
 
-#: 快讯流要的列 = 证据面板那批（事件/可得双戳 + 来源三元组 + 行业 + 方向）+ 三列。
-#: **从 `EVIDENCE_COLUMNS` 拼出来**，不是另抄一份——两处都靠「一条事件的来源可追溯」这条
-#: 硬要求吃饭，抄一份迟早漂移。
-FEED_COLUMNS = (*EVIDENCE_COLUMNS, "event_type", "importance_score", "symbols")
+#: 快讯流要的列 = 证据面板那批（事件/可得双戳 + 来源三元组 + 行业 + 方向）+ 三列，
+#: **但去掉 `summary`**（M10d 的 D1：正文只从详情抽屉出，别让每行白传几百字正文）。
+#: 仍然从 `EVIDENCE_COLUMNS` 拼出来、不另抄一份——两处都靠「一条事件的来源可追溯」这条
+#: 硬要求吃饭，抄一份迟早漂移；`EVIDENCE_COLUMNS` 本身不动（M7 的证据面板要用正文）。
+FEED_COLUMNS = (
+    *(column for column in EVIDENCE_COLUMNS if column != "summary"),
+    "event_type",
+    "importance_score",
+    "symbols",
+)
+
+#: 事件详情要的列（M10d）：证据面板那批 + 六类真内容——
+#: `direction`/`confidence`（方向与置信）· `factor_value`/`factor_scores`（因子分解）·
+#: `person`（人物）· `stocks`（**每只标的的打标理由**）·
+#: `record_version`/`revision_id`/`revision_time`/`is_corrected`/`correction_count`（修订史）·
+#: `observed_at`/`reported_available_at`/`quality_status`/`source_time_quality`（时间与质量标注）。
+#: **单列一份、不 `SELECT *`**：整行 30 列里有 `payload_json` 一类原始字段，不该进响应。
+#: 其中 `person` / `stocks` / `factor_scores` 是**落盘的 JSON 文本**，由 API 层解析。
+DETAIL_COLUMNS = (
+    *EVIDENCE_COLUMNS,
+    "event_type",
+    "importance_score",
+    "symbols",
+    "direction",
+    "confidence",
+    "factor_value",
+    "factor_scores",
+    "person",
+    "stocks",
+    "observed_at",
+    "reported_available_at",
+    "quality_status",
+    "source_time_quality",
+    "dedup_key",
+    "record_version",
+    "revision_id",
+    "revision_time",
+    "is_corrected",
+    "correction_count",
+)
 
 
 def event_days(
@@ -893,6 +929,28 @@ def events_by_ids(event_ids: list[str], *, data_dir: Path | None = None) -> list
         )
     finally:
         con.close()
+
+
+def event_detail(
+    event_id: str, *, day: str | None = None, data_dir: Path | None = None
+) -> dict | None:
+    """取**一条**事件的详情行（M10d）。
+
+    **`event_id` 只在日分区内唯一**（平台对同题事件复用 id，实测 19 例、最多跨 8 天）——
+    所以 `day` 给了就精确匹配，没给就取 `event_time` **最新**的那条；响应里回显实际日期
+    （`day` 键），调用方不必自己推。查不到返回 `None`，由端点翻 404——**不返回空壳**。
+    """
+    con = connect(data_dir)
+    try:
+        sql = f"SELECT {', '.join(DETAIL_COLUMNS)}, event_time::DATE AS day FROM {EVENTS_VIEW} WHERE event_id = ?"
+        params: list = [event_id]
+        if day is not None:
+            sql += " AND event_time::DATE = ?"
+            params.append(day)
+        rows = _fetch(con, sql + " ORDER BY event_time DESC LIMIT 1", params)
+    finally:
+        con.close()
+    return rows[0] if rows else None
 
 
 def closes_through(

@@ -1,16 +1,15 @@
 "use client";
 
+import { useState } from "react";
+
 import { Section } from "@/components/backtest/chart-frame";
 import { Cell, Row, TableShell } from "@/components/backtest/table";
+import { EventDetailSheet, type DetailTarget } from "@/components/events/event-detail-sheet";
+// 方向标签**一处定义**（M10d 起移到 lib/event-detail.ts）：详情抽屉与本表共用同一份配色，
+// 各写一份迟早一处改了一处没改
+import { DIRECTION } from "@/lib/event-detail";
 import { count, eventStamp, num, shortHash } from "@/lib/format";
 import type { EventCoverage, MarketEvent } from "@/lib/types";
-
-/** 方向标签。`direction` 原值中英混用，后端已归一到 `direction_norm`（T2）。 */
-const DIRECTION: Record<string, { label: string; className: string }> = {
-  bullish: { label: "利多", className: "text-up" },
-  bearish: { label: "利空", className: "text-down" },
-  neutral: { label: "中性", className: "text-ink-3" },
-};
 
 /**
  * 事件语料表：回测窗口内该标的的全部事件。
@@ -28,6 +27,8 @@ export function EventsTable({
   coverage?: EventCoverage | null;
 }) {
   const span = coverage?.start && coverage?.end ? `${coverage.start} → ${coverage.end}` : null;
+  // 详情抽屉（M10d）：状态放在表里，**两个页面（回测页与个股页）共用这一份接线**
+  const [target, setTarget] = useState<DetailTarget | null>(null);
   return (
     <Section
       title="事件语料"
@@ -47,7 +48,7 @@ export function EventsTable({
         <>
           <TableShell
             className="max-h-[420px] overflow-y-auto"
-            head={["事发", "标题", "方向", "评分", "首次可用", "来源"]}
+            head={["事发", "标题", "方向", "评分", "首次可用", "来源", "详情"]}
           >
             {events.map((event) => (
               // 键不能只用 event_id：平台对「按月复发的同题事件」复用 id（实测 84 天里 18 例），
@@ -63,6 +64,22 @@ export function EventsTable({
                 <Cell numeric>{num(event.score, { digits: 1 })}</Cell>
                 <Cell numeric>{eventStamp(event.available_at)}</Cell>
                 <SourceCell event={event} />
+                <Cell>
+                  {/* 带 `day`：同题事件跨日复用 id，不带的话详情会取到最新那条 */}
+                  <button
+                    type="button"
+                    data-detail-open={event.event_id}
+                    onClick={() =>
+                      setTarget({
+                        eventId: event.event_id,
+                        day: (event.event_time ?? "").slice(0, 10) || null,
+                      })
+                    }
+                    className="rounded-[var(--radius)] px-1.5 text-ink-3 hover:bg-muted hover:text-foreground"
+                  >
+                    详情
+                  </button>
+                </Cell>
               </Row>
             ))}
           </TableShell>
@@ -73,6 +90,7 @@ export function EventsTable({
           </p>
         </>
       )}
+      <EventDetailSheet target={target} onClose={() => setTarget(null)} />
     </Section>
   );
 }
