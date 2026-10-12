@@ -31,13 +31,33 @@ export interface ChartTokens {
   /** 跌（A 股口径绿） */
   down: string;
   /**
-   * 网格热力图的 diverging 色阶：**负 → 0 → 正**，7 档（M5b）。
+   * 夏普 / 网格热力图的 diverging 色阶（M5b），7 档。
+   *
+   * ⚠ **方向约定：数组一律按「数据从最小到最大」存**，故 `[0]` = 负端（蓝）、
+   * `[6]` = 正端（红）。不是风格选择——ECharts 的 `visualMap.inRange.color[0]` 映射到
+   * **min**（`VisualMapping.js` 的 `doMapToArray` 拿 `linearMap(normalized, [0,1], [0,len-1])`，
+   * 而 `normalized` 由 `dataExtent` = `[min,max]` 归一）。存反了色阶会整体反向，
+   * 而「两端像素俱在」这种断言**两个方向都能过**——M5b 就是这么错过去的（见 §九 的沿革注）。
    *
    * 为什么不是 `up`/`down` 那对红绿：跑 CVD 模拟实测它们的 ΔE 只有 **7.6**（deutan），
    * 落在 6–8 的 floor 带（配次级编码才合法）；蓝↔红是 **20.9 / 13.9**，远高于目标线 8。
    * 推导与四个臂各自的 `validateOrdinal` 读数见 `P2-M5b-design-brief.md` §二。
    */
   diverge: string[];
+  /**
+   * **涨跌幅**专用 diverging 色阶（M10），7 档，方向约定同 `diverge`（`[0]` = 跌、`[6]` = 涨）。
+   *
+   * 为什么不复用 `diverge`：那支是**红↔蓝**、语义是「夏普式极性」；而涨跌幅在 A 股口径下是
+   * **红涨绿跌**，同一页的大盘指标行就用红绿显示涨跌。同屏两套色编码同一个量是错的。
+   *
+   * 极色不是挑的：浅色跌极与深色两极**就是站点既有的 `--up` / `--down`**；只有浅色涨极
+   * 从 `#d03b3b` 压暗到 `#b32d2d`——站点那对红绿实测 CVD ΔE 只有 **7.6**（deutan），
+   * 压暗后升到 **8.8**（过目标线 8）。而新旧两个红**常视 ΔE 只有 6.8**（低于「能分辨」的
+   * 15 线），读数上就是同一个红：收益全部来自**明度差**，因为 CVD 主要靠明度分辨。
+   * 两臂各自过 `validateOrdinal` 四项（浅色步长 涨 0.92 / 跌 0.75——绿臂在同等明度下更亮，
+   * 对底对比度先崩，故走得短）。读数见 `P2-M10a-design-brief.md` §四。
+   */
+  divergePct: string[];
   /**
    * 因子分层曲线的 5 档蓝阶：**有序**类别（Q1 最低 → Q5 最高）用 ordinal ramp，
    * 不是五个任意色相。深色不是浅色的翻转——暗底上「越亮 = 越高」。
@@ -58,7 +78,10 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     series3: "#8a5cd6",
     up: "#d03b3b",
     down: "#0e8f6b",
-    diverge: ["#a00011", "#c2635b", "#dda7a1", "#f0efec", "#a1b6d3", "#5e82b5", "#184f95"],
+    // 负端（蓝）→ 0 → 正端（红）。**顺序即数据顺序**，见 `diverge` 的注释。
+    diverge: ["#184f95", "#5e82b5", "#a1b6d3", "#f0efec", "#dda7a1", "#c2635b", "#a00011"],
+    // 两端是**最饱和**的极色，朝中点递减——不是倒过来（拼反了会让涨得最猛的板块拿到最淡的颜色）
+    divergePct: ["#0e8f6b", "#5ca78a", "#8ebfab", "#f0efec", "#e0a7a1", "#cc6f67", "#b32d2d"],
     group: ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281"],
   },
   dark: {
@@ -73,7 +96,8 @@ export const CHART_TOKENS: Record<"light" | "dark", ChartTokens> = {
     up: "#ef5350",
     down: "#26a69a",
     // 深色不是浅色的自动翻转：极色更亮（暗底上「越亮越大」），中点是另一个灰
-    diverge: ["#f69b95", "#ba7e79", "#80615f", "#4a4b52", "#5c6b80", "#7492ba", "#8dbaf7"],
+    diverge: ["#8dbaf7", "#7492ba", "#5c6b80", "#4a4b52", "#80615f", "#ba7e79", "#f69b95"],
+    divergePct: ["#26a69a", "#3d887f", "#456a65", "#4a4b52", "#86514d", "#ba554f", "#ef5350"],
     group: ["#184f95", "#256abf", "#5598e7", "#86b6ef", "#b7d3f6"],
   },
 };

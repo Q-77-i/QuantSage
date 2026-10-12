@@ -398,7 +398,8 @@ function buildLineOption(
           ? {
               markPoint: {
                 symbolSize: 12,
-                itemStyle: { color: tokens.diverge[0] }, // 与热力图的正极同色：被选中的那个
+                // `[6]` = 正端——色阶数组按**数据升序**存，正极在末位（见 chart-theme 的注释）
+                itemStyle: { color: tokens.diverge[6] }, // 与热力图的正极同色：被选中的那个
                 label: {
                   color: tokens.ink,
                   fontSize: 11,

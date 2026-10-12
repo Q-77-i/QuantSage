@@ -48,7 +48,8 @@ function buildOption(
   payload: ReturnType<typeof distributionFromGrid>,
   tokens: ReturnType<typeof chartTokens>,
 ): EChartsCoreOption {
-  const positive = tokens.diverge[0]; // 红端 = 正夏普（与热力图同一支语义）
+  const positive = tokens.diverge[6]; // 红端 = 正夏普。`[6]` 是正极（数组按数据升序存），
+  // 与热力图的 max 端同色——M5b 这里曾取 `[0]`，与热力图正好相反（见 chart-theme 的沿革注）
   const rest = tokens.axis; // 背景点：用轴灰，明确「不是数据色」
 
   return {

@@ -73,31 +73,74 @@ it("深色分层色阶不是浅色的翻转（各自选步）", () => {
   expect(CHART_TOKENS.dark.group).not.toEqual(CHART_TOKENS.light.group);
 });
 
+/** R 分量 vs B 分量：判「偏蓝」还是「偏红」。够用——这两支色阶的两端本来就分得很开。 */
+function blueish(hex: string): boolean {
+  return parseInt(hex.slice(5, 7), 16) > parseInt(hex.slice(1, 3), 16);
+}
+
+/** 到中性中点的 RGB 距离。「离中点越远颜色越强」这条性质的判据。 */
+function distanceFromMid(hex: string, mid: string): number {
+  const rgb = (value: string) => [1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16));
+  const [r1, g1, b1] = rgb(hex);
+  const [r2, g2, b2] = rgb(mid);
+  return Math.hypot(r1 - r2, g1 - g2, b1 - b2);
+}
+
 /**
- * `diverge` 不参与上面的 CSS 一致性校验：它**不是**从 CSS 变量来的，而是按 dataviz
- * 方法现推的一支 diverging 色阶（两臂各自过 `validateOrdinal`，推导与读数见
- * `P2-M5b-design-brief.md` §二）。这里钉住的是它的**结构**——结构错了色阶就不表示正负。
+ * 两支 diverging 色阶（`diverge` 夏普 / `divergePct` 涨跌幅）不参与上面的 CSS 一致性校验：
+ * 它们**不是**从 CSS 变量来的，而是按 dataviz 方法现推的（两臂各自过 `validateOrdinal`，
+ * 推导与读数见 `P2-M5b-design-brief.md` §二 与 `P2-M10a-design-brief.md` §四）。
+ *
+ * 这里钉住两件事：**结构**（结构错了就不表示正负）与**方向**。
+ * 方向那条是 2026-10-12 补的——原测试只断言「两端色相相反」，**两个方向都能过**，
+ * 于是 M5b 的热力图（`visualMap.inRange.color[0]` 映射到 **min**）与分布图、最优格标记
+ * 各自朝相反的方向理解了好几个月，注释还写着「同一支语义」。
  */
-describe("网格热力图的 diverging 色阶", () => {
-  it("负 → 0 → 正的 7 档，中点是对称中心", () => {
+describe.each(["diverge", "divergePct"] as const)("%s diverging 色阶", (key) => {
+  it("七档，中灰就在第 4 档", () => {
     for (const mode of ["light", "dark"] as const) {
-      const ramp = CHART_TOKENS[mode].diverge;
+      const ramp = CHART_TOKENS[mode][key];
       expect(ramp).toHaveLength(7);
-      expect(ramp[3]).toBe(mode === "light" ? "#f0efec" : "#4a4b52"); // 中灰就在第 4 档
+      expect(ramp[3]).toBe(mode === "light" ? "#f0efec" : "#4a4b52");
     }
   });
 
-  it("两端的色相是相反的（红端与蓝端不是同一族）", () => {
-    const ramp = CHART_TOKENS.light.diverge;
-    const red = ramp[0];
-    const blue = ramp[6];
-    // 红端 R 分量显著高于 B，蓝端相反——写死这条是为了防「有人手滑把一端替换成同族色」
-    expect(parseInt(red.slice(1, 3), 16)).toBeGreaterThan(parseInt(red.slice(5, 7), 16));
-    expect(parseInt(blue.slice(5, 7), 16)).toBeGreaterThan(parseInt(blue.slice(1, 3), 16));
+  it("数组按「数据从最小到最大」存：[0] 是冷端（蓝族）、[6] 是暖端（红族）", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const ramp = CHART_TOKENS[mode][key];
+      // 方向写反 = ECharts 把色阶整体反过来画，而「两端像素俱在」的断言看不出来
+      expect(blueish(ramp[0])).toBe(true);
+      expect(blueish(ramp[6])).toBe(false);
+    }
+  });
+
+  it("离中点越远颜色越强——**两端是极色，不是最淡的那档**", () => {
+    // 这条是 2026-10-12 补的：原测试查不出「两臂拼反」——拼反后两端变成最淡的色，
+    // 于是**涨得最猛的板块拿到最淡的颜色**，而色相、档数、中点位置全都照样对。
+    // 出图之后肉眼一看才发现（验证脚本读的是像素有无，读不出这个）。
+    for (const mode of ["light", "dark"] as const) {
+      const ramp = CHART_TOKENS[mode][key];
+      const mid = ramp[3];
+      // 从外往里：第 0 档离中点最远、第 2 档最近（另一端第 6/5/4 同理）
+      for (const side of [[0, 1, 2], [6, 5, 4]]) {
+        const [outer, middle, inner] = side.map((i) => distanceFromMid(ramp[i], mid));
+        expect(outer).toBeGreaterThan(middle);
+        expect(middle).toBeGreaterThan(inner);
+      }
+    }
   });
 
   it("深色不是浅色的自动翻转（各自选步）", () => {
-    expect(CHART_TOKENS.dark.diverge).not.toEqual(CHART_TOKENS.light.diverge);
-    expect(CHART_TOKENS.dark.diverge[0]).not.toBe(CHART_TOKENS.light.diverge[0]);
+    expect(CHART_TOKENS.dark[key]).not.toEqual(CHART_TOKENS.light[key]);
+    expect(CHART_TOKENS.dark[key][0]).not.toBe(CHART_TOKENS.light[key][0]);
   });
+});
+
+it("divergePct 的跌极就是站点的 --down（浅深两色都是）", () => {
+  // 涨跌幅色阶不是另起一套语言：跌极与站点既有绿同值，只有浅色涨极压暗过（见 chart-theme 注释）。
+  // **极色在数组两端**（[0] = 最小值 = 跌，[6] = 最大值 = 涨），不是挨着中点那两档。
+  expect(CHART_TOKENS.light.divergePct[0]).toBe(CHART_TOKENS.light.down);
+  expect(CHART_TOKENS.dark.divergePct[0]).toBe(CHART_TOKENS.dark.down);
+  // 涨极另起一档（站点红压暗过），故只钉「不等于 --up」——它**是**刻意不同的
+  expect(CHART_TOKENS.light.divergePct[6]).not.toBe(CHART_TOKENS.light.up);
 });
