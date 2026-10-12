@@ -29,6 +29,7 @@ from typing import Callable, Literal
 import duckdb
 
 from app.core.config import REPO_ROOT
+from app.data import bars
 from app.data import calendar as cal
 from app.data import duckdb_client as dc
 from app.etl import runner as etl_runner
@@ -36,10 +37,13 @@ from app.etl import store as etl_store
 
 Level = Literal["error", "warn", "info"]
 
-#: 冻结日历余量低于此天数即告警——到期 `CalendarOutOfRange` 会硬停 ETL 与回测
-CALENDAR_RUNWAY_WARN_DAYS = 90
-#: X5 行情落后折算成「交易日」的上限。行情是年度整片的**重下载**（21 会话 / ~99MB 一天），
-#: 不是日更，所以阈值按交易日给（自然日的周末与长假不该把它顶红）。超了才说，别天天喊。
+#: 冻结日历余量低于此天数即告警——到期 `CalendarOutOfRange` 会硬停 ETL 与回测。
+#: **单一来源**在 `app/data/calendar.py`（M2d 起 ETL 台账的 note 也用同一个阈值，
+#: 两处各写一份会漂移）
+CALENDAR_RUNWAY_WARN_DAYS = cal.RUNWAY_WARN_DAYS
+#: X5 行情落后折算成「交易日」的上限。行情是年度整片的**重下载**（日常约 99MB 下载 +
+#: 全量分片校验约 190s ⇒ 一个交易日 6–7 分钟，见 SPEC §3 M2d），不是日更，所以阈值按交易日给
+#: （自然日的周末与长假不该把它顶红）。超了才说，别天天喊。
 BARS_STALE_TRADING_DAYS = 5
 #: X6 归档上界停滞的自然日上限。源侧滚动窗口会停更（实测停过 9 天），停多久算异常由人定，
 #: 这里只负责让它**看得见**——与 E7 的「源侧有、本地无」互补
@@ -624,7 +628,7 @@ def check_e7_gap(con, data_dir) -> Check:
 def check_x1_calendar_runway(con, data_dir) -> Check:
     """冻结日历余量。到期 `CalendarOutOfRange` 会硬停 ETL 与回测——不是「再等等」能解决的。"""
     first, last = cal.coverage()
-    runway = (last - date.today()).days
+    runway = cal.runway()
     return Check(
         id="X1",
         level="warn" if runway < CALENDAR_RUNWAY_WARN_DAYS else "info",
@@ -736,14 +740,22 @@ def check_x4_index_lag(con, data_dir) -> Check:
 
 
 def check_x5_bars_staleness(con, data_dir) -> Check:
-    """行情停更：本地行情末端 vs 日历上「今天及以前最后一个交易日」（M2c 补口）。
+    """行情停更：本地行情末端 vs 日历上「今天及以前最后一个交易日」（M2c 补口 + M2d 加源侧边界）。
 
     阈值按**交易日**给——行情不是日更（年度整片重下载），按自然日算会让每个周末都报一次。
     detail 里明写「不是日更」，否则读者会以为坏了。
+
+    **M2d 起多报两件**：① 源侧止于哪天（读 `_meta/bars_sync.json`，**本地读、不联网**
+    ——E7 的教训）；② 上一轮刷新是什么结果。有了这两件，「落后」才分得清是我们没拉还是
+    源侧没发——这正是 M2d 立这条可见性的原因（2026-10-12：本地止于 09-30，体检只报 info，
+    而源侧其实已经到 10-09）。
     """
     latest = _one(con, "SELECT max(trade_date) AS day FROM bars").get("day")
+    state = bars.read_sync_state(_data_dir(data_dir) / "_meta")
+    source = f"；源侧止于 {state.source_last}" if state.source_last else "；尚未探过源侧"
+    probe = f"（{state.last_probe_at[:16]} 探测，上一轮 {state.status}）" if state.last_probe_at else ""
     if latest is None:
-        return Check(id="X5", level="info", title="行情停更：无行情数据", detail="bars/ 下没有可读的分片")
+        return Check(id="X5", level="info", title="行情停更：无行情数据", detail=f"bars/ 下没有可读的分片{source}")
     expected = cal.last_session_on_or_before(date.today())
     behind = len(cal.sessions(latest, expected)) - 1 if expected > latest else 0
     return Check(
@@ -752,11 +764,18 @@ def check_x5_bars_staleness(con, data_dir) -> Check:
         title=f"行情落后 {behind} 个交易日" if behind else "行情与日历一致",
         detail=(
             f"本地行情止于 {latest}，日历上最近一个交易日是 {expected}（落后 {behind} 个交易日，"
-            f"阈值 {BARS_STALE_TRADING_DAYS}）。**行情是年度整片的重下载、不是日更**"
-            f"（21 会话 / ~99MB 一天，见待办「行情刷新进调度器」）——落后本身不是故障，"
-            "是本项要让它**看得见**"
+            f"阈值 {BARS_STALE_TRADING_DAYS}）{source}{probe}。**行情是年度整片的重下载、不是日更**"
+            "（日常约 99MB 下载 + 全量分片校验约 190s，一个交易日 6–7 分钟，见 SPEC §3 M2d），"
+            "且**源侧实测 T+1**——落后 1 个交易日是常态，落后更多才有问题"
         ),
-        data={"latest_bar": str(latest), "expected": str(expected), "behind_trading_days": behind},
+        data={
+            "latest_bar": str(latest),
+            "expected": str(expected),
+            "behind_trading_days": behind,
+            "source_last": state.source_last or None,
+            "last_probe_at": state.last_probe_at or None,
+            "last_status": state.status or None,
+        },
     )
 
 

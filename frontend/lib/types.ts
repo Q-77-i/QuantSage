@@ -23,6 +23,13 @@ export interface DataFreshness {
    * 起点由首次回填固化、终点随日增前移——事件驱动策略能回测到哪，看的就是这一段。
    */
   event_coverage: EventCoverage;
+  /**
+   * 源侧行情边界与探测时刻（M2d）。**与 `latest_trade_date` 一起看才有意义**：
+   * 落后可能是我们没拉，也可能是源侧还没发——只报本地日期时这两件事分不开。
+   * 行情刷新每轮把它写进 `_meta/bars_sync.json`，端点本地读、不联网。
+   */
+  source_bars_last: string | null;
+  source_checked_at: string | null;
 }
 
 export interface EventCoverage {

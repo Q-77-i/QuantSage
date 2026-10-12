@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.backtest import benchmark
 from app.backtest.a_share_rules import count_limit_hits
+from app.data import bars
 from app.data import duckdb_client as dc
 from app.data import naming
 
@@ -52,8 +53,30 @@ async def get_freshness() -> dict[str, object]:
 
     路径不与 `/{symbol}/bars` 冲突（那个必须带 `/bars` 段）。数据没落盘时由
     `DataNotReady` → 503，前端据此不显示这枚标签，而不是瞎写一个日期。
+
+    **另外给出源侧边界**（M2d）：行情是年度整片的重下载，落后可能来自我们没拉、也可能
+    来自源侧还没发——页头只报「本地截至 X」时这两件事分不开。源侧读数取自
+    `_meta/bars_sync.json`（行情刷新每轮写），**本地读、不联网**（沿用 E6/X6 的规矩：
+    别在展示路径上调 xiaoshi CLI）。
     """
-    return await asyncio.to_thread(dc.latest_dates)
+    payload = dict(await asyncio.to_thread(dc.latest_dates))
+    payload.update(await asyncio.to_thread(_source_boundary))
+    return payload
+
+
+def _source_boundary() -> dict[str, object]:
+    """源侧行情边界与探测时刻。读不到就是 None——展示层不因为缺一个文件而报错。
+
+    数据目录走 `dc.resolve_data_dir()`（与本地那半段同一条解析路径），不另取一份。
+    """
+    try:
+        state = bars.read_sync_state(dc.resolve_data_dir() / "_meta")
+    except OSError:  # pragma: no cover —— 文件不可读时按「没探测过」显示
+        return {"source_bars_last": None, "source_checked_at": None}
+    return {
+        "source_bars_last": state.source_last or None,
+        "source_checked_at": state.last_probe_at or None,
+    }
 
 
 @router.get("/{symbol}/probe")

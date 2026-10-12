@@ -113,10 +113,14 @@ function useFreshness(): DataFreshness | null {
 
 function freshnessTooltip(freshness: DataFreshness): string {
   const event = freshness.latest_event_available_at?.slice(0, 10);
+  const source = freshness.source_bars_last;
   return [
     "本地行情快照",
     event ? `事件语料截至 ${event}` : null,
-    "日增量 ETL 到位后随每次拉取自动前移（M2）",
+    // 源侧边界（M2d）：落后是谁的锅，看这一句
+    source
+      ? `源侧行情止于 ${source}（行情是年度整片重下载、不是日更）`
+      : "行情是年度整片重下载、不是日更",
   ]
     .filter(Boolean)
     .join(" · ");

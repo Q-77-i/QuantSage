@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -451,3 +452,28 @@ def test_freshness_returns_503_without_data(
     monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: tmp_path / "nope")
 
     assert client.get("/api/v1/market/freshness").status_code == 503
+
+
+def test_freshness_reports_the_source_boundary(data_dir: Path) -> None:
+    """源侧边界要出现在页头数据里（M2d）：「落后」是我们没拉还是源侧没发，靠这条分得开。
+
+    读的是行情刷新写的门禁记忆（**本地读，不联网**）；没探过时给 null，不是编一个日期。
+    """
+    assert client.get("/api/v1/market/freshness").json()["source_bars_last"] is None
+
+    meta = data_dir / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "bars_sync.json").write_text(
+        json.dumps(
+            {"source_last": "2026-10-09", "last_probe_at": "2026-10-12T16:16:43.083628+00:00"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    body = client.get("/api/v1/market/freshness").json()
+
+    assert body["source_bars_last"] == "2026-10-09"
+    assert body["source_checked_at"].startswith("2026-10-12")
+    # 本地那半段不受影响
+    assert body["latest_trade_date"] == str(trading_days(START, BAR_COUNT)[-1])

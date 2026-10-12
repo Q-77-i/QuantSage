@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.auth import require_user
 from app.core.config import get_settings
+from app.data import bars
 from app.etl import runner, scheduler
 
 log = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/api/v1/etl", tags=["etl"])
 
 @router.get("/status")
 async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(require_user)]) -> dict[str, Any]:
-    """语料覆盖、缺口、最近一次运行、调度器状态。"""
+    """语料覆盖、缺口、最近一次运行、调度器状态（含行情按需刷新那一路，M2d）。"""
     settings = get_settings()
     result = await asyncio.to_thread(runner.status)
     result["running"] = runner.is_running()
@@ -37,7 +38,19 @@ async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(requ
         "minute": settings.etl_minute,
         "trailing_days": settings.etl_trailing_days,
         "next_run_at": scheduler.next_run_time(getattr(request.app.state, "scheduler", None)),
+        # 行情那一路：与本调度器同生共死（ETL_ENABLED=false 时两条都不起）
+        "bars": {
+            "enabled": settings.bars_refresh_enabled,
+            "hour": settings.bars_refresh_hour,
+            "minute": settings.bars_refresh_minute,
+            "budget_seconds": settings.bars_refresh_budget_seconds,
+            "next_run_at": scheduler.next_run_time(
+                getattr(request.app.state, "scheduler", None), scheduler.BARS_JOB_ID
+            ),
+        },
     }
+    # 两条通道写同一份台账，`last_run` 只报语料那一路 ⇒ 行情单独给一条
+    result["last_bars_run"] = await asyncio.to_thread(bars.last_run)
     return result
 
 

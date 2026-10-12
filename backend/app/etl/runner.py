@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -25,20 +24,23 @@ from pathlib import Path
 
 from app.core.config import REPO_ROOT, get_settings
 from app.data import calendar as cal
+from app.data import ledger
 from app.data import naming
+from app.data.data_lock import LOCK as _LOCK
 from app.etl import archive, store
 
 #: 日任务的回落窗口：拉最近 N 个自然日，吸收迟到事件与平台修订
 DEFAULT_TRAILING_DAYS = 7
 #: 回填窗口：在线/归档的事件保留期约 3 个月（滚动），取 92 天
 BACKFILL_DAYS = 92
-LEDGER_NAME = "etl_runs.jsonl"
-
-_LOCK = threading.Lock()
 
 
 class EtlBusy(RuntimeError):
-    """已有一次 ETL 在跑——并发跑会同时写同一批文件。"""
+    """已有一次 ETL 在跑——并发跑会同时写同一批文件。
+
+    **与行情刷新共用同一把锁**（`app/data/data_lock.py`）：两条通道写同一个 `data/raw`
+    的回执与文件锁，必须串行。实体在那边，这里保留这个名字是因为调用方按 `EtlBusy` 认它。
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,10 +405,18 @@ def _unchanged(day: date, shards: dict[str, archive.Shard], paths_: Paths) -> bo
 
 
 def _append_ledger(paths_: Paths, report: RunReport) -> None:
-    paths_.meta_dir.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(asdict(report), ensure_ascii=False)
-    with (paths_.meta_dir / LEDGER_NAME).open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
+    _with_runway(report)
+    ledger.append(paths_.meta_dir, asdict(report))
+
+
+def _with_runway(report: RunReport) -> None:
+    """日历余量告急时把话说进台账的 note（M2d 补口）。
+
+    体检 X1 早就在报这条 warn，但**体检报告不是每天有人看的地方**；台账会出现在
+    `/api/v1/etl/status` 与日志里。余量正常时 `runway_note()` 返回空串，什么也不加。
+    """
+    if note := cal.runway_note():
+        report.note = f"{report.note}；{note}" if report.note else note
 
 
 def empty_day_set(paths_: Paths) -> set[str]:
@@ -416,10 +426,10 @@ def empty_day_set(paths_: Paths) -> set[str]:
     各自实现一份迟早会漂移。
     """
     empty: set[str] = set()
-    ledger = paths_.meta_dir / LEDGER_NAME
-    if not ledger.exists():
+    target = ledger.path(paths_.meta_dir)
+    if not target.exists():
         return empty
-    with ledger.open(encoding="utf-8") as handle:
+    with target.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -436,12 +446,9 @@ def empty_day_set(paths_: Paths) -> set[str]:
 
 
 def _last_ledger(paths_: Paths) -> dict | None:
-    ledger = paths_.meta_dir / LEDGER_NAME
-    if not ledger.exists():
-        return None
-    last: str | None = None
-    with ledger.open(encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                last = line
-    return json.loads(last) if last else None
+    """语料通道最近一次运行。
+
+    **必须排除行情那一路**（`BARS_SCOPE`）：两条通道写同一个台账文件，不排除的话状态页
+    会把「行情刷新」显示成「最近一次语料 ETL」。行情那一路的读法见 `data/bars.py::last_run`。
+    """
+    return ledger.last(paths_.meta_dir, exclude=ledger.BARS_SCOPE)

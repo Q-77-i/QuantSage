@@ -57,6 +57,26 @@ class Settings(BaseSettings):
     # 补嵌的上限：实测一天语料（1k–6k 行）约 1–8 分钟，8 天积压 18 分钟，留足余量
     etl_embed_timeout_seconds: int = 1800
 
+    # ── 行情按需刷新（M2d）：便宜探测 → 按需整片重下 ──
+    # **默认关**，与 etl_enabled 同风格。注意它与 ETL_ENABLED 同住一个调度器：
+    # 那个关掉时这一路也不起（如实记，见 SPEC §3 M2d「落点」）。
+    #
+    # 成本实测（2026-10-13）：日常一个交易日只动**当前年 3 片**（≈99MB 下载），但 CLI 对
+    # 未变分片也要逐个重算 sha（888MB）⇒ 21 次会话本身约 190s，**一个交易日约 6–7 分钟**；
+    # 除权触发前复权全量重算时会牵动多年 qfq（实测那天换入 9 片 / 395MB / 8.6 分钟）；
+    # 源侧无更新时零下载。时点 21:40 的依据：实测源侧发布在 21:05–21:29，语料 job 在 21:10
+    # ⇒ 21:40 在两者之后（既不踩发布、也不与语料撞锁——两路共用 data/raw 的同一份回执与文件锁）。
+    bars_refresh_enabled: bool = False
+    bars_refresh_hour: int = 21
+    bars_refresh_minute: int = 40
+    # 整轮预算：超了就收工留台账（次日重跑即续，未变的分片按 sha 复用，零重复下载）
+    bars_refresh_budget_seconds: int = 1200
+    # 单次 CLI 调用上限。**这条以前没有**——实测 2026-10-12 手敲那轮卡在网络 20 分钟
+    # 零写入，且一直握着数据目录的锁，会把两条通道一起冻死
+    bars_call_timeout_seconds: int = 300
+    # 启动时补一次（延后 180s：语料 catchup 在 +20s、实测约 1 分钟，错开即可）
+    bars_refresh_catchup_on_start: bool = True
+
     # ── 研报 PDF 导出（M7d）：渲染器要打开前端的打印页 ──
     # 渲染在**子进程**里跑（`app/report/pdf_worker.py`），它需要一个能打开的前端地址。
     frontend_base_url: str = "http://127.0.0.1:3001"

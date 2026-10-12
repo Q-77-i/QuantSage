@@ -14,13 +14,11 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-import subprocess
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from app.data import xiaoshi_cli
 from app.core.config import get_settings
 
 DATASET = "event-timeline"
@@ -28,26 +26,18 @@ DATASET = "event-timeline"
 ARCHIVE_SUBDIR = "raw"
 STATE_FILE = ".xiaoshi-history-state.json"
 _404_MARKER = "HTTP 404"
-#: 平台要求停下的信号（与 P1 的 MCP 拉取同族语义）
-_RATE_LIMIT_MARKERS = ("rate_limited_no_retry", "HTTP 429", "bulk_download_required")
-_TIMEOUT_SECONDS = 300
+_TIMEOUT_SECONDS = xiaoshi_cli.DEFAULT_TIMEOUT_SECONDS
 
 
 class ArchiveError(RuntimeError):
     """归档通道不可用或返回了无法解释的结果。"""
 
 
-class RateLimited(ArchiveError):
-    """平台限流（429 / `rate_limited_no_retry`）。
-
-    **这是停止信号，不是单日失败**：`Retry-After` 是平台明确给出的等待秒数，
-    继续发请求只会把窗口越推越远（本项目的红线里也写着「429 按 Retry-After 停」）。
-    调用方必须立刻中止整轮，而不是换下一天接着试。
-    """
-
-    def __init__(self, message: str, retry_after: int | None = None) -> None:
-        super().__init__(message)
-        self.retry_after = retry_after
+#: 平台限流信号本身不属于某个通道（行情整片同样会撞上），实体在 `data/xiaoshi_cli.py`。
+#: 这里保留这个名字是因为调用方（`runner` 与用例）都按 `archive.RateLimited` 认它；
+#: **它不再是 `ArchiveError` 的子类**——唯一会抛它的路径是 `download_day()`，而所有
+#: `except ArchiveError` 的地方（都只调 `coverage()`）碰不到它，行为一字未变。
+RateLimited = xiaoshi_cli.RateLimited
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,25 +62,19 @@ class Shard:
 
 
 def _cli() -> str:
-    command = get_settings().xiaoshi_cli_command
-    if not command:
-        raise ArchiveError("XIAOSHI_CLI_COMMAND 未配置（见 .env.example）")
-    return command
+    """归档通道的 CLI 路径。未配置时按**本通道**的语义报错（`ArchiveError`）。"""
+    try:
+        return xiaoshi_cli.cli_command()
+    except xiaoshi_cli.CliError as exc:
+        raise ArchiveError(str(exc)) from exc
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ}
-    key = get_settings().xiaoshi_api_key.get_secret_value()
-    if key:
-        env["XIAOSHI_API_KEY"] = key
-    return subprocess.run(  # noqa: S603 —— argv 由本模块构造，密钥不进 argv
-        [_cli(), *args],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=_TIMEOUT_SECONDS,
-        check=False,
-    )
+    """跑一次 CLI。超时按本通道语义报 `ArchiveError`——`status()` 据此降级显示。"""
+    try:
+        return xiaoshi_cli.run(args, timeout=_TIMEOUT_SECONDS)
+    except xiaoshi_cli.CliTimeout as exc:
+        raise ArchiveError(str(exc)) from exc
 
 
 def archive_dir(data_dir: Path | None = None) -> Path:
@@ -102,7 +86,7 @@ def coverage(data_dir: Path | None = None) -> ArchiveCoverage:
     """归档已发布到哪一天（含分片数与行数），供漏拉判定与状态展示。"""
     result = _run(["coverage", "--dataset", DATASET])
     if result.returncode != 0:
-        raise ArchiveError(f"归档 coverage 查询失败：{_tail(result)}")
+        raise ArchiveError(f"归档 coverage 查询失败：{xiaoshi_cli.tail(result)}")
     payload = _load_json(result.stdout)
     window = payload.get("coverage") or {}
     last = window.get("last")
@@ -137,17 +121,14 @@ def download_day(day: date, data_dir: Path | None = None) -> bool:
     if result.returncode == 0:
         return True
     output = result.stdout + result.stderr
-    if any(marker in output for marker in _RATE_LIMIT_MARKERS):
-        raise RateLimited(f"{day} 触发平台限流：{_tail(result)}", retry_after=_retry_after(output))
+    if xiaoshi_cli.rate_limit_hit(output):
+        raise RateLimited(
+            f"{day} 触发平台限流：{xiaoshi_cli.tail(result)}",
+            retry_after=xiaoshi_cli.retry_after(output),
+        )
     if _404_MARKER in output:
         return False
-    raise ArchiveError(f"{day} 下载失败（退出码 {result.returncode}）：{_tail(result)}")
-
-
-def _retry_after(output: str) -> int | None:
-    """从 `Retry-After=<秒>` 里取出平台给的等待秒数。"""
-    match = re.search(r"Retry-After=(\d+)", output)
-    return int(match.group(1)) if match else None
+    raise ArchiveError(f"{day} 下载失败（退出码 {result.returncode}）：{xiaoshi_cli.tail(result)}")
 
 
 def day_shards(day: date, data_dir: Path | None = None) -> dict[str, Shard]:
@@ -181,15 +162,8 @@ def day_shards(day: date, data_dir: Path | None = None) -> dict[str, Shard]:
 
 
 def _load_json(text: str) -> dict:
-    start = text.find("{")
-    if start < 0:
-        raise ArchiveError(f"CLI 输出不是 JSON：{text[:200]}")
+    """CLI 输出的 JSON 解析（机制在 `xiaoshi_cli`，这里只翻成本通道的异常语义）。"""
     try:
-        return json.loads(text[start:])
-    except ValueError as exc:
-        raise ArchiveError(f"CLI 输出无法解析为 JSON：{exc}") from exc
-
-
-def _tail(result: subprocess.CompletedProcess[str]) -> str:
-    text = (result.stderr or "").strip() or (result.stdout or "").strip()
-    return text[-300:]
+        return xiaoshi_cli.load_json(text)
+    except xiaoshi_cli.CliError as exc:
+        raise ArchiveError(str(exc)) from exc

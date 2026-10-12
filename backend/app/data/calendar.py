@@ -21,6 +21,10 @@ from typing import Collection, Iterable
 
 CALENDAR_FILE = Path(__file__).resolve().parent / "trading_calendar.json"
 
+#: 冻结日历余量低于此天数即告警——到期 `CalendarOutOfRange` 会硬停 ETL 与回测。
+#: 阈值放这里（而不是体检模块）：台账 note 与体检 X1 用的是同一个判断。
+RUNWAY_WARN_DAYS = 90
+
 
 class CalendarOutOfRange(RuntimeError):
     """查询落到冻结日历的覆盖区间之外——需要重生成日历，而不是当作休市。"""
@@ -40,6 +44,27 @@ def coverage() -> tuple[date, date]:
     """冻结日历的覆盖区间（含端点）。"""
     days = _sessions()
     return days[0], days[-1]
+
+
+def runway(today: date | None = None) -> int:
+    """距日历上界还有几天。**越界不抛错**——余量本身要能在到期后照样报出来。"""
+    return (coverage()[1] - (today or date.today())).days
+
+
+def runway_note(today: date | None = None) -> str:
+    """余量告急时给一句可操作的话，正常时返回空串（供写进 ETL 台账的 note）。
+
+    为什么要写进台账：日历一到期，`CalendarOutOfRange` 会硬停 ETL 与回测，而**体检报告
+    不是每天有人看的地方**——台账会出现在 `/api/v1/etl/status` 与日志里。
+    """
+    days = runway(today)
+    if days >= RUNWAY_WARN_DAYS:
+        return ""
+    return (
+        f"⚠ 冻结日历余量仅 {days} 天（阈值 {RUNWAY_WARN_DAYS}，止于 {coverage()[1]}）："
+        "到期 CalendarOutOfRange 会硬停 ETL 与回测；出路是升级 exchange_calendars 后"
+        "重跑 scripts/generate_calendar.py"
+    )
 
 
 def _require_covered(day: date) -> None:
