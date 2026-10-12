@@ -123,10 +123,61 @@ def market_benchmark(
     )
 
 
+#: 代理指数的基点。锚定日**不写死**——取行情数据里第一个有等权收益的交易日，
+#: 这样 ETL 回填更早的历史时点位会重算，而不是停留在一个人为挑的日期上。
+DEFAULT_BASE_LEVEL = 1000.0
+
+
+def market_index_level(
+    day: date,
+    *,
+    base_level: float = DEFAULT_BASE_LEVEL,
+    adjust: str = "qfq",
+    data_dir: Path | None = None,
+) -> dict[str, object]:
+    """全市场等权代理指数的**点位与当日涨跌**（M10 大盘总览）。
+
+    与 `market_benchmark` 共用 `_daily_rows` 与 `EXCLUDE_ABS_CHANGE_PCT`——**同一把尺子**：
+    首页显示的那个数，与回测报告里那条基准曲线逐日相等。这不是「差不多的两个指标」。
+
+    ⚠ **它是代理，不是指数**（`MARKET_KIND` / `NOTE` 照登到 UI）。数据源不覆盖指数（M2a 已核实）。
+
+    全期逐日聚合是一次分组扫描：实测 1,636 个交易日 **329ms**，是 M10 里唯一必须扫全史的查询
+    （点位是累积量，没有便宜的近似）。
+    """
+    rows = _daily_rows(date(1970, 1, 1), day, adjust, data_dir)
+    base_date: date | None = None
+    level = base_level
+    excluded = 0
+    for row in rows:
+        if row["ret"] is None:
+            continue
+        if base_date is None:
+            base_date = row["trade_date"]  # type: ignore[assignment]
+        excluded += int(row["dropped"] or 0)
+        level *= 1.0 + float(row["ret"]) / 100.0
+
+    last = rows[-1] if rows else None
+    change_pct = float(last["ret"]) if last and last["ret"] is not None else None
+    return {
+        "kind": MARKET_KIND,
+        "level": level if base_date is not None else None,
+        "change_pct": change_pct,
+        "base_level": base_level,
+        "base_date": base_date.isoformat() if base_date else None,
+        "days": sum(1 for row in rows if row["ret"] is not None),
+        "excluded": excluded,
+        "kept": int(last["kept"] or 0) if last else 0,
+        "note": NOTE,
+    }
+
+
 __all__ = [
+    "DEFAULT_BASE_LEVEL",
     "EXCLUDE_ABS_CHANGE_PCT",
     "MARKET_KIND",
     "NOTE",
     "MarketBenchmark",
     "market_benchmark",
+    "market_index_level",
 ]

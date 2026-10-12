@@ -57,6 +57,38 @@ export function amount(value: number | null, { signed, digits = 0 }: FormatOptio
   );
 }
 
+/**
+ * **已是百分数**的值 → 带 `%` 号。`-0.102` → `-0.1%`。用于 `change_pct` 这类源侧就是
+ * 百分数的字段（M10 起）。**第三条路径，必须与另外两条分得清**：
+ *
+ * | 输入是什么 | 用它 | 例 |
+ * |---|---|---|
+ * | 比例（0.124 表示 12.4%） | `pct()` | `metrics.total_return` |
+ * | 已是百分数，且字段名就叫「百分点」 | `pp()` | `delta.total_return_pp` |
+ * | 已是百分数，语义是涨跌幅 / 收益率 | `rate()` | `change_pct` |
+ *
+ * 三条都吃同一个 `build`，差别只在后缀；分成三个名字是为了让调用处**一眼看出没配错**——
+ * 100 倍的错不会报错，只会安静地显示一个错的数。
+ */
+export function rate(value: number | null, { signed, digits = 2 }: FormatOptions = {}): string {
+  const text = build(
+    { maximumFractionDigits: digits, signDisplay: signDisplay(signed) },
+    value,
+  );
+  return text === EMPTY ? EMPTY : `${text}%`;
+}
+
+/**
+ * 元 → **亿元**（A 股口径的成交额单位）。`1450089493893` → `14,500.9`。
+ * 小数位是**上限**：`7603661152` → `76`（不是 `76.0`）——尾随零不补，那一位没有信息。
+ *
+ * 只换单位、不带「亿」字：中文里的「亿」在排版上常要单独变小字，那属于组件的事。
+ * 缺失值照旧走 `EMPTY`，**不把 null 当 0 元**。
+ */
+export function yi(value: number | null, digits = 1): string {
+  return build({ maximumFractionDigits: digits }, value === null ? null : value / 1e8);
+}
+
 /** 无单位的数值（夏普一类）。 */
 export function num(value: number | null, { signed, digits = 2 }: FormatOptions = {}): string {
   return build(

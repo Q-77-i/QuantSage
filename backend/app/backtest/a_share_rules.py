@@ -34,6 +34,7 @@ bar 断言（`tests/test_a_share_rules.py`）。引擎与 broker 从这里取判
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
@@ -75,7 +76,25 @@ REJECT_REASONS: dict[RejectCode, str] = {
 _MAIN_BOARD = 0.10
 _GROWTH_BOARD = 0.20
 _BSE = 0.30
-_ST_MAIN_BOARD = 0.05
+
+#: 主板风险警示（ST / *ST）的幅度。**实测 10%，不是教科书上的 5%**（2026-10-12 定）。
+#:
+#: 这一档原先按惯例写 0.05，M10 做涨跌停家数时被数据打掉。取证方式：对全市场 168 只
+#: 主板 ST 标的逐日算「收盘是否**精确等于**某一档算出的涨跌停价」——
+#:
+#: | 前收下限 | 样本 | 命中 5% 档 | 命中 10% 档 |
+#: |---|---|---|---|
+#: | ≥ 5 元 | 3,665 | 22 | **111** |
+#: | ≥ 10 元 | 1,341 | 3 | **57** |
+#:
+#: 加价格下限是为了排掉「低价股两个档算出同一个价」的假命中（前收 0.10 元时 5% 与 10%
+#: 都进位到 0.11）。10 元档那些样本里两档同价的一条都没有，比值 57:3 不可能是巧合。
+#: 名称侧也已排除「字典过期」：语料里这几只从头到尾就叫 `*ST广糖` 一类，90–122 次全一致。
+#:
+#: ⚠ **这一档目前与 `_MAIN_BOARD` 同值，`is_st` 参数因此在数学上是个空操作。** 保留它是因为
+#: 「风险警示另设一档」是规则的一部分，且本数据集分不出「退市整理期 10%」与「风险警示 10%」
+#: （没有这个字段）——真要合并是一次跨 engine / paper / rules 的清理，不塞进 M10。
+_ST_MAIN_BOARD = 0.10
 
 _BOARD_LIMITS: dict[str, float] = {
     "000": _MAIN_BOARD,
@@ -181,6 +200,93 @@ def is_one_word_limit_down(bar: Bar, band: LimitBand) -> bool:
     return _at_price(bar.open, band.down) and _at_price(bar.high, band.down)
 
 
+@dataclass(frozen=True, slots=True)
+class LimitCounts:
+    """某交易日**收盘触板**的家数（M10 大盘总览）。
+
+    与一字板是两件事：`is_one_word_limit_up/down` 判「全天无对手盘 ⇒ 成交不了」，
+    服务撮合；这里判「**收盘状态**」，服务家数统计。一只票可以涨停收盘而盘中开过板
+    （不是一字板），也可以一字板但当天根本没成交。
+    """
+
+    up: int
+    down: int
+    #: 真正判过的家数（有前收 + 板别认得出）
+    judged: int
+    #: 判不了而跳过的家数——**如实计数，不当成「没涨停」**
+    skipped: int
+
+    def to_json(self) -> dict[str, int]:
+        return {
+            "limit_up": self.up,
+            "limit_down": self.down,
+            "judged": self.judged,
+            "skipped": self.skipped,
+        }
+
+
+def count_limit_hits(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    st_symbols: Collection[str] = (),
+    tolerance: float = TICK,
+) -> LimitCounts:
+    """统计**收盘价贴在涨跌停价上**的家数。
+
+    输入必须是 **raw（不复权）**口径的当日收盘与前收盘：涨跌停价是**价格**概念
+    （前收 × 幅度后再四舍五入到分），复权序列上这个整数关系被破坏。实测 2026-09-30
+    raw 自算得 **56 / 12**，而拿 qfq 的 `change_pct` 近似得 **58 / 12**——**差 2 只**，
+    正是「看着对、抽查才对不上」那一类。这也解释了为什么这里不接受 `change_pct`：
+    它在 raw 口径下**自 2026-09-21 起整列为空**（2026 分片覆盖 83.2%）。
+
+    `tolerance` 用半分（`TICK`）：落盘 raw 价有非整两位小数的行，且涨跌停价与收盘价
+    是两条不同路径算出来的浮点，等值比较会漏。
+
+    判不了的一律**跳过并计数**，不猜、也不当成「没涨停」。三个跳过理由：
+    缺前收、板别认不出、**收盘跑到算出来的涨跌停区间外面**（多半是除权日，见函数内注释）。
+    缺名不算跳过：那只是 ST 档没生效（按板块默认幅度判），判据本身仍然成立。
+    """
+    st = set(st_symbols)
+    up = down = judged = skipped = 0
+    for row in rows:
+        prev_close = row.get("prev_close")
+        close = row.get("close")
+        symbol = row.get("symbol")
+        if (
+            not isinstance(symbol, str)
+            or not isinstance(prev_close, (int, float))
+            or not isinstance(close, (int, float))
+        ):
+            skipped += 1
+            continue
+        pct = limit_pct(symbol, is_st=symbol in st)
+        if pct is None:  # 未知板别：宁可跳过，也不猜一个 10% 去误判
+            skipped += 1
+            continue
+        band = limit_band(float(prev_close), pct)
+        price = float(close)
+        # **封板 = 收盘价等于涨跌停价**，不是「够得着」。用对称容差而不是单侧比较，
+        # 是为了把「收盘跑到区间外面」单独认出来——那在物理上不可能，只可能是当日
+        # **有除权而 raw 前收没反映除权参考价**（前收虚高 ⇒ 算出的跌停价虚高 ⇒
+        # 一根正常下跌的收盘就掉到它下面）。实测 2026-09-30 的 300980 祥源新材：
+        # raw 前收 22.90 → 收盘 15.98（−30%，超出创业板 20% 的上限），而 qfq 口径
+        # 当日只跌 2.31%——它根本没封板，却会被单侧比较数成跌停。
+        #
+        # ⚠ M5a 模块注释里「除权日会漏判（不误判）」**只对上侧成立**：上侧算出偏高的
+        # 涨停价，真实封板够不着（漏判）；下侧算出偏高的跌停价，正常下跌就掉进去（误判）。
+        if abs(price - band.up) <= tolerance:
+            up += 1
+            judged += 1
+        elif abs(price - band.down) <= tolerance:
+            down += 1
+            judged += 1
+        elif price > band.up + tolerance or price < band.down - tolerance:
+            skipped += 1  # 序列不可比（多半是除权日）：跳过，不数成任何一档
+        else:
+            judged += 1  # 老老实实落在区间里，确实没封板
+    return LimitCounts(up=up, down=down, judged=judged, skipped=skipped)
+
+
 def order_reject(
     side: Side,
     bar: Bar,
@@ -220,8 +326,10 @@ __all__ = [
     "REJECT_REASONS",
     "TICK",
     "LimitBand",
+    "LimitCounts",
     "RejectCode",
     "board_limit_pct",
+    "count_limit_hits",
     "is_one_word_limit_down",
     "is_one_word_limit_up",
     "is_st_name",

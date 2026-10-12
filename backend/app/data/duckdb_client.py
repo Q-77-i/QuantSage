@@ -291,6 +291,232 @@ def symbol_rank(
     return payload
 
 
+def _latest_trade_date(con: duckdb.DuckDBPyConnection, adjust: str) -> str | None:
+    """该复权口径下最后一根**有价** bar 的交易日（`None` = 一片都没有）。
+
+    「最新」必须是查出来的：数据是日增的，写死一个日期会在某天指向空日子
+    （`cross_section` / `latest_dates` 同口径）。
+    """
+    rows = _fetch(
+        con,
+        f"SELECT max(trade_date) AS day FROM {BARS_VIEW}"
+        " WHERE adjustment = ? AND close IS NOT NULL",
+        [adjust],
+    )
+    day = rows[0]["day"] if rows else None
+    return day.isoformat() if day else None
+
+
+def market_breadth(
+    trade_date: str | None = None,
+    *,
+    adjust: str = "qfq",
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> dict[str, object]:
+    """某交易日的**全市场广度**：涨跌平家数、有价标的数、总成交额（M10 大盘总览）。
+
+    一条聚合搞定（实测 5,556 只有价、含建视图 277ms）。口径与 `cross_section` 逐条相同：
+    四价齐全且收盘非空才算「有价」，`change_pct` 缺失（实测 4.8%）的行**不进涨跌平任何一档**——
+    它们只是「没有涨跌幅这个事实」，归到「平」会把缺失读成零涨跌。
+
+    `trade_date` 缺省取该复权口径下最后一根有价 bar 的交易日（与 `cross_section` / `freshness` 同源）。
+    """
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        if trade_date is None:
+            trade_date = _latest_trade_date(con, adjust)
+            if trade_date is None:
+                return {"trade_date": None, "total": 0, "up": 0, "down": 0, "flat": 0,
+                        "without_pct": 0, "amount": None}
+
+        rows = _fetch(
+            con,
+            f"""
+            SELECT count(*)                                                   AS total,
+                   count(*) FILTER (WHERE change_pct > 0)                     AS up,
+                   count(*) FILTER (WHERE change_pct < 0)                     AS down,
+                   count(*) FILTER (WHERE change_pct = 0)                     AS flat,
+                   count(*) FILTER (WHERE change_pct IS NULL)                 AS without_pct,
+                   sum(amount)                                                AS amount
+            FROM {BARS_VIEW}
+            WHERE adjustment = ? AND trade_date = ?
+              AND close IS NOT NULL AND open IS NOT NULL
+              AND high IS NOT NULL AND low IS NOT NULL
+            """,
+            [adjust, trade_date],
+        )
+    finally:
+        if own:
+            con.close()
+    row = rows[0] if rows else {}
+    return {
+        "trade_date": trade_date,
+        "total": int(row.get("total") or 0),
+        "up": int(row.get("up") or 0),
+        "down": int(row.get("down") or 0),
+        "flat": int(row.get("flat") or 0),
+        "without_pct": int(row.get("without_pct") or 0),
+        "amount": float(row["amount"]) if row.get("amount") is not None else None,
+    }
+
+
+#: 前收盘的回看窗口（交易日数）。取 2 是**保守**：停牌更久的标的拿不到前收 ⇒ 跳过并计数，
+#: 不去翻更早的历史（那要把 raw 全史拉进来，为一个显示用的家数统计不值得）。
+_PREV_SESSIONS = 2
+
+
+def raw_day_closes(
+    trade_date: str | None = None,
+    *,
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> dict[str, object]:
+    """某交易日的 **raw（不复权）**收盘与前收盘，外加实际取到的交易日（涨跌停判定用）。
+
+    为什么必须是 raw：涨跌停价是**价格**概念（前收 × 幅度后四舍五入到分），复权序列上
+    这个整数关系被破坏。为什么不用 `change_pct`：它在 raw 口径下**自 2026-09-21 起整列为空**。
+
+    `prev_close` 取的是**前一个有余价的交易日**的收盘；窗口只有 `_PREV_SESSIONS` 天，
+    停牌更久的标的 `prev_close` 为 `None`（调用方跳过并计数，不猜）。
+    """
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        if trade_date is None:
+            latest = _fetch(
+                con,
+                f"SELECT max(trade_date) AS day FROM {BARS_VIEW}"
+                " WHERE adjustment = 'raw' AND close IS NOT NULL",
+                [],
+            )
+            day = latest[0]["day"] if latest else None
+            if day is None:
+                return {"trade_date": None, "rows": []}
+            trade_date = day.isoformat()
+
+        rows = _fetch(
+            con,
+            f"""
+            WITH sessions AS (
+                SELECT DISTINCT trade_date FROM {BARS_VIEW}
+                WHERE adjustment = 'raw' AND close IS NOT NULL AND trade_date <= ?
+                ORDER BY trade_date DESC LIMIT ?
+            ),
+            seq AS (
+                SELECT symbol, trade_date, close,
+                       lag(close) OVER (PARTITION BY symbol ORDER BY trade_date) AS prev_close
+                FROM {BARS_VIEW}
+                WHERE adjustment = 'raw' AND trade_date IN (SELECT trade_date FROM sessions)
+                  AND close IS NOT NULL
+            )
+            SELECT symbol, close, prev_close FROM seq WHERE trade_date = ?
+            """,
+            [trade_date, _PREV_SESSIONS, trade_date],
+        )
+    finally:
+        if own:
+            con.close()
+    return {"trade_date": trade_date, "rows": rows}
+
+
+def sector_performance(
+    trade_date: str | None = None,
+    *,
+    adjust: str = "qfq",
+    min_symbols: int = 10,
+    limit: int = 60,
+    data_dir: Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> dict[str, object]:
+    """某交易日的**行业 / 概念板块**表现（M10 板块块）。
+
+    **一条事件怎么变成配对**：取它提到的**全部行业 × 全部标的**（笛卡尔积）。事件说的是
+    「这些行业 + 这些标的」，语料里没有「哪只标的属于哪个行业」的更细映射，硬拆一个出来
+    就是编精度。故这是一条**弱归属**——界面上的口径说明必须写明它来自事件、非权威分类。
+
+    **归属口径 = PIT 累积**：行业 → 标的的映射取「`available_at <= 当日 15:00` 的**全部历史事件**」
+    的累积，**不是当日事件**。理由是实测的一条反向污染：当天的新闻标签本身由当天的涨跌驱动
+    （涨得好才被打标签），用当日归属算出来的「板块涨跌幅」是**选出涨得好的再算均值**
+    （实测医药生物 +3.69% 即此），且样本薄（金融仅 127 只）。累积口径 16–260ms、覆盖率 **87.7%**。
+
+    ⚠ **它不是一个划分**：一只标的可同时挂「电子」「半导体」「AI算力」，故各行业的成交额
+    之和**远大于**全市场成交额（实测 30 个行业合计 39,516 亿 = 全市场的 **274%**）。
+    任何**部分-整体**形态（树图 / 堆叠条 / 饼图）在这里都是错的——这是板块块不用 treemap 的原因。
+
+    `median_pct` 与 `avg_pct` 一并给出：两者差得远说明这一档被少数极端值主导，读者该看得出来。
+    """
+    own = con is None
+    con = con if con is not None else connect(data_dir)
+    try:
+        if trade_date is None:
+            trade_date = _latest_trade_date(con, adjust)
+            if trade_date is None:
+                return {"trade_date": None, "rows": [], "coverage": {"total": 0, "covered": 0}}
+        cutoff = f"{trade_date} 15:00:00+08"  # 收盘时刻（A 股 15:00 收盘）
+        rows = _fetch(
+            con,
+            f"""
+            -- ⚠ 两个 `unnest` 必须写成 `FROM …, UNNEST(…)`（横向**笛卡尔积**）。
+            -- 写在同一条 SELECT 里（`SELECT unnest(a), unnest(b)`）时 DuckDB 按**位置 zip**、
+            -- 短的补 NULL——一条「1 个行业 × 3 只标的」的事件只会产出 1 个正确配对。
+            -- 这个坑不会报错、不会崩，只是**静默少算**，故在 `tests/test_market_overview.py`
+            -- 里有一条专门的多标的夹具钉住它。
+            WITH tag AS (
+                SELECT i.ind AS ind, s.sym AS sym
+                FROM {EVENTS_VIEW}, UNNEST(industries) AS i(ind), UNNEST(symbols) AS s(sym)
+                WHERE available_at <= CAST(? AS TIMESTAMPTZ)
+                  AND len(industries) > 0 AND len(symbols) > 0
+            ),
+            clean AS (
+                SELECT DISTINCT ind, sym FROM tag
+                WHERE ind IS NOT NULL AND sym IS NOT NULL AND sym <> ''
+            ),
+            px AS (
+                SELECT symbol, change_pct, amount FROM {BARS_VIEW}
+                WHERE adjustment = ? AND trade_date = ? AND change_pct IS NOT NULL
+            )
+            SELECT clean.ind AS industry,
+                   count(*) AS symbols,
+                   sum(px.amount) AS amount,
+                   avg(px.change_pct) AS avg_pct,
+                   median(px.change_pct) AS median_pct
+            FROM clean JOIN px ON px.symbol = clean.sym
+            GROUP BY 1 HAVING count(*) >= ?
+            ORDER BY avg_pct DESC NULLS LAST, symbols DESC
+            LIMIT ?
+            """,
+            [cutoff, adjust, trade_date, min_symbols, limit],
+        )
+        coverage = _fetch(
+            con,
+            f"""
+            WITH tag AS (
+                SELECT DISTINCT unnest(symbols) AS sym FROM {EVENTS_VIEW}
+                WHERE available_at <= CAST(? AS TIMESTAMPTZ) AND len(industries) > 0
+            ),
+            px AS (
+                SELECT symbol FROM {BARS_VIEW}
+                WHERE adjustment = ? AND trade_date = ? AND change_pct IS NOT NULL
+            )
+            SELECT (SELECT count(*) FROM px) AS total,
+                   count(*) AS covered
+            FROM px WHERE symbol IN (SELECT sym FROM tag)
+            """,
+            [cutoff, adjust, trade_date],
+        )
+    finally:
+        if own:
+            con.close()
+    cov = coverage[0] if coverage else {"total": 0, "covered": 0}
+    return {
+        "trade_date": trade_date,
+        "rows": rows,
+        "coverage": {"total": int(cov["total"] or 0), "covered": int(cov["covered"] or 0)},
+    }
+
+
 def event_coverage(data_dir: Path | None = None) -> dict[str, object]:
     """本地事件语料的覆盖区间与总条数——**从数据里查出来的**，不写死「最近 3 个月」。
 

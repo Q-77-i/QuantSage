@@ -12,9 +12,17 @@ export interface NavItem {
   label: string;
 }
 
-/** 页头导航（顺序即展示顺序）。新增一项只改这里。 */
+/**
+ * 页头导航（顺序即展示顺序）。新增一项只改这里。
+ *
+ * ⚠ **M10a 起 `/` 是研究首页，对话挪到 `/chat`**——改动落在这一张表里，别处不用动。
+ * 页面搬迁时唯一要一并检查的是：还有谁把 `/` 当成「对话」写死了（`ChatPage` 的
+ * `ThreadUrlSync` 已改）。`register` 与 `safeNextPath` 的默认值仍指向 `/`，
+ * 那是**对的**——注册后落到研究首页正是这次改动的意图。
+ */
 export const NAV_ITEMS: readonly NavItem[] = [
-  { key: "chat", href: "/", label: "对话" },
+  { key: "home", href: "/", label: "首页" },
+  { key: "chat", href: "/chat", label: "对话" },
   { key: "backtest", href: "/backtest", label: "回测" },
   { key: "strategies", href: "/strategies", label: "策略" },
   { key: "optimize", href: "/optimize", label: "优化" },
@@ -39,7 +47,7 @@ export function activeHref(pathname: string | null): string | null {
   const path = pathname.replace(/\/+$/, "") || "/";
   for (const item of NAV_ITEMS) {
     if (item.href === "/") {
-      // 首页只有**精确**相等才算当前项——前缀匹配会让全站点亮「对话」
+      // 根路径只有**精确**相等才算当前项——前缀匹配会让全站点亮「首页」
       if (path === "/") return "/";
       continue;
     }

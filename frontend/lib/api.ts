@@ -23,6 +23,8 @@ import type {
   BarsResponse,
   DataFreshness,
   EventsResponse,
+  MarketOverview,
+  MarketSectors,
   StrategyCheck,
   StrategyDetail,
   StrategySaved,
@@ -263,6 +265,21 @@ export const api = {
   /** 因子报告：**同步一次返回**（公开端点、不落库）；`costs=false` 时净曲线为 null */
   factorReport: (params: FactorQueryInput) =>
     request<FactorReport>(`/api/v1/factor/report${factorQuery(params)}`),
+
+  // ── 研究首页（M10a）────────────────────────────────────────────────────
+  /** 大盘总览：涨跌家数 / 涨跌停 / 成交额 / 等权代理 + 两个「截至」。公开端点。 */
+  marketOverview: (date?: string) =>
+    request<MarketOverview>(`/api/v1/market/overview${query({ date })}`),
+  /**
+   * 板块块：PIT 累积归属下的行业 / 概念表现。
+   *
+   * `minSymbols` 是**样本下限**（服务端下限 3）：小样本的均值会霸榜，界面必须能调它。
+   * 查询串的键是后端的 `min_symbols`，故显式映射一次（`query()` 只负责丢空值）。
+   */
+  marketSectors: (params: { date?: string; minSymbols?: number } = {}) =>
+    request<MarketSectors>(
+      `/api/v1/market/sectors${query({ date: params.date, min_symbols: params.minSymbols })}`,
+    ),
 
   // ── 模拟盘（M6）────────────────────────────────────────────────────────
   /** 我的会话（摘要，最近创建在前） */

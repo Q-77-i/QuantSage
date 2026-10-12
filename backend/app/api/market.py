@@ -14,6 +14,8 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query
 
+from app.backtest import benchmark
+from app.backtest.a_share_rules import count_limit_hits
 from app.data import duckdb_client as dc
 from app.data import naming
 
@@ -157,6 +159,140 @@ async def search_symbols(
         "query": q,
         "count": len(matched),
         "items": [{"symbol": symbol, "name": primary[symbol]} for symbol in matched],
+    }
+
+
+#: 涨跌停家数的口径说明。与 `a_share_rules.count_limit_hits` 的 docstring **同源**——
+#: 界面照登服务端的话，前端不自己拼一遍免责口径（M5b 定过的规矩）。
+_LIMIT_NOTE = (
+    "涨跌停按 raw（不复权）前收盘自算：前收 × 板别幅度（主板 10% / 创业板与科创板 20% / "
+    "北交所 30%，主板 ST 5%）后四舍五入到分，与当日 raw 收盘比。"
+    "必须用不复权序列——涨跌停价是价格概念，复权价上这个整数关系不成立；"
+    "也不能读 change_pct，它在 raw 口径下自 2026-09-21 起整列为空。"
+)
+
+
+def _overview_sync(day: str | None, adjust: str) -> dict[str, Any]:
+    """一次连接算完大盘总览（建视图有几十毫秒，四条查询各建一次不划算）。"""
+    con = dc.connect()
+    try:
+        breadth = dc.market_breadth(day, adjust=adjust, con=con)
+        trade_date = breadth["trade_date"]
+        if trade_date is None:
+            return {"trade_date": None, "adjust": adjust, "breadth": None,
+                    "limits": None, "limits_meta": None, "index": None, "as_of": None}
+        # 涨跌停与复权口径无关（走 raw），但**日期**跟着截面走
+        raw_day = dc.raw_day_closes(trade_date, con=con)
+    finally:
+        con.close()
+
+    # 字典缺失不是错误：ST 档退化成「无」，家数照出（`st_symbols` 覆盖 96.7%）
+    names = naming.load_dictionary()
+    st = naming.st_symbols(names)
+    limits = count_limit_hits(raw_day["rows"], st_symbols=st)
+    fresh = dc.latest_dates()
+    return {
+        "trade_date": trade_date,
+        "adjust": adjust,
+        "amount": breadth["amount"],
+        "breadth": {
+            "total": breadth["total"],
+            "up": breadth["up"],
+            "down": breadth["down"],
+            "flat": breadth["flat"],
+            "without_pct": breadth["without_pct"],
+        },
+        "limits": limits.to_json(),
+        "limits_meta": {
+            "adjust": "raw",
+            "st_source": "dictionary" if names else "missing",
+            "st_symbols": len(st),
+            "note": _LIMIT_NOTE,
+        },
+        # 与回测基准**同一把尺子**（`benchmark._daily_rows` + `EXCLUDE_ABS_CHANGE_PCT`）
+        "index": benchmark.market_index_level(date.fromisoformat(trade_date), adjust=adjust),
+        "as_of": {
+            "bars": fresh.get("latest_trade_date"),
+            "events": (fresh.get("latest_event_available_at") or "")[:10] or None,
+        },
+    }
+
+
+@router.get("/overview")
+async def get_overview(
+    trade_date: Annotated[date | None, Query(alias="date")] = None,
+    adjust: Literal["qfq", "raw"] = "qfq",
+) -> dict[str, Any]:
+    """某交易日的**大盘总览**（M10 研究首页）：涨跌家数 / 涨跌停家数 / 成交额 / 全市场等权代理。
+
+    四条读数一次给全，前端一次请求画完整个仪表盘。`date` 缺省取行情里最后一个有价交易日。
+
+    **两个「截至」一并给出**（`as_of.bars` / `as_of.events`）：行情是年度整片重下载、不日更，
+    事件语料却按日增量——两者天然不同步（实测行情 2026-09-30 / 事件 2026-10-08）。
+    这是数据通道的真相，界面应当并列显示而不是挑一个假装同步。
+
+    `index` **不是指数**：数据源不覆盖指数（M2a 已核实），那是全市场等权代理，
+    口径与回测报告的基准曲线逐日相等（`kind` / `note` 照登界面）。
+    """
+    return await asyncio.to_thread(_overview_sync, trade_date.isoformat() if trade_date else None, adjust)
+
+
+#: 板块归属口径说明（同 `dc.sector_performance` 的 docstring，一处写、界面照登）
+_SECTOR_NOTE = (
+    "行业 / 概念标签来自事件语料（非权威行业分类），归属取**截至当日收盘的 PIT 累积**："
+    "某标的属于某行业，当且仅当截至该日 15:00 已有事件同时提到这个行业与这只标的。"
+    "一只标的可同时属于多个标签，故**各行业成交额之和大于全市场**，不可读作份额。"
+)
+
+
+@router.get("/sectors")
+async def get_sectors(
+    trade_date: Annotated[date | None, Query(alias="date")] = None,
+    adjust: Literal["qfq", "raw"] = "qfq",
+    min_symbols: Annotated[int, Query(ge=3, le=200)] = 10,
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> dict[str, Any]:
+    """某交易日的**行业 / 概念板块表现**（M10 板块块）：成分数 / 成交额 / 平均与中位涨跌幅。
+
+    ⚠ **`coverage` 必须照登界面**——归属来自事件语料，按事件类型覆盖不均
+    （news 44.9% / policy 100% / announcement 0%，全局 31.4%；实测当日截面覆盖 87.7%）。
+    画成一张「看起来完整」的板块图就是在编数。
+
+    `min_symbols` 是**样本下限**：小样本的均值会霸榜（实测当日榜首是 21 只的行业），
+    故响应里每条都带 `symbols`，供界面显示「这个均值建立在多少个标的上」。
+    `avg_pct` 与 `median_pct` 一并给出：两者差得远说明这一档被少数极端值主导。
+
+    不落缓存：实测单日 40ms（含建视图），比缓存的维护成本便宜。
+    """
+    result = await asyncio.to_thread(
+        dc.sector_performance,
+        trade_date.isoformat() if trade_date else None,
+        adjust=adjust,
+        min_symbols=min_symbols,
+        limit=limit,
+    )
+    cov = result["coverage"]
+    return {
+        "trade_date": result["trade_date"],
+        "adjust": adjust,
+        "min_symbols": min_symbols,
+        "count": len(result["rows"]),
+        "coverage": {
+            "total": cov["total"],
+            "covered": cov["covered"],
+            "ratio": (cov["covered"] / cov["total"]) if cov["total"] else None,
+        },
+        "items": [
+            {
+                "industry": row["industry"],
+                "symbols": int(row["symbols"]),
+                "amount": float(row["amount"]) if row["amount"] is not None else None,
+                "avg_pct": float(row["avg_pct"]) if row["avg_pct"] is not None else None,
+                "median_pct": float(row["median_pct"]) if row["median_pct"] is not None else None,
+            }
+            for row in result["rows"]
+        ],
+        "note": _SECTOR_NOTE,
     }
 
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EMPTY, amount, count, dayStamp, eventStamp, num, pct, pp, shortHash } from "./format";
+import { EMPTY, amount, count, dayStamp, eventStamp, num, pct, pp, rate, shortHash, yi } from "./format";
 
 describe("pct —— 输入是比例（0.124 = 12.4%）", () => {
   it("比例转百分数", () => {
@@ -95,5 +95,30 @@ describe("shortHash", () => {
     expect(shortHash("5a0fa7182779dbd16583")).toBe("5a0fa7182779");
     expect(shortHash("abc")).toBe("abc");
     expect(shortHash(null)).toBe(EMPTY);
+  });
+});
+
+describe("rate —— 输入已是百分数（-0.102 = −0.102%）", () => {
+  it("加 % 号但不乘 100——与 pct 的分工就在这一步", () => {
+    expect(rate(-0.10222038503521416)).toBe("-0.1%");
+    expect(rate(2.56, { digits: 2 })).toBe("2.56%");
+    expect(pct(-0.00102)).toBe("-0.1%"); // 同一个显示，输入差 100 倍
+  });
+
+  it("带号与缺失的口径同 amount / num", () => {
+    expect(rate(0, { signed: true })).toBe("0%");
+    expect(rate(1.5, { signed: true })).toBe("+1.5%");
+    expect(rate(null)).toBe(EMPTY);
+  });
+});
+
+describe("yi —— 元换算成亿元", () => {
+  it("换单位不换语义：只除以 1e8，不加「亿」字（那属于排版的活）", () => {
+    expect(yi(1_450_089_493_893)).toBe("14,500.9");
+    expect(yi(7_603_661_152)).toBe("76");
+  });
+
+  it("缺失是「—」不是「0 亿」", () => {
+    expect(yi(null)).toBe(EMPTY);
   });
 });

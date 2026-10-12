@@ -1155,3 +1155,85 @@ export interface ReportSummary {
   share_token: string | null;
   share_path: string | null;
 }
+
+// ── 研究首页（M10a）─────────────────────────────────────────────────────
+
+/** `GET /api/v1/market/overview`（M10a）。各块可为 null——数据没落盘时端点整体 503， */
+/** 但「某一天没有样本」是有意义的空，故形状上留得住。 */
+export interface MarketOverview {
+  trade_date: string | null;
+  adjust: string;
+  amount: number | null;
+  breadth: MarketBreadth | null;
+  limits: MarketLimits | null;
+  limits_meta: MarketLimitsMeta | null;
+  index: MarketIndex | null;
+  /** 两个「截至」：行情与事件语料**天然不同步**，界面并列显示 */
+  as_of: { bars: string | null; events: string | null } | null;
+}
+
+export interface MarketBreadth {
+  total: number;
+  up: number;
+  down: number;
+  flat: number;
+  /** 有价但没有涨跌幅的行——**不进涨跌平任何一档**（缺失不是零涨跌） */
+  without_pct: number;
+}
+
+export interface MarketLimits {
+  limit_up: number;
+  limit_down: number;
+  /** 真正判过的家数 */
+  judged: number;
+  /** 判不了而跳过的家数（缺前收 / 板别认不出）——如实返回，不当成「没涨停」 */
+  skipped: number;
+}
+
+export interface MarketLimitsMeta {
+  adjust: string;
+  st_source: string;
+  st_symbols: number;
+  /** 口径说明由服务端给，界面照登（前端不自己拼一份免责话术） */
+  note: string;
+}
+
+/** 全市场等权代理——**不是指数**（`kind` / `note` 照登界面） */
+export interface MarketIndex {
+  kind: string;
+  level: number | null;
+  change_pct: number | null;
+  base_level: number;
+  base_date: string | null;
+  days: number;
+  excluded: number;
+  kept: number;
+  note: string;
+}
+
+/** `GET /api/v1/market/sectors`（M10a） */
+export interface MarketSectors {
+  trade_date: string | null;
+  adjust: string;
+  min_symbols: number;
+  count: number;
+  coverage: MarketSectorCoverage;
+  items: SectorRow[];
+  /** 归属口径说明（含「各行业成交额之和 > 全市场」这条），界面照登 */
+  note: string;
+}
+
+export interface MarketSectorCoverage {
+  total: number;
+  covered: number;
+  ratio: number | null;
+}
+
+export interface SectorRow {
+  industry: string;
+  /** 该档均值的样本数——读者判断这个数可不可信的唯一线索 */
+  symbols: number;
+  amount: number | null;
+  avg_pct: number | null;
+  median_pct: number | null;
+}

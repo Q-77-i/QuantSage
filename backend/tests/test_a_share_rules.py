@@ -17,8 +17,10 @@ import pytest
 from app.backtest.a_share_rules import (
     LOT_SIZE,
     LimitBand,
+    LimitCounts,
     RejectCode,
     board_limit_pct,
+    count_limit_hits,
     is_one_word_limit_down,
     is_one_word_limit_up,
     is_st_name,
@@ -91,15 +93,29 @@ def test_board_limit_pct_returns_none_for_unknown_prefix() -> None:
     assert board_limit_pct("60051") is None  # 位数不对
 
 
-def test_st_overrides_main_board_only() -> None:
-    """ST 的 5% 只对主板成立；创业板/科创板 ST 仍是 20%，北交所不适用。"""
-    assert limit_pct("600519", is_st=True) == 0.05
-    assert limit_pct("000001", is_st=True) == 0.05
+def test_main_board_st_uses_the_measured_band() -> None:
+    """主板 ST 走 **10%**（2026-10-12 实测定的，见 `_ST_MAIN_BOARD` 的读数表）。
+
+    原先写 5% 是照惯例，被数据否掉了：全市场 168 只主板 ST 标的、1,341 个「前收 ≥10 元」的
+    样本里，收盘精确落在 10% 档涨跌停价上的有 **57** 个，落在 5% 档上的只有 **3** 个。
+    创业板 / 科创板 ST 仍是 20%、北交所 30%，这条不变。
+    """
+    assert limit_pct("600519", is_st=True) == 0.10
+    assert limit_pct("000001", is_st=True) == 0.10
     assert limit_pct("300750", is_st=True) == 0.20
     assert limit_pct("688111", is_st=True) == 0.20
     assert limit_pct("920438", is_st=True) == 0.30
     # 非 ST 时与板别默认值同源
     assert limit_pct("600519") == board_limit_pct("600519")
+
+
+def test_main_board_st_band_currently_collapses_into_the_board_band() -> None:
+    """**如实钉住一个已知的怪处**：这一档目前与主板档同值，`is_st` 在数学上是空操作。
+
+    写这条不是认可它，是让它显形——哪天有人把 `_ST_MAIN_BOARD` 改回 5%，
+    这条会红，逼他回去看那张实测读数表。真要合并是一次跨 engine / paper / rules 的清理。
+    """
+    assert limit_pct("600519", is_st=True) == limit_pct("600519", is_st=False)
 
 
 def test_unknown_board_stays_none_even_with_st() -> None:
@@ -319,3 +335,106 @@ def test_reject_codes_are_the_five_in_spec() -> None:
         "REJECT_SUSPENDED",
         "REJECT_LOT",
     ]
+
+
+# ── M10：收盘触板家数（大盘总览用，与一字板是两件事）────────────────
+
+def _row(symbol: str, close: float, prev_close: float | None) -> dict[str, object]:
+    return {"symbol": symbol, "close": close, "prev_close": prev_close}
+
+
+class TestCountLimitHits:
+    def test_主板涨停与跌停各命中(self) -> None:
+        got = count_limit_hits(
+            [_row("600519", 110.0, 100.0), _row("600000", 90.0, 100.0), _row("601398", 101.0, 100.0)]
+        )
+        assert got.to_json() == {"limit_up": 1, "limit_down": 1, "judged": 3, "skipped": 0}
+
+    def test_涨停价按分四舍五入(self) -> None:
+        """前收 10.03 → 涨停价 11.033 → 舍到 **11.03**（银行家舍入会得 11.03 也可能 11.04，
+        故实现走 Decimal ROUND_HALF_UP；这条钉住结果）。"""
+        got = count_limit_hits([_row("600519", 11.03, 10.03)])
+        assert got.up == 1
+
+    def test_差一分不算涨停(self) -> None:
+        """容差是**半分**：109.99 够不着 110.00 的涨停价。"""
+        assert count_limit_hits([_row("600519", 109.99, 100.0)]).up == 0
+
+    @pytest.mark.parametrize(
+        ("symbol", "close", "hit"),
+        [
+            ("300750", 110.0, False),   # 创业板 10% 够不着 20% 档
+            ("300750", 120.0, True),
+            ("688111", 120.0, True),
+            ("920001", 130.0, True),    # 北交所 30% 档
+            ("920001", 120.0, False),
+        ],
+    )
+    def test_板别档位逐条(self, symbol: str, close: float, hit: bool) -> None:
+        """防的是「一律按 10% 判」——那会把创业板的 +10% 误报成涨停。"""
+        assert (count_limit_hits([_row(symbol, close, 100.0)]).up == 1) is hit
+
+    def test_ST集合不再改变主板读数(self) -> None:
+        """主板 ST 已实测为 10%（同板块档），故 `st_symbols` 对主板标的**不再改变结果**。
+
+        这条取代了原来那条「ST 档成对样例」（5% 时代它证明 ST 档真的生效）。
+        底线仍然钉住：**传不传 ST 集合，判据都不会崩、也不会把没封板的数成封板**。
+        创业板 ST 另有一条（若按 5% 误算，+10% 会被数成涨停）。"""
+        row = [_row("600519", 105.0, 100.0)]
+        assert count_limit_hits(row).up == 0
+        assert count_limit_hits(row, st_symbols={"600519"}).up == 0
+        # 真封在 10% 档上：两种传法都得数出来
+        limit_up = [_row("600519", 110.0, 100.0)]
+        assert count_limit_hits(limit_up).up == 1
+        assert count_limit_hits(limit_up, st_symbols={"600519"}).up == 1
+
+    def test_ST只压主板(self) -> None:
+        """创业板 ST 仍是 20%——把 300750 当 ST 不该让 +10% 变成涨停。"""
+        assert count_limit_hits([_row("300750", 110.0, 100.0)], st_symbols={"300750"}).up == 0
+
+    def test_缺前收跳过并计数(self) -> None:
+        got = count_limit_hits([_row("600519", 110.0, None)])
+        assert got.to_json() == {"limit_up": 0, "limit_down": 0, "judged": 0, "skipped": 1}
+
+    def test_未知板别跳过而不是当成没涨停(self) -> None:
+        """猜一个 10% 会**误判**——宁可少一个数，也不给一个假数。"""
+        got = count_limit_hits([_row("999999", 110.0, 100.0)])
+        assert got.judged == 0 and got.skipped == 1
+
+    def test_缺名不算跳过(self) -> None:
+        """缺名只让 ST 档不生效，判据本身仍成立——那不是「判不了」。"""
+        assert count_limit_hits([_row("600519", 110.0, 100.0)], st_symbols=set()).skipped == 0
+
+    def test_空输入不炸(self) -> None:
+        assert count_limit_hits([]) == LimitCounts(up=0, down=0, judged=0, skipped=0)
+
+    def test_涨停不重复计入跌停(self) -> None:
+        """一根极端 bar 不会同时算进两端（elif 而非两个 if）。"""
+        got = count_limit_hits([_row("600519", 110.0, 100.0)])
+        assert got.up == 1 and got.down == 0
+
+    def test_收盘跑到区间外面算跳过而不是封板(self) -> None:
+        """**除权日防误判**（2026-10-12 实测逮到，真数据：300980 祥源新材）。
+
+        raw 前收 22.90 → 收盘 15.98 是 −30%，超出创业板 20% 的物理上限——它当日有除权，
+        而 raw 前收没反映除权参考价。交易所的真实跌停价约 14.72，收盘 15.98 **根本没封板**；
+        但用虚高的前收算出的跌停价是 18.32，单侧比较（`close <= down`）会把它数成跌停。
+
+        封板的定义是「收盘 = 涨跌停价」，不是「够得着」。够不着与跑到外面是两件事：
+        前者是没封板（judged），后者是序列不可比（skipped）。
+        """
+        # 22.90 × 0.8 = 18.32；15.98 远在它之下 ⇒ 跳过，不计入跌停
+        got = count_limit_hits([_row("300980", 15.98, 22.90)])
+        assert got.down == 0
+        assert got.skipped == 1
+        assert got.judged == 0
+
+    def test_区间内没封板算判过而不是跳过(self) -> None:
+        """反面：正常跌 3% 的标的**判过了**（judged），不是「判不了」——别把两件事混起来。"""
+        got = count_limit_hits([_row("300980", 97.0, 100.0)])
+        assert got.judged == 1 and got.skipped == 0 and got.down == 0
+
+    def test_高于涨停价也算跳过(self) -> None:
+        """上侧同理：复权序列上「涨过头」同样是不可比，不是涨停。"""
+        got = count_limit_hits([_row("600519", 130.0, 100.0)])
+        assert got.up == 0 and got.skipped == 1
