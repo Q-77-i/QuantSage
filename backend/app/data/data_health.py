@@ -765,8 +765,9 @@ def check_x5_bars_staleness(con, data_dir) -> Check:
         detail=(
             f"本地行情止于 {latest}，日历上最近一个交易日是 {expected}（落后 {behind} 个交易日，"
             f"阈值 {BARS_STALE_TRADING_DAYS}）{source}{probe}。**行情是年度整片的重下载、不是日更**"
-            "（日常约 99MB 下载 + 全量分片校验约 190s，一个交易日 6–7 分钟，见 SPEC §3 M2d），"
-            "且**源侧实测 T+1**——落后 1 个交易日是常态，落后更多才有问题"
+            "（日常约 99MB 下载 + 全量分片校验约 190s，一个交易日 6–7 分钟，见 SPEC §3 M2d）；"
+            "**源侧的滞后是观测值不是契约**——canonical 轨道实测连停过两个交易日（平台另有更快的 "
+            "available 轨道，但有缺口、我们不用），所以落后几天要结合上面那个「源侧止于」看"
         ),
         data={
             "latest_bar": str(latest),

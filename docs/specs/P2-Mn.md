@@ -308,7 +308,7 @@ frontend/components/        # + auth-provider.tsx space/ strategies/（编辑器
 
 **口径（开工前拍板 + 实测依据，2026-10-12）**
 
-- **源侧节奏是 T+1**：探测当天（10-12，交易日）源侧 `cn-daily` 的 `last = 2026-10-09`，即当晚发布里没有当天行情 ⇒ **M2d 的上限就是「落后一个交易日」**，对外表述不得写成「实时 / 当日」。
+- **源侧节奏**（口径与沿革）：`cn-daily` 按年整片发布、没有日增量可拉 ⇒ 本片的上限就是「落后若干交易日」。**规划时写的「源侧节奏是 T+1」是 10-12 单次观测下早了，10-13 实测订正**：平台有 **canonical（`quality=complete`，我们在用的）** 与 **available** 两条轨道——10-13 21:42 探测时 canonical 仍停在 **2026-10-09**（连缺 10-12、10-13 两个交易日），而 available 的 `available_last` 已到 **2026-10-12**（但 `quality_status=partial`、有缺口，且平台字段明写 `fill_or_forward_fill_allowed=false`）。**滞后是观测值、不是契约**，对外不得承诺「落后一天」；我们固定用 canonical（宁慢不脏，M2a 的取舍），两条轨道**不许混进同一个数据目录**（CLI 会报 `quality_track_conflict`）。**待决**：要不要把 available 轨道用于「提前量可见性」（只显示、不喂回测），属 P3 的可见性话题
 - **成本三档**（实测本机分片）：日常一个交易日只动**当前年 3 片**（raw 22.6 + qfq 33.8 + hfq 42.4 = **约 99MB**，历史年分片是冻结的，2025 片止于 12-31）；除权触发 qfq 全量重算时才接近**整片 860MB**（21 片，实测全量 236s）；源侧无更新时 **0 字节**——未变分片由 CLI 本地校验复用（`_download_verified` 命中同 sha 即返回「复用」）。**整轮耗时见本节末「落地实测」——不是「1–1.5 分钟」**（那个数只算了下载，没算 CLI 对未变分片的重算 sha）。
 - **门禁是两级的**（判据不能只看交易日）：
   - **一级（1 次 API 调用）**：`coverage` 返回的发布标识 `manifest_version` 与本地上次同步记录比对，不同才往下走。实测该字段与回执里的**同一个值**（`_cmd_coverage` 打印 `manifest['version']`），且探测当天得 `history-public-v1-20261012T130505Z` 而本地记的是 `…20261005T160503Z` ⇒ **判据当场跑通**。
@@ -328,7 +328,7 @@ frontend/components/        # + auth-provider.tsx space/ strategies/（编辑器
 - `scripts/download_bars.py` 改薄壳（只负责参数与打印）；**`--skip-download` 路径行为一字不变**是硬判据。
 - `app/etl/scheduler.py` 加第二路 job（**不新起第三个调度器**：同一运行域、同一把锁、同一 status 出口），独立开关 `BARS_REFRESH_ENABLED`；代价如实记——`ETL_ENABLED=false` 时两个 job 都不起。
 - 配置项：`bars_refresh_enabled`（默认关，与 `etl_enabled` 同风格）、`bars_refresh_hour/minute`（**21:40**）、`bars_refresh_budget_seconds`（1200）、`bars_call_timeout_seconds`（300）、`bars_refresh_catchup_on_start`（默认开，延迟 180s——语料 catchup 在 +20s、实测约 1 分钟）。
-- **时段 21:40 的依据**：实测发布时刻在 21:05–21:29（版本戳 `…20261012T130505Z` = 21:05:05+08、回执 `remote_generated_at` = 21:29），语料 job 在 21:10 ⇒ 21:40 在两者之后，既不踩发布也不撞锁。
+- **时段 21:40 的依据（含 10-13 的沿革）**：10-12 实测发布时刻在 21:05–21:29（版本戳 `…20261012T130505Z` = 21:05:05+08、回执 `remote_generated_at` = 21:29），语料 job 在 21:10 ⇒ 21:40 在两者之后，既不踩发布也不撞锁。**但发布时刻并不固定**：10-13 21:40 那一跑看到的最新版本戳是 `…20261012T200508Z`（= 10-13 **04:05**），当晚并没有 21:05 那次发布 ⇒ 这个时点的准确表述是「**典型发布之后**」，不是「一定在发布之后」。**错过一次发布不会丢数据**：门禁是内容驱动的（发布标识 + 分片 sha），下一次跑照样追得上，代价只是数据多停一晚。
 - `/api/v1/etl/status` 的 `scheduler` 块加 `bars`（enabled / hour / minute / budget / next_run_at），并加 `last_bars_run`（读台账里 `scope=bars-refresh` 的最后一行）。
 - **可见性（用户 2026-10-12 选做）**：`GET /api/v1/market/freshness` 增加**源侧边界**（`source_bars_last` / `source_checked_at`，取自 `bars_sync.json`，**本地读、不联网**——沿用 E6/X6 的规矩），页头 tooltip 显示「源侧止于 X」；X5 的 detail 文案删掉「见待办『行情刷新进调度器』」（落地后即过期）。**动机是实测**：10-12 首页显示行情止于 09-30，而本地其实**只落后源侧 2 个交易日**（源侧 10-09），体检 X5 却只报 `[info]`——「落后是谁的锅」当时无处可查。
 
