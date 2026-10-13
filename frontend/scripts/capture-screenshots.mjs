@@ -80,21 +80,34 @@ async function captureChat(context) {
   await deleteThreadsNotIn(context, before);
 }
 
+/** 点「运行」并等到跑完——图表入场动画约 1s + 主题色过渡 150ms。 */
+async function runBacktest(page) {
+  await page.getByRole("button", { name: "运行" }).click();
+  await page.getByRole("button", { name: "运行中…" }).waitFor({ timeout: SLOW });
+  await waitForTextToVanish(page, "运行中…");
+  await page.waitForTimeout(2500);
+}
+
 async function captureBacktest(context) {
   const page = await context.newPage();
   await page.goto(`${BASE}/backtest`, { waitUntil: "networkidle" });
 
   // 默认值即「事件驱动 + 600519 + 双模式对比」，一次点击直达 PIT 对比表
-  await page.getByRole("button", { name: "运行" }).click();
-  await page.getByRole("button", { name: "运行中…" }).waitFor({ timeout: SLOW });
-  await waitForTextToVanish(page, "运行中…");
-  // 图表入场动画约 1s + 主题色过渡 150ms
-  await page.waitForTimeout(2500);
-
+  await runBacktest(page);
   await page.screenshot({ path: `${OUT_DIR}/backtest.png`, fullPage: true });
   console.log("✔ backtest.png");
 
-  // PIT 对比表单独来一张——它是护城河的直接展示位，在整页长图里太小
+  // PIT 对比表单独来一张——它是护城河的直接展示位，在整页长图里太小。
+  //
+  // ⚠ **这张刻意用 `min_score=60`，不是页面默认的 50**。默认门槛下这窗口里唯一
+  // 一条跨线事件（news:854409：事发 07-28 11:09、平台 07-28 20:36 才给出）会被持有期
+  // 吞掉——当天另有一条设卡更早的 news:854503 先触发了买入，于是两口径差 **0.00pp**。
+  // 一张看不出闸门作用的图放在「护城河」节等于自证无效（2026-10-13 用户指出）。
+  // 抬到 60 后 854503 被滤掉、854409 成为触发者：PIT 07-30 入场 vs 非 PIT 07-29，
+  // 差 **+0.52pp**。README 的图注会写明这两档的关系，避免读成「PIT 总能拦出差值」。
+  await page.fill("#bt-min_score", "60");
+  await runBacktest(page);
+
   const pit = page
     .getByRole("heading", { name: "PIT 与非 PIT 的差异" })
     .locator("xpath=ancestor::section");
@@ -102,7 +115,7 @@ async function captureBacktest(context) {
     await pit.scrollIntoViewIfNeeded();
     await page.waitForTimeout(600);
     await pit.screenshot({ path: `${OUT_DIR}/pit-comparison.png` });
-    console.log("✔ pit-comparison.png");
+    console.log("✔ pit-comparison.png（min_score=60）");
   } else {
     console.warn("⚠ 未找到 PIT 对比区块，跳过局部截图");
   }
