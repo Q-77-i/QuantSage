@@ -4,9 +4,8 @@
  * 前置：后端 8000（**含 M5a 端点**）与前端 3001 都在跑。
  * 用法：cd frontend && node scripts/capture-m5a.mjs
  *
- * 落点：
- *   * `docs/images/backtest-benchmark.png` —— 三条线与口径标注（浅色，README 用）
- *   * `logs/m5a/ui.md` 引用的四张证据图（浅色 / 深色 / 窄屏 / 候选下拉）
+ * 落点：全部在 `logs/m5a/`（走查证据，不入库）——浅色 / 深色 / 窄屏 / 候选下拉四张。
+ *   README 的回测页图由 `capture-screenshots.mjs` 产出，本脚本不再重复落图。
  *
  * **不只是截图**：断言四件事——图例出现三项、口径小字可见、名称候选出得来、
  * 键盘选中后代码落进输入框。这些正是自动化层结构上看不见的一层
@@ -20,7 +19,6 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const IMAGES = resolve(ROOT, "docs/images");
 const EVIDENCE = resolve(ROOT, "logs/m5a");
 const FRONTEND = process.env.APP_BASE ?? "http://127.0.0.1:3001";
 const API = process.env.API_BASE ?? "http://127.0.0.1:8000";
@@ -57,7 +55,6 @@ async function openBacktest(page) {
 }
 
 async function main() {
-  await mkdir(IMAGES, { recursive: true });
   await mkdir(EVIDENCE, { recursive: true });
 
   const browser = await chromium.launch();
@@ -110,7 +107,10 @@ async function main() {
     const noteText = (await note.first().textContent()) ?? "";
     check("口径小字含剔除规则", noteText.includes("30%"), noteText.slice(0, 60) + "…");
 
-    await page.screenshot({ path: `${IMAGES}/backtest-benchmark.png`, fullPage: true });
+    // 不再往 docs/images 落图：这里拍的是 /backtest 的**整页**，而 README 的回测页图
+    // 已由 capture-screenshots.mjs 产出（同一页、同一 fullPage），两张是重复的。
+    // 本脚本的价值在下面那几条断言与 logs/m5a/ 的证据图，保留。
+    await page.screenshot({ path: `${EVIDENCE}/benchmark-light.png`, fullPage: true });
 
     // ── ② 名称搜索 ─────────────────────────────────────────
     await page.goto(`${FRONTEND}/space`, { waitUntil: "networkidle" });

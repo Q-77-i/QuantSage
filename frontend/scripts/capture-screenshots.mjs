@@ -1,11 +1,14 @@
 /**
- * 抓取 README 用截图：对话页与回测页。
+ * 抓取 README 用截图：对话页、回测页与 PIT 对比区块。
  *
  * 前置：后端 8000、前端 3001 均已启动（见根 README「快速开始」）。
  * 用法：cd frontend && node scripts/capture-screenshots.mjs
  *
  * 两页都需要真实交互才有内容——对话页要发一条提问等流式结束，
  * 回测页要提交表单等图表渲染，故用 Playwright 驱动而非静态截图。
+ *
+ * 自 M1c 起对话相关端点与页面均需登录，故脚本自带一个一次性账号；
+ * 自 M10a 起 `/` 是研究首页，对话页在 `/chat`。
  */
 
 import { mkdir } from "node:fs/promises";
@@ -21,20 +24,22 @@ const BASE = process.env.APP_BASE ?? "http://127.0.0.1:3001";
 /** 后端在跑真实模型，对话与回测都慢，超时给足。 */
 const SLOW = 180_000;
 const API = process.env.API_BASE ?? "http://127.0.0.1:8000";
+const EMAIL = "shot-ui@example.com";
+const PASSWORD = "shot-ui-pass";
 
 /** 截对话页会真的新建一条会话；跑完删掉自己造的那条，脚本才可反复重跑。 */
-async function threadIds() {
-  const res = await fetch(`${API}/api/v1/chat/threads?limit=100`);
-  if (!res.ok) throw new Error(`会话列表返回 ${res.status}`);
+async function threadIds(context) {
+  const res = await context.request.get(`${API}/api/v1/chat/threads?limit=100`);
+  if (!res.ok()) throw new Error(`会话列表返回 ${res.status()}`);
   return new Set((await res.json()).map((t) => t.thread_id));
 }
 
-async function deleteThreadsNotIn(before) {
-  const after = await threadIds();
+async function deleteThreadsNotIn(context, before) {
+  const after = await threadIds(context);
   const created = [...after].filter((id) => !before.has(id));
   for (const id of created) {
-    const res = await fetch(`${API}/api/v1/chat/threads/${id}`, { method: "DELETE" });
-    if (!res.ok) console.warn(`⚠ 清理会话 ${id} 失败：${res.status}`);
+    const res = await context.request.delete(`${API}/api/v1/chat/threads/${id}`);
+    if (!res.ok()) console.warn(`⚠ 清理会话 ${id} 失败：${res.status()}`);
   }
   if (created.length) console.log(`（已清理本次新建的 ${created.length} 条会话）`);
 }
@@ -47,10 +52,11 @@ async function waitForTextToVanish(page, text, timeout = SLOW) {
   );
 }
 
-async function captureChat(browser) {
-  const before = await threadIds();
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
-  await page.goto(BASE, { waitUntil: "networkidle" });
+async function captureChat(context) {
+  const before = await threadIds(context);
+  const page = await context.newPage();
+  // M10a 起 `/` 是研究首页，对话页迁到 /chat——走错页会填不到 #composer
+  await page.goto(`${BASE}/chat`, { waitUntil: "networkidle" });
 
   await page.fill("#composer", "茅台最近行情如何？有哪些值得注意的公告？");
   await page.getByRole("button", { name: "发送" }).click();
@@ -71,11 +77,11 @@ async function captureChat(browser) {
   await page.screenshot({ path: `${OUT_DIR}/chat.png` });
   console.log("✔ chat.png");
   await page.close();
-  await deleteThreadsNotIn(before);
+  await deleteThreadsNotIn(context, before);
 }
 
-async function captureBacktest(browser) {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+async function captureBacktest(context) {
+  const page = await context.newPage();
   await page.goto(`${BASE}/backtest`, { waitUntil: "networkidle" });
 
   // 默认值即「事件驱动 + 600519 + 双模式对比」，一次点击直达 PIT 对比表
@@ -107,9 +113,25 @@ async function main() {
   await mkdir(OUT_DIR, { recursive: true });
   const browser = await chromium.launch();
   try {
-    await captureChat(browser);
-    const backtest = await captureBacktest(browser);
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      locale: "zh-CN",
+    });
+    const register = await context.request.post(`${API}/api/v1/auth/register`, {
+      data: { email: EMAIL, password: PASSWORD },
+    });
+    if (!register.ok() && register.status() !== 409) {
+      throw new Error(`注册失败 ${register.status()}`);
+    }
+    const login = await context.request.post(`${API}/api/v1/auth/login`, {
+      data: { email: EMAIL, password: PASSWORD, remember: true },
+    });
+    if (!login.ok()) throw new Error(`登录失败 ${login.status()}`);
+
+    await captureChat(context);
+    const backtest = await captureBacktest(context);
     await backtest.close();
+    await context.close();
   } finally {
     await browser.close();
   }

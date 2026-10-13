@@ -184,7 +184,9 @@ async function main() {
     );
     return active.map((el) => el.dataset.nav);
   });
-  check("页头点亮当前项（报告页 → 模拟盘）", nav.length === 1 && nav[0] === "paper", nav.join(",") || "一项都没亮");
+  // M8 起 `/research` 是深度研究的一级入口，`lib/nav.ts` 里那条 `"/research": "/paper"`
+  // 别名已被有意删除（研报页与深度研究运行页同前缀，都点亮「深度研究」）。
+  check("页头点亮当前项（报告页 → 深度研究）", nav.length === 1 && nav[0] === "research", nav.join(",") || "一项都没亮");
 
   // ── ③ 证据追溯面板 ────────────────────────────────────
   console.log("\n[3] 证据追溯面板");

@@ -227,7 +227,7 @@ async function main() {
   // 浏览器句柄挂在外面：中途抛错时也必须关掉它，否则进程会被未关闭的浏览器吊住不退出
   // （第一版就是这么挂住的——断言失败后终端既不返回也不报错，白等十分钟）
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "zh-CN" });
   await signIn(context);
   const page = await context.newPage();
   page.setDefaultTimeout(20_000);

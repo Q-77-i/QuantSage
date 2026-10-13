@@ -79,7 +79,7 @@ async function main() {
   await mkdir(IMAGES, { recursive: true });
   await mkdir(EVIDENCE, { recursive: true });
   const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   await signIn(context);
   const page = await context.newPage();
 

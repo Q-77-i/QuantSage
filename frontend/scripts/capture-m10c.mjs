@@ -20,6 +20,7 @@ import { chromium } from "playwright";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const EVIDENCE = resolve(ROOT, "logs/m10c");
+const IMAGES = resolve(ROOT, "docs/images");
 const FRONTEND = process.env.APP_BASE ?? "http://127.0.0.1:3001";
 const API = process.env.API_BASE ?? "http://127.0.0.1:8000";
 const EMAIL = "m10-ui@example.com";
@@ -41,6 +42,7 @@ async function rowSymbols(page) {
 
 async function main() {
   await mkdir(EVIDENCE, { recursive: true });
+  await mkdir(IMAGES, { recursive: true });
   browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
   const register = await context.request.post(`${API}/api/v1/auth/register`, {
@@ -245,6 +247,16 @@ async function main() {
   await page.goto(`${FRONTEND}/stocks`, { waitUntil: "networkidle" });
   await page.waitForTimeout(1200);
   await page.screenshot({ path: resolve(EVIDENCE, "list-light.png"), fullPage: true });
+  // README 用图：标的浏览与个股页是 M10 五段里唯一没有对外图的两页，
+  // 也是「全市场 5,800 只怎么找」的直接答案。
+  await page.screenshot({ path: resolve(IMAGES, "stocks-list.png"), fullPage: true });
+  console.log("  ✔ docs/images/stocks-list.png");
+
+  await page.goto(`${FRONTEND}/stocks/600519`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(2500); // K 线入场动画
+  await page.screenshot({ path: resolve(IMAGES, "stock-detail.png"), fullPage: true });
+  console.log("  ✔ docs/images/stock-detail.png");
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${FRONTEND}/stocks`, { waitUntil: "networkidle" });
   await page.waitForTimeout(1200);

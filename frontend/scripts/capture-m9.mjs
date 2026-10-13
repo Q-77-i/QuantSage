@@ -66,7 +66,7 @@ async function main() {
 
   // ── 流程 1：注册（用一次性的新账号，教程 §1 的第一步）──────────────────
   console.log("\n[流程 1] 注册（新用户视角）");
-  const fresh = await browser.newContext({ viewportSize: { width: 1440, height: 1000 } });
+  const fresh = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const regPage = await fresh.newPage();
   regPage.setDefaultTimeout(20_000);
   await regPage.goto(`${FRONTEND}/register`, { waitUntil: "networkidle" });
@@ -93,7 +93,7 @@ async function main() {
 
   // ── 用固定账号登录（后面各流程都用它）────────────────────────────────
   const context = await browser.newContext({
-    viewportSize: { width: 1440, height: 1000 },
+    viewport: { width: 1440, height: 1000 },
     locale: "zh-CN",
   });
   const reg = await context.request.post(`${API}/api/v1/auth/register`, {
