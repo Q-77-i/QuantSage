@@ -21,7 +21,7 @@
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
 | 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用 |
 | 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | 🚧 checkpointer + 四张自有表（用户 / 会话归属 / 自选股 / 回测记录）已用；Store 待用 |
-| 缓存/限流 | Redis | ⬜ P2–P3（P1 仅 compose 服务） |
+| 缓存 | Redis（E3 热点查询缓存，可降级） | ⬜ P3（P1 仅 compose 服务）；限流/熔断走进程内、不依赖 Redis（E4 定稿） |
 | 向量库 | Qdrant | ⬜ P2–P3（P1 仅 compose 服务） |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | 🚧 快档已用；深度档 P2 起 |
 | LLM 网关 | LiteLLM | ✅ 已用 |
@@ -50,7 +50,7 @@
 ## 五、安全红线
 
 - `.env` 不入库；密钥只读环境变量，不在命令/日志/报告回显；不轮换、不重注册
-- LangGraph 加固：Postgres checkpointer、`LANGGRAPH_STRICT_MSGPACK=true`、checkpoint 系列包显式 pin、filter key 校验、反向代理 + 鉴权
+- 加固清单（库直用形态，2026-10-13 E8 修订）：Postgres checkpointer（已用）、checkpoint 系列包显式 pin、依赖审计（pip-audit/npm audit，E7 CI）、JWT 过期/刷新策略、CORS 与安全响应头；本项目不跑 LangGraph Platform，其加固项（STRICT_MSGPACK/filter key/反向代理）不适用
 - MCP 工具描述与返回值是注入面，外部数据一律视为不可信
 - 429 按 Retry-After 停；`bulk_download_required` 立即改 CLI
 
