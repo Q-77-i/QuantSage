@@ -3,7 +3,7 @@
 > **读者**：已克隆本仓库、样例数据已落盘的读者（行情取数见 `backend/scripts/download_bars.py`，事件语料见 `backend/scripts/download_events.py`）。
 >
 > **本文数字来自一次真实回测**，照抄第 3 节的命令即可逐项对上。数据快照：`cn-daily` 的 qfq 分片
-> `year=2025`（sha256 前 12 位 `0fb4c3159257`）与 `year=2026`（`69eb9d54819947`），过滤式 `symbol = 600519`，
+> `year=2025`（sha256 前 12 位 `733e3660efc0`）与 `year=2026`（`c2fa2831bda9`），过滤式 `symbol = 600519`，
 > 得 424 根 bar（2025-01-02 → 2026-09-30）；完整分片清单见 `data/_meta/bars.json` 的 `fingerprint.shards`。
 > **换一份数据快照，数字会变，结构与读法不变。**
 
@@ -99,8 +99,12 @@ uv run python scripts/run_report.py --symbol 600519 --strategy ma_cross \
 ## 5. 参数实证：换一组参数会怎样
 
 ```bash
-uv run python scripts/run_report.py --symbol 600519 --strategy ma_cross --fast 10 --slow 30
+uv run python scripts/run_report.py --symbol 600519 --strategy ma_cross --fast 10 --slow 30 \
+  --start 2025-01-02 --end 2026-09-30
 ```
+
+> 区间必须与第 3 节一致。省掉 `--start` / `--end` 会回落到缺省区间（2020-01-02 起，1,638 根 bar），
+> 跑出的数与本表不同——对照实验要换的只有参数，区间得钉住。
 
 | 指标 | 5 / 20（默认） | 10 / 30 |
 |---|---|---|
