@@ -1037,6 +1037,18 @@ class Database:
             (Jsonb(error), task_id),
         )
 
+    async def finish_task_cancelled(self, task_id: str) -> None:
+        """协作式中止收尾：`running` → `cancelled`。
+
+        与 `finish_task` 分开是为了让「中止」在库里有自己的终态（`result` 为空——
+        **中止的结果不落库**，见 SPEC §2.8）。条件同样是 `status='running'`。
+        """
+        await self._exec(
+            "UPDATE tasks SET status = 'cancelled', finished_at = now(), updated_at = now() "
+            "WHERE id = %s::uuid AND status = 'running'",
+            (task_id,),
+        )
+
     async def cancel_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
         """取消：**只对 `queued` 生效**（条件更新），返回当前行。不存在/非本人返 None。
 

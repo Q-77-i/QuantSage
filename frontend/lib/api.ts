@@ -10,7 +10,7 @@
  * 前端跑 3001 而不是 3000：3000 被 Langfuse 自托管 UI 占用。
  */
 
-import { streamPost } from "./sse";
+import { streamGet } from "./sse";
 import type { PostStreamOptions } from "./sse";
 import { factorQuery } from "./factor-report";
 import type { FactorQueryInput } from "./factor-report";
@@ -449,10 +449,18 @@ export const api = {
  * 独立于 `api.*`：那个对象是「一进一出」的 request/response，而这里是一串帧。
  * 帧解析复用 `lib/sse.ts` 的既有纯函数，**不新写一套**（SPEC §12）。
  */
-export function streamOptimize(
+/**
+ * **提交**一次网格/批量（P3-E1b）：202 + `{task_id}`，执行在 worker 里。
+ * 进度由 `streamTask(taskId, ...)` 订阅——提交与订阅分开，断线不影响执行。
+ */
+export function submitOptimize(
   kind: "grid" | "batch",
   body: unknown,
-  options: PostStreamOptions,
-): Promise<void> {
-  return streamPost(`/api/v1/optimize/${kind}`, body, options);
+): Promise<{ task_id: string; status: string }> {
+  return request(`/api/v1/optimize/${kind}`, jsonInit("POST", body));
+}
+
+/** 订阅任务事件流（GET + SSE）。帧与发起时逐字同形，重连与在线共用这一条。 */
+export function streamTask(taskId: string, options: PostStreamOptions): Promise<void> {
+  return streamGet(`/api/v1/tasks/${encodeURIComponent(taskId)}/events`, options);
 }

@@ -9,6 +9,7 @@ import { DsrCard, paramText } from "@/components/optimize/dsr-card";
 import { GridHeatmap, GridLine, hasAnySharpe } from "@/components/optimize/grid-heatmap";
 import { OptimizeForm } from "@/components/optimize/optimize-form";
 import { RunsList } from "@/components/optimize/runs-list";
+import { Button } from "@/components/ui/button";
 import { SharpeDistribution } from "@/components/optimize/sharpe-distribution";
 import { batchPicks } from "@/components/optimize/use-catalog";
 import { useDescriptors, useUserStrategies } from "@/components/strategies/use-catalog";
@@ -61,7 +62,21 @@ function OptimizeView() {
   const descriptors = useDescriptors(grid.strategy, grid.strategyId);
   const picks = useMemo(() => batchPicks(userStrategies), [userStrategies]);
 
-  const { running, started, cells, done, error, runId, run, stop, loadRun } = useOptimize();
+  const {
+    running,
+    taskId,
+    started,
+    cells,
+    done,
+    error,
+    cancelled,
+    detached,
+    runId,
+    run,
+    stop,
+    reattach,
+    loadRun,
+  } = useOptimize();
   /** 「点一格重跑」提交的是**异步任务**（P3-E1a）：提交 + 轮询到终态再跳 */
   const pickTask = useBacktestTask();
   const [picking, setPicking] = useState<number | null>(null);
@@ -96,13 +111,34 @@ function OptimizeView() {
     }
   }, [runId, syncedRunId, mode, router]);
 
-  // 跑着的时候离开会丢掉整次（后端「断线即断」，SPEC §6 M5b）——拦一道
+  /**
+   * 任务号写进地址栏（P3-E1b）：**刷新是这里最常见的「断线」**，带上 `?task=` 才接得回来。
+   *
+   * 与 `?run=` 同一套去重手法（比对「已同步的那个号」而不是「挂载时消费一次」：
+   * 页面自己会改写地址，按后者去重会把那次改写当成一次新深链）。
+   */
+  const [syncedTaskId, setSyncedTaskId] = useState<string | null>(null);
   useEffect(() => {
-    if (!running) return;
-    const guard = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
-  }, [running]);
+    if (!taskId || taskId === syncedTaskId) return;
+    setSyncedTaskId(taskId);
+    router.replace(`/optimize?mode=${mode}&task=${taskId}`, { scroll: false });
+  }, [taskId, syncedTaskId, mode, router]);
+
+  // **不再拦 beforeunload**：E1b 之后离开页面只是断开订阅，任务照跑（这正是本片收掉的东西）
+
+  /**
+   * `?task=<id>`：刷新后自动接回那次订阅。
+   *
+   * 去重**靠 `taskId` 这个 state，不用 ref**：开发模式下 StrictMode 会把 effect 跑两遍
+   * （挂载 → 清理 → 再挂载），用 ref 记「已接过」会让第二遍直接跳过——而第一遍建的那条订阅
+   * 已经被清理函数 abort 掉了，结果是**一条订阅都没有**，页面永远停在空白（走查脚本逮到过）。
+   * 用 state 去重则第二遍照样订上，重复订阅由 `subscribe` 里的 `abort` 兜住（幂等）。
+   */
+  const requestedTask = params.get("task");
+  useEffect(() => {
+    if (!requestedTask || requestedTask === taskId) return; // 自己刚提交的那次，订阅已在跑
+    reattach(requestedTask);
+  }, [requestedTask, taskId, reattach]);
 
   // 重开：与「最近一次已同步的号」比对去重（自产自销的地址改写天然被跳过）
   const requested = params.get("run");
@@ -168,7 +204,7 @@ function OptimizeView() {
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h1 className="font-heading text-xl font-semibold">网格与批量</h1>
         <p className="text-xs text-ink-3">
-          进度逐格推送；断线即断、不续传，刷新等于重跑
+          进度逐格推送；断开订阅不影响执行——任务照跑完并落库，「停止」才是真中止
         </p>
       </div>
 
@@ -224,6 +260,26 @@ function OptimizeView() {
       ) : null}
       {pickError ? <p className="mt-3 text-xs text-destructive">{pickError}</p> : null}
 
+      {/* 断线（E1b）：任务还在后台跑——说清楚，并给一条回去的路 */}
+      {detached && !done ? (
+        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius)] border border-border bg-surface px-3 py-2 text-sm text-ink-2">
+          <span>
+            订阅断了，但**任务仍在后台运行**（已收到 {arrived} / {started?.total ?? "?"} 格）
+            ——跑完会照常落库。
+          </span>
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => reattach()}>
+            继续查看
+          </Button>
+        </div>
+      ) : null}
+
+      {cancelled ? (
+        <p className="mt-4 rounded-[var(--radius)] border border-border bg-surface px-3 py-2 text-sm text-ink-2">
+          已中止这次运行。已完成 {arrived} 格，**未落库**（中止的结果不作为记录保留）——要对比请重新跑一次。
+        </p>
+      ) : null}
+
+      {running && !started ? <p className="mt-4 text-xs text-ink-3">排队中…</p> : null}
       {running && started ? <Progress arrived={arrived} total={started.total} /> : null}
 
       {showResults && summary ? (

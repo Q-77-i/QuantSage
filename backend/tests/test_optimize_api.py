@@ -1,11 +1,12 @@
-"""M5b 端点单测：SSE 帧序列、请求级 422 矩阵、落库与重开、鉴权。
+"""M5b 端点单测：提交、事件流、请求级 422 矩阵、落库与重开、鉴权。
 
-三条要点：
+三条要点（P3-E1b 起）：
 
-* **请求级错误必须在开流之前**——流一旦开始状态码就改不了了（与 chat 同一条约束）。
-  故「轴数超限 / 某格参数非法 / 格数超限」全部断言 **HTTP 422 的 JSON 响应**，
-  而不是「流里出现一个 error 帧」；
-* **落库发生在 `done`**——流没走完就不该留记录（刷新即重跑）；
+* **请求级错误仍在提交之前**：轴数超限 / 某格参数非法 / 格数超限 / 未知标的 → **同步 4xx**，
+  不是「流里出现一个 error 帧」（提交与订阅已经分开，但闸门位置没动）；
+* **`POST /optimize/*` 现在回 202 + `{task_id}`**，进度由 `GET /tasks/{id}/events` 订阅。
+  离线用例的路径因此是「提交 → `drive_tasks` 驱动 worker → 订阅回放」——任务已终结时
+  订阅端点从 `optimization_runs` 回放，**不需要并发**（这正是 E1b 把两步分开的副产品）；
 * 用户策略走**真实沙箱子进程**（与 M4c 同一条路径），静态检查有 error 的源码
   必须在 spawn **之前**被 422 拦下并带回 findings。
 """
@@ -22,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.data import duckdb_client
 from app.main import app
-from tests.conftest import make_backtest_dir, trading_days, write_bars_parquet
+from tests.conftest import drive_tasks, make_backtest_dir, trading_days, write_bars_parquet
 
 client = TestClient(app)
 
@@ -82,11 +83,24 @@ def frames(body: str) -> list[tuple[str, dict[str, Any]]]:
     return out
 
 
-def stream(client_: TestClient, path: str, body: dict[str, Any]) -> tuple[int, list]:
-    with client_.stream("POST", path, json=body) as response:
-        if response.status_code != 200:
-            return response.status_code, []
-        return 200, frames("".join(response.iter_text()))
+def run_optimize(
+    client_: TestClient, kind: str, body: dict[str, Any], db: Any
+) -> tuple[int, list]:
+    """跑一次网格/批量：提交 → 驱动 worker → 订阅（回放）。
+
+    三步就是 E1b 之后的真路径：`POST` 只建任务回 202，执行在 worker 里，
+    订阅端点在任务终结后从 `optimization_runs` 回放——所以先把任务跑完再订阅，
+    拿到的帧与当初在线时逐字同形（同一份 `task_frames`）。
+    """
+    response = client_.post(f"/api/v1/optimize/{kind}", json=body)
+    if response.status_code != 202:
+        return response.status_code, []
+    drive_tasks(db)
+    task_id = response.json()["task_id"]
+    with client_.stream("GET", f"/api/v1/tasks/{task_id}/events") as streamed:
+        assert streamed.status_code == 200, streamed.read()
+        return 200, frames("".join(streamed.iter_text()))
+
 
 
 def grid_body(**overrides: Any) -> dict[str, Any]:
@@ -224,7 +238,7 @@ def test_batch_rejects_bad_params(signed_in: Any, data_dir: Path) -> None:
 
 
 def test_grid_streams_start_cells_then_done(signed_in: Any, data_dir: Path) -> None:
-    status, events = stream(client, "/api/v1/optimize/grid", grid_body())
+    status, events = run_optimize(client, "grid", grid_body(), signed_in)
     assert status == 200
 
     names = [name for name, _ in events]
@@ -258,7 +272,7 @@ def test_grid_streams_start_cells_then_done(signed_in: Any, data_dir: Path) -> N
 def test_grid_saves_the_summary_when_the_stream_completes(
     signed_in: Any, data_dir: Path
 ) -> None:
-    _, events = stream(client, "/api/v1/optimize/grid", grid_body())
+    _, events = run_optimize(client, "grid", grid_body(), signed_in)
     run_id = events[-1][1]["run_id"]
 
     row = signed_in.optimizations[run_id]
@@ -271,7 +285,7 @@ def test_grid_saves_the_summary_when_the_stream_completes(
 
 def test_runs_list_omits_the_cell_matrix(signed_in: Any, data_dir: Path) -> None:
     """列表**不带每格矩阵**（同真库的 `summary - 'cells'`）——列表页不需要它，拖回来只是浪费。"""
-    stream(client, "/api/v1/optimize/grid", grid_body())
+    run_optimize(client, "grid", grid_body(), signed_in)
     rows = client.get("/api/v1/optimize/runs").json()
 
     assert len(rows) == 1
@@ -281,7 +295,7 @@ def test_runs_list_omits_the_cell_matrix(signed_in: Any, data_dir: Path) -> None
 
 
 def test_run_reopen_returns_the_full_summary(signed_in: Any, data_dir: Path) -> None:
-    _, events = stream(client, "/api/v1/optimize/grid", grid_body())
+    _, events = run_optimize(client, "grid", grid_body(), signed_in)
     run_id = events[-1][1]["run_id"]
 
     body = client.get(f"/api/v1/optimize/runs/{run_id}").json()
@@ -290,7 +304,7 @@ def test_run_reopen_returns_the_full_summary(signed_in: Any, data_dir: Path) -> 
 
 
 def test_another_users_run_is_404(signed_in: Any, data_dir: Path) -> None:
-    _, events = stream(client, "/api/v1/optimize/grid", grid_body())
+    _, events = run_optimize(client, "grid", grid_body(), signed_in)
     run_id = events[-1][1]["run_id"]
 
     signed_in.optimizations[run_id]["user_id"] = 999  # 换主人
@@ -303,9 +317,9 @@ def test_bad_run_id_is_422_not_500(signed_in: Any) -> None:
 
 
 def test_batch_streams_one_cell_per_symbol_and_strategy(signed_in: Any, data_dir: Path) -> None:
-    _, events = stream(
+    _, events = run_optimize(
         client,
-        "/api/v1/optimize/batch",
+        "batch",
         {
             "symbols": [SYMBOL],
             "strategies": [
@@ -313,6 +327,7 @@ def test_batch_streams_one_cell_per_symbol_and_strategy(signed_in: Any, data_dir
                 {"strategy": "ma_cross", "params": {"fast": 8, "slow": 20}},
             ],
         },
+        signed_in,
     )
     names = [name for name, _ in events]
     assert names[0] == "start" and names[-1] == "done"
@@ -357,15 +372,16 @@ def test_user_strategy_with_a_static_error_is_422_with_findings(
 
 def test_user_strategy_grid_runs_and_carries_its_name(signed_in: Any, data_dir: Path) -> None:
     strategy_id = asyncio_run(make_user_strategy(signed_in, GOOD_USER_SOURCE))
-    _, events = stream(
+    _, events = run_optimize(
         client,
-        "/api/v1/optimize/grid",
+        "grid",
         grid_body(
             strategy="user",
             strategy_id=strategy_id,
             params={},
             axes=[{"param": "n", "values": [2, 3, 4]}],
         ),
+        signed_in,
     )
     start = events[0][1]
     assert start["strategy_name"] == "短窗动量"
@@ -397,3 +413,73 @@ def asyncio_run(coro: Any) -> Any:
     import asyncio
 
     return asyncio.run(coro)
+
+
+# ── 任务化（P3-E1b）─────────────────────────────────────────
+
+
+def test_submit_returns_202_and_freezes_exec_material(signed_in: Any, data_dir: Path) -> None:
+    """提交只建任务：202 + `{task_id}`，展开后的格与选项**冻结在任务行里**。"""
+    response = client.post("/api/v1/optimize/grid", json=grid_body())
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["status"] == "queued"
+
+    task = signed_in.tasks[body["task_id"]]
+    assert task["kind"] == "grid"
+    assert task["progress"] == {"done": 0, "total": 3}  # 三格
+    frozen = task["request"]["exec"]
+    assert len(frozen["cells"]) == 3
+    assert frozen["start"]["total"] == 3
+    assert frozen["options"]["pit_mode"] == "pit"
+
+    # 驱动到完成：落 `optimization_runs` 的 `request` 是**用户可见的那一份**（没有 exec）
+    drive_tasks(signed_in)
+    assert signed_in.tasks[body["task_id"]]["status"] == "done"
+    run_id = signed_in.tasks[body["task_id"]]["result"]["run_id"]
+    stored = signed_in.optimizations[run_id]["request"]
+    assert "exec" not in stored
+    assert stored["kind"] == "grid" and stored["symbol"] == SYMBOL
+
+
+def test_progress_advances_with_the_cells(signed_in: Any, data_dir: Path) -> None:
+    """逐格推进的进度落在任务行上——「跑到第几格」在状态端点里看得到（不只是流里）。"""
+    task_id = client.post("/api/v1/optimize/grid", json=grid_body()).json()["task_id"]
+    assert signed_in.tasks[task_id]["progress"]["done"] == 0
+
+    drive_tasks(signed_in)
+    assert signed_in.tasks[task_id]["progress"] == {"done": 3, "total": 3}
+
+
+def test_cancel_running_grid_is_cooperative(signed_in: Any, data_dir: Path) -> None:
+    """在跑的网格：中止信号投得进去（200 + `cancelling`），执行体看到它**不落库**。
+
+    逐步拆开验，不用并发去撞时序：取件把任务置 running → 登记中止信号（worker 在跑时
+    是它自己登记的）→ 打取消端点 → 执行体带着**已置位**的 stop 跑一遍。
+    """
+    import asyncio
+
+    from app.tasks import worker as task_worker
+    from app.tasks.executors import CANCELLED, RunContext, execute_grid
+
+    task_id = client.post("/api/v1/optimize/grid", json=grid_body()).json()["task_id"]
+    asyncio.run(signed_in.claim_next_task())  # worker 取件（此刻还没跑）
+    stop = asyncio.Event()
+    task_worker._RUNNING[task_id] = stop
+
+    response = client.post(f"/api/v1/tasks/{task_id}/cancel")
+    assert response.status_code == 200, response.text
+    assert response.json()["cancelling"] is True
+    assert stop.is_set()  # 信号真的投出去了
+
+    async def noop(_done: int) -> None:
+        return None
+
+    ctx = RunContext(
+        task=signed_in.tasks[task_id], stop=stop, publish=lambda *_: None, progress=noop
+    )
+    result = asyncio.run(execute_grid(signed_in, signed_in.tasks[task_id], ctx))
+
+    assert result == CANCELLED
+    assert signed_in.optimizations == {}  # 中止的结果不落库
+    task_worker._RUNNING.pop(task_id, None)

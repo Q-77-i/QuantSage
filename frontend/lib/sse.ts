@@ -64,6 +64,46 @@ export interface PostStreamOptions {
 }
 
 /**
+ * 通用的 GET + SSE 逐帧读取（P3-E1b）：任务事件流走它。
+ *
+ * 与 `streamPost` 是同一套帧解析与错误映射，差别只在方法与没有请求体——
+ * **不能换成 `EventSource`**：它虽然支持 GET，但发不出跨源凭据的定制、也没有统一的中止与
+ * 错误语义；本项目所有 SSE 都走 fetch + 手解帧这一条（`streamPost` / `streamChat` 同族）。
+ */
+export async function streamGet(path: string, options: PostStreamOptions): Promise<void> {
+  const response = await fetch(`${apiBase()}${path}`, {
+    method: "GET",
+    headers: { Accept: "text/event-stream" },
+    signal: options.signal,
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessage(response));
+  }
+  if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
+
+  options.onResponse?.(response);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const { frames, rest } = parseFrames(buffer);
+      buffer = rest;
+      for (const frame of frames) options.onFrame(frame);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
  * 通用的 POST + SSE 逐帧读取（M5b）。
  *
  * 与 `streamChat` 是**同一套帧解析**（都用上面的 `parseFrames`，SPEC §12 要求

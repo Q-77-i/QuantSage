@@ -22,7 +22,8 @@ QuantSage/
 │   │   ├── memory/               # 决策记忆：到期结算、教训、跨账户聚合（LangGraph Store）
 │   │   ├── rag/                  # 嵌入 / 检索 / PIT 硬过滤 / 重排
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新）
-│   │   ├── tasks/                # 异步任务：执行体（按 kind 派发）+ 单 worker 取件循环（队列 = tasks 表）
+│   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环
+│   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止
 │   │   ├── data/                 # DuckDB 客户端、交易日历、行情刷新、小石 CLI/MCP 装配
 │   │   └── core/                 # 配置、checkpointer、LLM 与 Langfuse 入口、日志脱敏
 │   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py）
@@ -38,7 +39,8 @@ QuantSage/
 │   │   └── (app)/                # 受保护路由组（登录守卫与页头都挂在这一层）
 │   ├── components/               # agent-run · auth · backtest · chat · events · factor · home
 │   │                             #   optimize · paper · research · space · stocks · strategies · tasks · ui
-│   └── lib/                      # SSE、图表主题与手势、对话状态机、任务轮询、分页、格式化
+│   └── lib/                      # SSE（POST/GET 两条）、图表主题与手势、对话状态机、分页、格式化
+│                                 #   + 任务轮询与网格事件流的纯函数视图模型
 │                                 #   （纯函数 + 单测；组件本身不做单测，靠走查脚本）
 ├── docs/
 │   ├── PRD.md                    # 需求与验收

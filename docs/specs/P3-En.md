@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.10）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.1 ｜ 2026-10-14 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 规格已定稿（E1a + E1c 先做，E1b 后延）**，其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.4 ｜ 2026-10-14 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -11,7 +11,7 @@
 | 节 | 内容 |
 |---|---|
 | [§1](#1-规划基线) | 规划基线（P3 起笔时点的现状核对） |
-| [§2](#2-e1-架构分层) | E1 架构分层（**E1a 任务队列 + E1c 接缝已定稿**；E1b 后延） |
+| [§2](#2-e1-架构分层) | E1 架构分层（E1a 任务队列 · E1c 接缝 · [§2.8](#28-e1b网格--批量迁入队列2026-10-14-定稿) E1b 网格批量迁入——**全节已交付**） |
 | §3–§9 | E2–E9 规格（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
 | [§11](#11-变更记录) | 变更记录 |
@@ -170,17 +170,76 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 - `test_api_endpoints.py` 的鉴权/越权矩阵加任务三端点。
 - 已知边界：① 单 worker 串行；② `running` 任务重启即中断（如实标失败）；③ 任务不设保留期与清理（单人项目量小，只加索引）；④ 无幂等键与重试（E4 的 L7/L2 落地）；⑤ **异步化对单次回测是「契约统一」不是提速**——端到端比旧同步路径多 0.6–0.9s（闸门里 `resolve_window` 那次读盘 + 取件轮询 + 落库，实测见 §11 v2.2）；⑥ 单实例假设（见 §2.4）。
 
+
+### 2.8 E1b：网格 / 批量迁入队列（2026-10-14 定稿）
+
+**要收掉的痛点**（SPEC §2.0 点明的那个）：网格/批量那条路径**断线即丢**——M5b 原文「落库在 done，流没走完就不留记录」，一次满格网格跑到 80% 刷新就是 30 秒白跑、零记录。E1b 把执行迁进 E1a 的 worker，**SSE 从「执行载体」降为「进度订阅」**。
+
+**后端**
+
+| 件 | 内容 |
+|---|---|
+| 提交 | `POST /optimize/{grid,batch}` → **202 + `{task_id}`**（实施期订正，见下「与草案的偏差」）；闸门（`_prepare` / `grid_cells` / 窗口解析 / 参数）照旧同步做完，展开结果 `CellSpec[]` + `RunOptions` + `start` 帧**冻结进任务行**的 `request.exec` 子键，落 `optimization_runs.request` 时由执行体剔掉（与 `_EXECUTION_ONLY` 同一手法） |
+| 执行 | worker 的 `EXECUTORS` 加 `grid` / `batch`：复用**既有** `run_cells`（连 `CONCURRENCY=2` 的进程级闸门一起——它本就是「E1 异步队列的前置形态」）；每完成一格 `bus.publish(task_id, cell)` 并推一格 `progress`；收尾落 `optimization_runs` **一次**（语义与今天一字不变）→ `finish_task(result=done 帧载荷)` → **广播终态帧**（`done` / `error` / `cancelled`，三态都发——漏了它在线订阅者会一直停在「运行中」，见下「实施期逮到的两个 bug」） |
+| 进度总线 | 新 `app/tasks/bus.py`：按 `task_id` 的**累积缓冲 + 订阅者队列**。订阅者先收回放（断线重连补齐已有格）再收新帧；缓冲在**最后一个订阅者离开且任务已终结**时释放。进程内（单实例假设同 E1a——服务重启则任务标 failed、缓冲消失，如实） |
+| 重连 | 新 `GET /api/v1/tasks/{task_id}/events`（SSE，受保护，越权/不存在 404）：**已终结** → 从 `optimization_runs.summary.cells` 回放 + 补一帧 `done`（无记录 = 失败/取消 → `error` 帧）；**仍在跑** → 订阅总线回放 + 续流。帧形状与 `POST /optimize/*` 的流**逐字同形**（同一编码件），前端两条路共用一个消费器 |
+| 兜底通道 | **不需要**：提交回的是 202 + `{task_id}` JSON，任务号在响应体里就拿到了——不存在「流断了还没拿到号」的窗口（把提交与订阅分开的副产品） |
+| 取消 | `running` 的网格/批量 → **协作式中止**（`run_cells(stop=)` 已有：停止派发新格，已在跑的最多 2 格自然跑完）→ 任务标 `cancelled`。**中止的结果不落库**（与 M5b「中止的结果不是一份可引用的记录」一致），前端保留本地已收到的格并标注「未落库」 |
+
+**与草案的偏差（实施期订正，2026-10-14）**
+
+草案写的是「`POST` 保持 SSE 形态、前端零改动」。动手后发现那条不成立：执行搬进 worker 之后，
+**请求内开流会一直挂到终态**——客户端不读响应体就占着连接，离线用例也没法驱动它
+（没有 worker 就没有终态，流永不结束）。改成 `202 + {task_id}`，与 `POST /backtest` 同一副形态：
+**每个提交都回任务号**。前端因此多一步「提交完再订阅」，但 `use-optimize` 本来就要改
+（断线语义、取消），边际成本小；`X-Task-Id` 兜底头随之取消。
+
+**实施期逮到的两个 bug**（都是走查/真机验出来的，记在这里防复现）
+
+1. **worker 从不广播终态帧**：在线订阅者收得到 `cell`、收不到 `done`，页面永远停在「运行中」。
+   回放那条路是 `stream._replay` 从库里拼的 `done`，所以「断线后重连」的集成用例照样绿——
+   **只有在线跑完并且在看**才暴露。修法：`done` / `error` / `cancelled` 三态都在 worker 里广播，
+   载荷与回放共用 `stream.done_payload`（一处构造，两处用，防漂移）。
+2. **`?task=` 自动重连在 StrictMode 下失效**：去重若用 `useRef` 记「已接过的号」，开发模式的
+   effect 双跑（挂载 → 清理 → 再挂载）会让第二遍直接跳过，而第一遍那条订阅已被清理函数 abort
+   ——**一条订阅都没有**，页面永远空白。修法：去重改用 `taskId` 这个 state（第二遍照样订上，
+   重复订阅由 `subscribe` 里的 `abort` 兜住）。这条是走查脚本 `capture-e1b.mjs` 逮到的。
+
+**竞态**：handler 必须**先订阅、再查状态**——反过来的话，任务在两次调用之间结束，那一格会落进空档（客户端什么都收不到）。订阅拿到 `(回放, 队列)` 之后再查任务行：已终结就从库里回放并收尾，未终结就续流。两条路覆盖全部时序。
+
+**前端**
+
+- `use-optimize.ts`：`start` 帧带 `task_id`；**断线不再清空本地状态**——改为「任务仍在后台运行」+「继续查看」（走重连端点，帧形状同形所以消费器共用）；`stop()` 从「掐流 + 清空」改成**真正取消任务**（`POST /tasks/{id}/cancel`）。
+- 页面：去掉 `beforeunload` 拦截（「跑着的时候离开会丢掉整次」这句随 E1b 失效——正是本片要收掉的东西）；运行号之外把**任务号也写进地址栏**（`?task=<id>`），刷新后自动重连（去重**用 state 不用 ref**——见上面第 2 个 bug）。
+- `lib/optimize-stream.ts`（新）：帧 → 视图模型的**纯函数**（按 `index` 落位、`detached` / `cancelled` / `error` 三态分明、`arrivedCount` 不把空洞算进去），vitest 直接测。
+- 「排队中」在优化页也要显示：提交到 worker 取件之间有 ≤200ms，前面压着别的任务时更久——如实说出来，别让进度条空转。
+
+**测试**
+
+- 离线：总线的发布/回放/订阅者清理（含「先订阅后查状态」那条竞态用例）；worker 跑 `grid` 任务（逐格进度、单格失败不牵连、取消走协作式中止）；`GET /tasks/{id}/events` 的三态（running 回放 / done 直接收尾 / failed 给 error）。
+- 集成：真库 + 真 lifespan——提交网格 → **断开流** → 任务照跑完 → `optimization_runs` 有记录、cells 与流里收到的逐格相等（**今天的行为是零记录**）；重连端点回放同一份 cells。
+- 前端：`lib/optimize-stream.test.ts`（10 条：按 index 落位 / 半截 JSON / 未知事件 / 断线保留已收到的格 / 终态后断线不改状态）；走查脚本 `capture-e1b.mjs`（刷新自动接回 / 停止不落库，见 §11 v2.4）。
+
+**已知代价（如实）**
+
+- **单 worker 串行**：满格网格（30s–2min）会把随后的单次回测挡在队列里——前端显示「排队中」，代价可见（E2 配额会把它显式化）。**不引多 worker**（PRD 定「单 worker」）。
+- 服务重启仍丢正在跑的网格（任务标 `failed/interrupted`，无部分结果）——与 E1a 同一条边界，不粉饰。
+- 取消的结果不落库：那是「中止」，不是「一份可以引用的记录」。
+
 ## 10. 测试策略
 
 （待随各功能滚动补充。E4 故障注入双轨已定：pytest 确定性注入（进 CI）+ 手动演练脚本（真拔数据源/杀 LLM，日志留档作验收证据）。）
 
-### E1（E1a + E1c）
+### E1（E1a + E1c + E1b）
 
 - **离线后端**：`tests/test_tasks_api.py`（提交 202 / 轮询到终态 / 越权与不存在同为 404 / 非法请求仍同步 422 / 取消语义：queued 可取消、running 与终态 409）、`tests/test_task_worker.py`（FIFO 串行、失败捕获且不落 run、取件复核已取消状态、启动把 `running` 扫成 `interrupted`）。
 - **测试驱动方式**：离线用例**不起 worker**——用 `app/tasks/worker.py::run_once(db)` 由夹具手动驱动。理由：模块级 `TestClient` 每请求一个事件循环，后台常驻协程在那种用法下活不过一次请求；集成用例 `real_stack` 走 `with TestClient` 才有常驻 loop。
 - **假库**：`tests/fakes.py::FakeDatabase` 补任务方法（与 `Database` 同方法面）。
 - **集成**：`tests/integration/test_tasks_e1.py`（真库 + 真回测走队列；`running` 扫尾语义）。
 - **接缝**：一条用例 patch `app.core.llm.complete` / `ask_once` 后，deep 角色 / reflection / narrative 三路都吃到假实现——证明单点注入成立。
+- **E1b 离线**：`tests/test_tasks_stream.py`（总线三条时序：先发布后订阅靠回放、先订阅后发布靠推送、订阅者走了照常发布；事件流三态：running 回放续流 / 已终结从库回放 / 失败与取消各一帧）、`test_optimize_api.py` 补「202 + 冻结执行材料」「逐格进度」「协作式中止不落库」；`run_optimize` 辅助件把「提交 → 驱 worker → 订阅」收成一处（任务已终结时订阅走回放，**不需要并发**）。
+- **E1b 集成**（`tests/integration/test_optimize_e1b.py`）：**断开订阅后任务照跑完并落库**（M5b 时代这里是零记录）+ 中止不落库。
+- **E1b 走查**：`frontend/scripts/capture-e1b.mjs` 5 条（刷新自动接回 / 停止不落库）；`capture-m5b.mjs` 14 条为回归。
 - **前端**：`lib/task.test.ts`（终态判定 / 进度文案 / 失败映射 / `pollTask` 的取数与等待全注入，**不 sleep**；首轮 400ms、其后 1s 也钉死）；既有 423 例全绿。
 
 ## 11. 变更记录
@@ -189,4 +248,6 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 |---|---|---|
 | v2.0 | 2026-10-13 | 规划评估拍板（底稿 docs/private/Pn-n/P3-En/P3-En-规划评估.md）：四处裁剪（E1 定向接缝 / E4 L0+L4 进程内 / E7 eval gate 只跑确定性断言 / E8 清单库直用化）+ E6 砍；PRD v0.10 / CLAUDE.md / ROADMAP 同步。正文待按功能 ID 滚动填写 |
 | v2.1 | 2026-10-14 | §2（E1）正文定稿（底稿 docs/private/Pn-n/P3-En/P3-E1-规划评估.md）：**E1a（任务队列 + 单次回测异步）+ E1c（LLM 调用面取用式）先做，E1b（网格/批量迁入）后延**。三处现状订正——API 版本化已是基线、数据侧接缝已存在（零代码只登记）、LLM 侧绑定导入是真缺口；痛点订正——单次回测实测 0.3–2s，E1a 不得声称解决长任务丢失。队列实体 = 任务表（理由：`asyncio.Queue` 绑事件循环，与模块级 `TestClient` 的每请求 loop 冲突） |
+| v2.4 | 2026-10-14 | **E1b 交付 —— 网格/批量迁入任务队列，M5b 的「断线即丢」收掉**。① **交付**：`app/tasks/bus.py`（按 task_id 的累积缓冲 + 订阅者）、`app/tasks/stream.py`（`task_frames`：先订阅再查状态；终态从 `optimization_runs` 回放）、`app/tasks/executors.py` 加 `grid`/`batch`（复用 `run_cells`，逐格 `publish` + `progress`，中止则**不落库**）、`app/api/optimize.py` 两个 POST 改 **202 + `{task_id}`**（执行材料冻结进 `request.exec`）、`app/api/tasks.py` 加 `GET /{id}/events` 与**协作式中止**的取消分支、`worker.request_stop` 中止投递口 + 三态终态帧广播。前端：`lib/optimize-stream.ts`（纯函数视图模型）+ `use-optimize` 重写（提交与订阅分开、`detached` 保留已收到的格、`stop()` 改成真取消）+ 页面去 `beforeunload` 拦截、`?task=` 自动重连。② **与草案的偏差**：`POST` 不再是 SSE 而是 202（理由见 §2.8「与草案的偏差」——请求内开流会挂到终态，离线用例无法驱动），`X-Task-Id` 兜底头随之取消。③ **走查与真机**：`capture-e1b.mjs` **5/5**（`?task=` 入地址栏 / **刷新后结果照常出现** / 跑完照常落库 / 停止后说明「未落库」/ **中止不落库**——记录数 4→4）；`capture-m5b.mjs` 回归 **14/14**（含「点一格重跑」）。④ **实施期逮到两个 bug**：worker 从不广播终态帧（在线订阅者永远停在「运行中」，只有「在线跑完并且在看」才暴露）；`?task=` 重连去重用 `useRef` 在 StrictMode 下失效（effect 双跑 → 一条订阅都没有）。两条都写进 §2.8 防复现。⑤ **回归**：后端离线 **1358 passed**（+12）、集成**全量 106 passed / 0 failed**（含新 `test_optimize_e1b.py` 两条：断开订阅后照跑完并落库 / 中止不落库；`test_optimize_m5b.py` 的辅助件按新契约改写，断言一字未改）、前端 **454 passed**（+10）、typecheck/lint/build 全绿。同轮 P2 SPEC 的 M5b 断线条款划掉并指路（v1.59） |
+| v2.3 | 2026-10-14 | **§2.8（E1b）定稿**：网格/批量迁入 E1a 的 worker，SSE 从执行载体降为进度订阅；新 `app/tasks/bus.py`（按 task_id 的累积缓冲 + 订阅者）、新 `GET /tasks/{id}/events`（三态重连）、`X-Task-Id` 兜底头、取消走 `run_cells(stop=)` 的协作式中止且**结果不落库**；前端去 `beforeunload` 拦截、`?task=` 自动重连。三条已知代价如实写明（单 worker 串行 / 重启仍丢在跑的 / 取消不落库）。**待用户确认后开工** |
 | v2.2 | 2026-10-14 | **E1a + E1c 交付**（执行计划与落地记录 `docs/private/Pn-n/P3-En/P3-E1a.md`）。新增 `tasks` 表（DDL 进 `core/db.py::SCHEMA`，两个索引）、`app/tasks/{executors,worker}.py`（执行体 + 单协程取件循环，取件间隔 200ms，lifespan 起停）、`app/api/tasks.py`（列表/详情/取消）；`POST /api/v1/backtest` 改 202 + `{task_id}`，落 `backtest_runs` 与报告取回路径不变。**实测（本机真栈，2026-10-14）**：ma_cross/600519——旧同步 `build_report` 627–653ms、提交 427–439ms、取件 552–616ms、端到端 1220–1427ms；event_driven/300750 `both`——1168–1668ms / 414–453ms / 451–564ms / 1855–2073ms。读法：**提交 ≈ 0.4s（闸门里 `resolve_window` 真读一次行情），端到端比旧同步多 0.6–0.9s**——E1a 换的是任务契约与状态可查，不是速度（§2.7 边界⑤）。错误通道分界（§2.3 表）：前置闸门仍同步 4xx，运行期错误落任务 `error`（`StrategyRejected` 另带 `line`，与旧 422 响应体同形）。E1c：7 处 `from app.core.llm import complete` 改取用式（常量与异常类保持直接导入），一条用例证明单点注入成立；**不做 `LLMGateway` 类**。回归：离线 1345 passed（+22）、前端 432 passed（+9），16 处既有调用点全部改写 |

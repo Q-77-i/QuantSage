@@ -34,6 +34,22 @@ def sse_comment(text: str = "keep-alive") -> str:
     return f": {text}\n\n"
 
 
+async def sse_from(
+    events: AsyncIterator[tuple[str, object] | None],
+) -> AsyncIterator[str]:
+    """把 `(事件名, 载荷)` 流编成 SSE 文本；`None` 编成保活注释帧。
+
+    P3-E1b 起任务流由**任务层**产出 `(事件名, 载荷)`（它不认识 HTTP），编码留在这一层——
+    两条消费它的流（发起与重连）因此逐字同形。
+    """
+    async for event in events:
+        if event is None:
+            yield sse_comment()
+        else:
+            name, payload = event
+            yield sse_frame(name, payload if isinstance(payload, Mapping) else {"value": payload})
+
+
 def sse_response(
     stream: AsyncIterator[str], *, headers: Mapping[str, str] | None = None
 ) -> StreamingResponse:

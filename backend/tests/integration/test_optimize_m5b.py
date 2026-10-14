@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.integration.conftest import purge_rows, sign_up
+from tests.integration.conftest import purge_rows, sign_up, wait_for_task
 
 pytestmark = pytest.mark.integration
 
@@ -43,7 +43,19 @@ def frames(body: str) -> list[tuple[str, dict[str, Any]]]:
     return out
 
 
+def frames_of_task(client: TestClient, task_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """订阅任务的事件流（E1b：提交与订阅分开之后，取帧统一走这里）。"""
+    with client.stream("GET", f"/api/v1/tasks/{task_id}/events") as response:
+        assert response.status_code == 200, "任务流没能开起来"
+        return frames("".join(response.iter_text()))
+
+
 def run_grid(client: TestClient, **overrides: Any) -> list[tuple[str, dict[str, Any]]]:
+    """跑一次网格：**提交（202）→ 等 worker → 订阅回放**（P3-E1b 的契约）。
+
+    执行搬进 worker 之后，请求内开流会一直挂到终态；任务跑完再订阅，端点从
+    `optimization_runs` 回放——帧与在线时逐字同形，下面用例的断言语义不变。
+    """
     body = {
         "strategy": "ma_cross",
         "symbol": SYMBOL,
@@ -52,9 +64,12 @@ def run_grid(client: TestClient, **overrides: Any) -> list[tuple[str, dict[str, 
         **WINDOW,
         **overrides,
     }
-    with client.stream("POST", "/api/v1/optimize/grid", json=body) as response:
-        assert response.status_code == 200, "网格流没能开起来"
-        return frames("".join(response.iter_text()))
+    response = client.post("/api/v1/optimize/grid", json=body)
+    assert response.status_code == 202, "网格没能提交"
+    task_id = response.json()["task_id"]
+    task = wait_for_task(client, task_id, timeout=180)
+    assert task["status"] == "done", task
+    return frames_of_task(client, task_id)
 
 
 def test_schema_setup_is_idempotent() -> None:
@@ -143,9 +158,11 @@ def test_batch_of_symbols_and_strategies(real_stack: TestClient) -> None:
             ],
             **WINDOW,
         }
-        with alice.stream("POST", "/api/v1/optimize/batch", json=body) as response:
-            assert response.status_code == 200
-            events = frames("".join(response.iter_text()))
+        submitted = alice.post("/api/v1/optimize/batch", json=body)
+        assert submitted.status_code == 202, submitted.text
+        task = wait_for_task(alice, submitted.json()["task_id"], timeout=180)
+        assert task["status"] == "done", task
+        events = frames_of_task(alice, submitted.json()["task_id"])
 
         assert events[0][1]["kind"] == "batch" and events[0][1]["total"] == 4
         cells = [payload for name, payload in events if name == "cell"]

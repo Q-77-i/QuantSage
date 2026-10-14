@@ -727,6 +727,11 @@ class FakeDatabase:
         if row is not None and row["status"] == "running":
             row.update(status="done", result=dict(result), finished_at=datetime.now(UTC))
 
+    async def finish_task_cancelled(self, task_id: str) -> None:
+        row = self.tasks.get(task_id)
+        if row is not None and row["status"] == "running":
+            row.update(status="cancelled", finished_at=datetime.now(UTC))
+
     async def fail_task(self, task_id: str, *, error: dict[str, Any]) -> None:
         row = self.tasks.get(task_id)
         if row is not None and row["status"] == "running":

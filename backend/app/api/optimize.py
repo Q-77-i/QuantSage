@@ -1,15 +1,19 @@
-"""批量 / 网格端点（M5b）：SSE 逐格推送 + 汇总的落库与重开。
+"""批量 / 网格端点（M5b；P3-E1b 起执行迁入任务队列）。
 
-四个端点：`POST /grid`、`POST /batch`（均 SSE）、`GET /runs`、`GET /runs/{run_id}`。
+四个端点：`POST /grid`、`POST /batch`（**202 + `{task_id}`**）、`GET /runs`、`GET /runs/{run_id}`；
+订阅进度走 `GET /api/v1/tasks/{id}/events`（在 `api/tasks.py`，与重连共用同一份帧）。
 
-三条口径（SPEC §6 M5b 写死，理由都在那里）：
+P3-E1b 改的是**执行在哪跑**，不是闸门：
 
-* **请求级错误在流开始前就是 422**（与 chat 同姿态）——`BatchRequestError` 由 `main.py`
-  统一翻 422，端点里不写 try/except。轴数、轴参数、逐格参数、格数上限全部在这一层挡下，
-  **绝不静默跳过某一格**。
-* **断线即断**：`stop` 置位后不再派发新格，已在跑的最多 2 格自然跑完且**不落库**
-  （不取消 in-flight——`to_thread` 取消不了，硬取消还会在沙箱里漏子进程）。刷新等于重跑。
-* **落库发生在 `done`**：流走完才写 `optimization_runs`。**全失败也照落**——那是事实，不是错误。
+* **请求级错误仍在提交前判**（与 chat 同姿态）——`BatchRequestError` 由 `main.py` 统一翻 422，
+  端点里不写 try/except。轴数、轴参数、逐格参数、格数上限全部在这一层挡下，
+  **绝不静默跳过某一格**；展开后的格与选项**冻结进任务行**，执行体不再碰请求上下文。
+* **提交与订阅分开**：执行搬进 worker 之后，「请求内开流」会一直挂到终态——客户端不读
+  响应体就占着连接，离线用例也没法驱动它（没有 worker 就没有终态，流永不结束）。
+  与 `POST /backtest` 的 202 同一副形态：**每个提交都回任务号**。
+* **断线不断执行**（E1b 收掉的那条）：订阅流断开只是没人听了，任务照跑、收尾照落
+  `optimization_runs`；回来看得见（`?run=` 重开，或把订阅流续上）。真正的「停」是
+  `POST /tasks/{id}/cancel` 的协作式中止——那才不落库（中止不是结果）。
 
 网格与批量的**窗口解析时机不同**，这不是随手定的：网格只有一个标的，先解析再开流
 （标的没数据就是 404，与 `POST /backtest` 同响应，且 `start` 帧能带上确定的窗口）；
@@ -26,10 +30,8 @@ from datetime import date
 from typing import Any, Literal, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.api.sse import sse_frame
 from app.api.backtest import CostOptions, normalize_run_id
 from app.api.strategies import normalize_strategy_id
 from app.backtest.batch import (
@@ -40,7 +42,6 @@ from app.backtest.batch import (
     CellSpec,
     RunOptions,
     grid_cells,
-    run_cells,
 )
 from app.backtest.report import resolve_window
 from app.backtest.strategies import EventDriven, available_strategies, known_params
@@ -51,6 +52,7 @@ from app.strategy import USER_STRATEGY, StrategyCheckFailed, StrategyRejected
 from app.strategy.api import parse_meta
 from app.strategy.params import validate_params as validate_user_params
 from app.strategy.static_check import check_source, has_errors
+from app.tasks.executors import EXEC_KEY, freeze_options, freeze_specs
 
 log = logging.getLogger(__name__)
 
@@ -260,115 +262,50 @@ def _spec_of(item: PreparedStrategy, pick: StrategyPick, symbol: str, params: di
     )
 
 
-# ── SSE ────────────────────────────────────────────────────
-
-
-# 帧编码已抽到 `app/api/sse.py`（M8 起三处共用；原来是两份逐字相同的手写副本）
-
-
-#: 断线后仍在跑的 pump 任务。与 `api/chat.py::_DETACHED` 同一个理由：asyncio 只持弱引用
-_DETACHED: set[asyncio.Task[None]] = set()
-
-
-def _detach(task: asyncio.Task[None]) -> None:
-    _DETACHED.add(task)
-
-    def _done(finished: asyncio.Task[None]) -> None:
-        _DETACHED.discard(finished)
-        if finished.cancelled():
-            return
-        error = finished.exception()
-        if error is not None:  # pragma: no cover - 正常路径不走到（异常已转成 error 帧）
-            log.warning("断连后仍在跑的批处理出错：%r", error)
-
-    task.add_done_callback(_done)
+# ── 提交与订阅（P3-E1b）────────────────────────────────────
+#
+# 帧编码在 `app/api/sse.py`（M8 起三处共用），保活间隔在 `app/tasks/stream.py`
+# （两条流共用那一份）——这里只放端点到任务层的接线。
 
 
 def streaming_headers() -> dict[str, str]:
-    """SSE 响应的两条头。**不回传运行号**——本端点断连即断、不续传（SPEC §6 M5b），
-    没有「靠响应头兜底」的用法（那是 chat 的会话号才需要的）。"""
+    """SSE 响应的两条头（订阅端点在 `api/tasks.py` 里也用这一份）。
+
+    **不需要 `X-Task-Id` 兜底头**：提交回的是 202 + `{task_id}`（JSON），任务号在响应体里
+    就拿到了——不存在「流断了还没拿到号」的窗口（那是把提交与订阅分开的副产品）。
+    """
     return {
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",  # 反代下禁用缓冲
     }
 
 
-async def _stream(
-    *,
-    request: Request,
+async def _enqueue(
+    db: Any,
     user_id: int,
+    *,
+    kind: str,
+    stored: dict[str, Any],
     specs: list[CellSpec],
     options: RunOptions,
-    kind: str,
     start_payload: dict[str, Any],
-    stored_request: dict[str, Any],
-) -> AsyncIterator[str]:
-    """逐格推送 + 收尾落库。**落库在 `done`**：流没走完就不留记录（刷新即重跑）。"""
-    yield sse_frame("start", start_payload)
+) -> str:
+    """建任务行：**用户可见入参 + 冻结的执行材料**（展开后的格、选项、start 帧）。
 
-    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-    stop = asyncio.Event()
-
-    async def on_cell(cell: dict[str, Any]) -> None:
-        # 队列无界、`put_nowait` 不会阻塞：消费者走了也只是把结果丢弃，不会把执行器卡住
-        queue.put_nowait(("cell", cell))
-
-    async def pump() -> None:
-        try:
-            summary = await run_cells(
-                specs, options, kind=kind, on_cell=on_cell, stop=stop
-            )
-            queue.put_nowait(("done", summary))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 —— 流内转成 error 帧
-            queue.put_nowait(("error", exc))
-        finally:
-            queue.put_nowait(("end", None))
-
-    task = asyncio.create_task(pump())
-    try:
-        while True:
-            try:
-                item_kind, payload = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
-            except TimeoutError:
-                yield ": keepalive\n\n"
-                continue
-            if item_kind == "end":
-                break
-            if item_kind == "error":
-                log.exception("批处理失败 kind=%s", kind, exc_info=payload)
-                yield sse_frame("error", {"code": "internal", "message": "内部错误，请重试"})
-                break
-            if item_kind == "cell":
-                yield sse_frame("cell", payload)
-                continue
-
-            # done：先落库再通知（run_id 要给出去，落失败宁可报错也不给一个打不开的号）
-            summary = payload
-            run_id = str(uuid.uuid4())
-            await require_db(request).save_optimization_run(
-                run_id, user_id, stored_request, summary
-            )
-            yield sse_frame(
-                "done",
-                {
-                    "run_id": run_id,
-                    "kind": kind,
-                    "cells_total": summary["cells_total"],
-                    "cells_ok": summary["cells_ok"],
-                    "best_index": summary["best_index"],
-                    "overfit": summary["overfit"],
-                    "duration_s": summary["duration_s"],
-                },
-            )
-            break
-    finally:
-        # 断线时不取消在跑的格（取消不了，硬取消还会漏子进程），只掐掉「还要开跑的」。
-        # 任务留着引用：它跑完会往没人读的队列里塞一条 done，不落库——正是「刷新即重跑」
-        stop.set()
-        if not task.done():
-            _detach(task)
+    执行材料整块挂在 `exec` 子键下，落 `optimization_runs.request` 时由执行体剔掉——
+    与 E1a 的 `_EXECUTION_ONLY` 同一手法，记录表里留的仍是用户可见的那一份。
+    """
+    task_id = str(uuid.uuid4())
+    request: dict[str, Any] = {
+        **stored,
+        EXEC_KEY: {
+            "cells": freeze_specs(specs),
+            "options": freeze_options(options),
+            "start": start_payload,
+        },
+    }
+    await db.create_task(task_id, user_id, kind, request, total=len(specs))
+    return task_id
 
 
 def _stored_request(body: BaseModel, resolved: tuple[date, date] | None, **extra: Any) -> dict[str, Any]:
@@ -387,10 +324,10 @@ def _stored_request(body: BaseModel, resolved: tuple[date, date] | None, **extra
 # ── 端点 ───────────────────────────────────────────────────
 
 
-@router.post("/grid")
+@router.post("/grid", status_code=202)
 async def run_grid(
     request: Request, body: GridRequest, user: dict[str, Any] = Depends(require_user)
-) -> StreamingResponse:
+) -> dict[str, Any]:
     """参数网格：笛卡尔展开 → 逐格回测 → 热力图数据 + Deflated Sharpe。"""
     user_id = int(user["id"])
     prepared = await _prepare(request, user_id, body.strategy, body.strategy_id)
@@ -424,36 +361,34 @@ async def run_grid(
     )
     specs = [_spec_of(prepared, pick, body.symbol, params) for params in cells]
     axes = [{"param": axis.param, "values": list(axis.values)} for axis in body.axes]
-    return StreamingResponse(
-        _stream(
-            request=request,
-            user_id=user_id,
-            specs=specs,
-            options=options,
-            kind="grid",
-            start_payload={
-                "kind": "grid",
-                "total": len(specs),
-                "symbol": body.symbol,
-                "strategy": body.strategy,
-                "strategy_name": prepared.name if prepared.kind == "user" else None,
-                "axes": axes,
-                "window": {"start": resolved[0].isoformat(), "end": resolved[1].isoformat()},
-                "pit_mode": body.pit_mode,
-            },
-            stored_request=_stored_request(
-                body, resolved, kind="grid", strategy_name=prepared.name if prepared.kind == "user" else None
-            ),
+    task_id = await _enqueue(
+        require_db(request),
+        user_id,
+        kind="grid",
+        stored=_stored_request(
+            body, resolved, kind="grid", strategy_name=prepared.name if prepared.kind == "user" else None
         ),
-        media_type="text/event-stream",
-        headers=streaming_headers(),
+        specs=specs,
+        options=options,
+        start_payload={
+            "kind": "grid",
+            "total": len(specs),
+            "symbol": body.symbol,
+            "strategy": body.strategy,
+            "strategy_name": prepared.name if prepared.kind == "user" else None,
+            "axes": axes,
+            "window": {"start": resolved[0].isoformat(), "end": resolved[1].isoformat()},
+            "pit_mode": body.pit_mode,
+        },
     )
+    # 执行在 worker 里；进度由 `GET /api/v1/tasks/{task_id}/events` 订阅（E1b）
+    return {"task_id": task_id, "status": "queued"}
 
 
-@router.post("/batch")
+@router.post("/batch", status_code=202)
 async def run_batch(
     request: Request, body: BatchRequest, user: dict[str, Any] = Depends(require_user)
-) -> StreamingResponse:
+) -> dict[str, Any]:
     """批量：多标的 × 多策略。窗口逐格解析（一格没数据不该带走其余格）。"""
     user_id = int(user["id"])
     prepared = [
@@ -481,28 +416,25 @@ async def run_batch(
         end=body.end,
         adjust="qfq",
     )
-    return StreamingResponse(
-        _stream(
-            request=request,
-            user_id=user_id,
-            specs=specs,
-            options=options,
-            kind="batch",
-            start_payload={
-                "kind": "batch",
-                "total": len(specs),
-                "symbols": list(body.symbols),
-                "strategies": [
-                    {"strategy": pick.strategy, "strategy_name": item.name if item.kind == "user" else None}
-                    for pick, item in zip(body.strategies, prepared, strict=True)
-                ],
-                "pit_mode": body.pit_mode,
-            },
-            stored_request=_stored_request(body, None, kind="batch"),
-        ),
-        media_type="text/event-stream",
-        headers=streaming_headers(),
+    task_id = await _enqueue(
+        require_db(request),
+        user_id,
+        kind="batch",
+        stored=_stored_request(body, None, kind="batch"),
+        specs=specs,
+        options=options,
+        start_payload={
+            "kind": "batch",
+            "total": len(specs),
+            "symbols": list(body.symbols),
+            "strategies": [
+                {"strategy": pick.strategy, "strategy_name": item.name if item.kind == "user" else None}
+                for pick, item in zip(body.strategies, prepared, strict=True)
+            ],
+            "pit_mode": body.pit_mode,
+        },
     )
+    return {"task_id": task_id, "status": "queued"}
 
 
 @router.get("/runs")

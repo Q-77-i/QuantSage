@@ -18,12 +18,30 @@ from contextlib import suppress
 from typing import Any
 
 from app.backtest.batch import error_of
-from app.tasks.executors import EXECUTORS
+from app.tasks import bus
+from app.tasks.executors import EXECUTORS, RunContext
 
 log = logging.getLogger(__name__)
 
 #: 取件间隔（秒）。单次回测 0.3–2s，这点启动延迟可忽略，换来的是零跨 loop 状态。
 POLL_SECONDS = 0.2
+
+
+#: 正在跑的任务 → 中止信号。**协作式中止的投递口**：`POST /tasks/{id}/cancel` 在这里置位，
+#: 执行体（`run_cells`）看到就停止派发新格。进程内——单实例假设同 E1a（见 SPEC §2.4）。
+_RUNNING: dict[str, asyncio.Event] = {}
+
+
+def request_stop(task_id: str) -> bool:
+    """请求中止一个正在跑的任务。返回是否真投递到了（同进程、且确实在跑）。
+
+    `False` 不是错误：可能它刚跑完，也可能跑在别的进程里（本项目单实例，如实返回即可）。
+    """
+    event = _RUNNING.get(task_id)
+    if event is None:
+        return False
+    event.set()
+    return True
 
 
 async def run_once(db: Any) -> bool:
@@ -32,26 +50,55 @@ async def run_once(db: Any) -> bool:
     if task is None:
         return False
 
+    task_id = str(task["id"])
     executor = EXECUTORS.get(str(task["kind"]))
-    if executor is None:  # pragma: no cover - 端点只建已注册的 kind（E1b 加 grid / batch）
-        await db.fail_task(
-            task["id"], error={"kind": "internal", "message": f"未知任务类型 {task['kind']!r}"}
-        )
+    if executor is None:  # pragma: no cover - 端点只建已注册的 kind
+        message = f"未知任务类型 {task['kind']!r}"
+        await db.fail_task(task_id, error={"kind": "internal", "message": message})
+        bus.publish(task_id, "error", {"code": "internal", "message": message})
         return True
+
+    stop = asyncio.Event()
+    _RUNNING[task_id] = stop
+    total = int((task.get("progress") or {}).get("total") or 1)
+
+    async def progress(done: int) -> None:
+        await db.update_task_progress(task_id, done=done, total=total)
+
+    ctx = RunContext(
+        task=task,
+        stop=stop,
+        publish=lambda event, payload: bus.publish(task_id, event, payload),
+        progress=progress,
+    )
 
     try:
-        result = await executor(db, task)
-    except Exception as exc:  # noqa: BLE001 —— 任务的失败要**落库可查**，不能只进日志
-        error = error_of(exc)
-        log.warning("任务 %s（%s）失败：%s", task["id"], task["kind"], error["message"])
-        await db.fail_task(task["id"], error=error)
-        return True
+        try:
+            result = await executor(db, task, ctx)
+        except Exception as exc:  # noqa: BLE001 —— 任务的失败要**落库可查**，不能只进日志
+            error = error_of(exc)
+            log.warning("任务 %s（%s）失败：%s", task_id, task["kind"], error["message"])
+            await db.fail_task(task_id, error=error)
+            ctx.publish("error", {"code": error.get("kind", "internal"), "message": error["message"]})
+            return True
 
-    # 成功 ⇒ 进度满格。E1b 的网格逐格推进，这里是收尾那一下（invariant：done 的必满格）
-    total = int((task.get("progress") or {}).get("total") or 1)
-    await db.update_task_progress(task["id"], done=total, total=total)
-    await db.finish_task(task["id"], result=result)
-    return True
+        if result.get("cancelled"):
+            # 协作式中止：执行体已按约定**不落库**，这里只把状态收干净
+            log.info("任务 %s（%s）已中止", task_id, task["kind"])
+            await db.finish_task_cancelled(task_id)
+            ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
+            return True
+
+        # 成功 ⇒ 进度满格。网格逐格推进，这里是收尾那一下（invariant：done 的必满格）
+        await progress(total)
+        await db.finish_task(task_id, result=result)
+        # **收尾帧必须广播**：在线订阅者靠它收流（没有它，页面会一直停在「运行中」——
+        # 重连那条路是 `stream._replay` 从库里拼的，所以只有「在线跑完」才暴露这个缺口）
+        ctx.publish("done", result)
+        return True
+    finally:
+        _RUNNING.pop(task_id, None)
+        bus.release(task_id)
 
 
 async def serve(db: Any, *, interval: float = POLL_SECONDS) -> None:
@@ -100,4 +147,4 @@ async def stop(task: asyncio.Task[None]) -> None:
         await task
 
 
-__all__ = ["POLL_SECONDS", "run_once", "serve", "start", "stop"]
+__all__ = ["POLL_SECONDS", "request_stop", "run_once", "serve", "start", "stop"]
