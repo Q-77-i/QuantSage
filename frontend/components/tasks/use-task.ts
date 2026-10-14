@@ -17,6 +17,7 @@
 import { useCallback, useRef, useState } from "react";
 
 import { ApiError, api, describeError } from "@/lib/api";
+import { SubmissionKey } from "@/lib/idempotency";
 import { readRunFailure } from "@/lib/strategy-form";
 import type { RunFailure } from "@/lib/strategy-form";
 import { pollTask, taskFailure, taskPhaseLabel, taskRunId } from "@/lib/task";
@@ -45,21 +46,28 @@ export function useBacktestTask() {
   const [state, setState] = useState<BacktestTaskState>(IDLE);
   /** 序号戳：连点「运行」时，先发的那次不许覆盖后发的状态（与 `use-backtest.ts` 同法） */
   const seqRef = useRef(0);
+  /** 幂等键（E4b）：同一个动作在跑时再点，复用同一个键——后端只跑一遍 */
+  const keyRef = useRef(new SubmissionKey());
+  /** 上一次提交落定了没有。它决定下一次提交是「同一次动作的重试」还是「新动作」 */
+  const inFlightRef = useRef(false);
 
   /** 提交并等到终态：成功给 `run_id`，失败给 `failure`（提交期与执行期两类都收好了）。 */
   const submit = useCallback(async (body: BacktestRequest): Promise<TaskSubmitResult> => {
     const seq = ++seqRef.current;
     const current = () => seq === seqRef.current;
+    const inFlight = inFlightRef.current; // 取键之前先记下：这一次是不是「同一个动作的重试」
+    inFlightRef.current = true;
     setState({ running: true, phase: "排队中" });
 
     try {
-      const { task_id } = await api.submitBacktest(body);
+      const { task_id } = await api.submitBacktest(body, keyRef.current.current(inFlight));
       const task = await pollTask(task_id, {
         onTick: (tick: TaskDetail) => {
           if (current()) setState((prev) => ({ ...prev, phase: taskPhaseLabel(tick) || null }));
         },
       });
       const runId = taskRunId(task);
+      inFlightRef.current = false; // 落定了：下一次提交是新动作，换键
       if (runId !== null) {
         if (current()) setState(IDLE);
         return { ok: true, runId };
@@ -68,6 +76,7 @@ export function useBacktestTask() {
       if (current()) setState(IDLE);
       return { ok: false, failure: taskFailure(task) };
     } catch (cause) {
+      inFlightRef.current = false;
       if (current()) setState(IDLE);
       return { ok: false, failure: failureOf(cause) };
     }

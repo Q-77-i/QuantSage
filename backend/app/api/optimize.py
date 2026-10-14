@@ -32,6 +32,9 @@ from typing import Any, Literal, Self
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.api import idempotency
+from app.api.idempotency import body_fingerprint, idempotency_key
+from app.api.limits import limit
 from app.api.backtest import CostOptions, normalize_run_id
 from app.api.strategies import normalize_strategy_id
 from app.backtest.batch import (
@@ -289,7 +292,9 @@ async def _enqueue(
     specs: list[CellSpec],
     options: RunOptions,
     start_payload: dict[str, Any],
-) -> str:
+    key: str | None = None,
+    fingerprint: str = "",
+) -> dict[str, Any]:
     """建任务行：**用户可见入参 + 冻结的执行材料**（展开后的格、选项、start 帧）。
 
     执行材料整块挂在 `exec` 子键下，落 `optimization_runs.request` 时由执行体剔掉——
@@ -304,8 +309,16 @@ async def _enqueue(
             "start": start_payload,
         },
     }
-    await db.create_task(task_id, user_id, kind, request, total=len(specs))
-    return task_id
+    return await idempotency.create_task(
+        db,
+        task_id=task_id,
+        user_id=user_id,
+        kind=kind,
+        request=request,
+        key=key,
+        fingerprint=fingerprint,
+        total=len(specs),
+    )
 
 
 def _stored_request(body: BaseModel, resolved: tuple[date, date] | None, **extra: Any) -> dict[str, Any]:
@@ -326,10 +339,18 @@ def _stored_request(body: BaseModel, resolved: tuple[date, date] | None, **extra
 
 @router.post("/grid", status_code=202)
 async def run_grid(
-    request: Request, body: GridRequest, user: dict[str, Any] = Depends(require_user)
+    request: Request,
+    body: GridRequest,
+    user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("task-submit")),
+    key: str | None = Depends(idempotency_key),
 ) -> dict[str, Any]:
     """参数网格：笛卡尔展开 → 逐格回测 → 热力图数据 + Deflated Sharpe。"""
     user_id = int(user["id"])
+    fingerprint = body_fingerprint(body)
+    early = await idempotency.replay(require_db(request), user_id, key, fingerprint)
+    if early is not None:
+        return early  # 重复提交：先短路、再闸门（省下的正是展开与窗口解析那步）
     prepared = await _prepare(request, user_id, body.strategy, body.strategy_id)
 
     cells = grid_cells(
@@ -361,10 +382,12 @@ async def run_grid(
     )
     specs = [_spec_of(prepared, pick, body.symbol, params) for params in cells]
     axes = [{"param": axis.param, "values": list(axis.values)} for axis in body.axes]
-    task_id = await _enqueue(
+    result = await _enqueue(
         require_db(request),
         user_id,
         kind="grid",
+        key=key,
+        fingerprint=fingerprint,
         stored=_stored_request(
             body, resolved, kind="grid", strategy_name=prepared.name if prepared.kind == "user" else None
         ),
@@ -382,15 +405,23 @@ async def run_grid(
         },
     )
     # 执行在 worker 里；进度由 `GET /api/v1/tasks/{task_id}/events` 订阅（E1b）
-    return {"task_id": task_id, "status": "queued"}
+    return result
 
 
 @router.post("/batch", status_code=202)
 async def run_batch(
-    request: Request, body: BatchRequest, user: dict[str, Any] = Depends(require_user)
+    request: Request,
+    body: BatchRequest,
+    user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("task-submit")),
+    key: str | None = Depends(idempotency_key),
 ) -> dict[str, Any]:
     """批量：多标的 × 多策略。窗口逐格解析（一格没数据不该带走其余格）。"""
     user_id = int(user["id"])
+    fingerprint = body_fingerprint(body)
+    early = await idempotency.replay(require_db(request), user_id, key, fingerprint)
+    if early is not None:
+        return early  # 重复提交：先短路、再闸门
     prepared = [
         await _prepare(request, user_id, pick.strategy, pick.strategy_id)
         for pick in body.strategies
@@ -416,10 +447,12 @@ async def run_batch(
         end=body.end,
         adjust="qfq",
     )
-    task_id = await _enqueue(
+    result = await _enqueue(
         require_db(request),
         user_id,
         kind="batch",
+        key=key,
+        fingerprint=fingerprint,
         stored=_stored_request(body, None, kind="batch"),
         specs=specs,
         options=options,
@@ -434,7 +467,7 @@ async def run_batch(
             "pit_mode": body.pit_mode,
         },
     )
-    return {"task_id": task_id, "status": "queued"}
+    return result
 
 
 @router.get("/runs")

@@ -670,7 +670,15 @@ class FakeDatabase:
         request: dict[str, Any],
         *,
         total: int = 1,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        if idempotency_key is not None:
+            for row in self.tasks.values():
+                if (
+                    row["user_id"] == user_id
+                    and row.get("idempotency_key") == idempotency_key
+                ):
+                    return row  # 与真库的 ON CONFLICT 同语义：回既有那一行
         self.tasks[task_id] = {
             "id": task_id,
             "user_id": user_id,
@@ -680,12 +688,19 @@ class FakeDatabase:
             "progress": {"done": 0, "total": total},
             "result": None,
             "error": None,
+            "idempotency_key": idempotency_key,
             "created_at": datetime.now(UTC),
             "started_at": None,
             "finished_at": None,
         }
         self._task_order.append(task_id)
         return self._task_row(task_id)
+
+    async def task_by_idempotency_key(self, user_id: int, key: str) -> dict[str, Any] | None:
+        for row in self.tasks.values():
+            if row["user_id"] == user_id and row.get("idempotency_key") == key:
+                return row
+        return None
 
     async def get_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
         row = self.tasks.get(task_id)

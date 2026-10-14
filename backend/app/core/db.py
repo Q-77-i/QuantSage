@@ -250,6 +250,12 @@ SCHEMA = (
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # 幂等键（E4b / L7）：客户端每次**用户动作**给一个，重试复用同一个。
+    # 部分唯一索引：没给键的行（`NULL`）天然互不冲突，`ON CONFLICT` 的推断子句
+    # 必须连 `WHERE` 一起写才能对上这个索引。
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_idx "
+    "ON tasks (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS tasks_user_created_idx "
     "ON tasks (user_id, created_at DESC)",
     # worker 取件与启动扫尾都按 status 过滤，且任务表是**热表**（每次回测一行）
@@ -969,16 +975,44 @@ class Database:
         request: dict[str, Any],
         *,
         total: int = 1,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """建一条 `queued` 任务。`total` 是格数——单次回测恒 1（E1b 的网格是展开后的格数）。"""
+        """建一条 `queued` 任务。`total` 是格数——单次回测恒 1（E1b 的网格是展开后的格数）。
+
+        **带幂等键时返回既有的那一行**（E4b / L7）：`ON CONFLICT DO NOTHING` 撞上就回查，
+        调用方凭 `row["id"] != task_id` 判断这是不是一次重放。冲突判定交给唯一索引而不是
+        「先查后插」——两次调用之间的窗口正是要防的那个窗口。
+        """
         row = await self._one(
-            "INSERT INTO tasks (id, user_id, kind, status, request, progress) "
-            "VALUES (%s::uuid, %s, %s, 'queued', %s, %s) "
+            "INSERT INTO tasks (id, user_id, kind, status, request, progress, idempotency_key) "
+            "VALUES (%s::uuid, %s, %s, 'queued', %s, %s, %s) "
+            "ON CONFLICT (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL "
+            "DO NOTHING "
             f"RETURNING {_TASK_COLUMNS}",
-            (task_id, user_id, kind, Jsonb(request), Jsonb({"done": 0, "total": total})),
+            (
+                task_id,
+                user_id,
+                kind,
+                Jsonb(request),
+                Jsonb({"done": 0, "total": total}),
+                idempotency_key,
+            ),
         )
-        assert row is not None  # INSERT ... RETURNING 必然有行
-        return row
+        if row is not None:
+            return row
+        existing = await self._one(
+            f"SELECT {_TASK_COLUMNS} FROM tasks WHERE user_id = %s AND idempotency_key = %s",
+            (user_id, idempotency_key),
+        )
+        assert existing is not None  # 冲突了却查不到 = 唯一索引与这行不一致
+        return existing
+
+    async def task_by_idempotency_key(self, user_id: int, key: str) -> dict[str, Any] | None:
+        """按幂等键回查（E4b / L7）。闸门**之前**的短路用它，重复提交不再走一遍闸门。"""
+        return await self._one(
+            f"SELECT {_TASK_COLUMNS} FROM tasks WHERE user_id = %s AND idempotency_key = %s",
+            (user_id, key),
+        )
 
     async def get_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
         """越权与不存在同为 None（调用方一律翻 404，与既有矩阵同姿态）。"""

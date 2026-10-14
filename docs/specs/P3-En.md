@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.10）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.6 ｜ 2026-10-14 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4a（统一 policy + LLM 侧）已交付**（§5，2026-10-14），E4b（限流/数据源熔断/幂等）与 E4c（演练与告知面）待做；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.7 ｜ 2026-10-14 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4a（统一 policy + LLM 侧）与 E4b（L0 限流 / 数据源熔断 / L7 幂等键）已交付**（§5，2026-10-14），E4c（演练脚本与告知面收口）待做；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -231,7 +231,7 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 
 > 规格底稿：`docs/private/Pn-n/P3-En/P3-E4-规划评估.md`（2026-10-14 现状核对与甲/乙/丙三案）。
 > **拍板（2026-10-14）：乙案**——按真实缺口做满，不做「每层最小形态」。LLM 侧接入点取 `ChatLiteLLM` 子类；降级链单向 pro→flash；幂等键只覆盖 tasks 三个提交端点；演练的「杀 LLM」用新增的 `DEEPSEEK_API_BASE` 指向不可达端口（不动密钥）。
-> **E4a 已交付**（2026-10-14，落地记录 `docs/private/Pn-n/P3-En/P3-E4a.md` 与 §11 v2.6）；E4b / E4c 待做。
+> **E4a 与 E4b 已交付**（2026-10-14，落地记录 `docs/private/Pn-n/P3-En/P3-E4a.md` / `P3-E4b.md` 与 §11 v2.6 / v2.7）；E4c 待做。
 
 ### 5.0 与 PRD 假设的核对订正
 
@@ -304,7 +304,7 @@ class Dependency:
 
 ### 5.3 L4 熔断
 
-依赖各一份状态：**`llm` 按档位分**（`llm:pro` / `llm:flash`——降级链要能绕过已熔断的那一档；单份 `llm` 状态会让链在熔断后报废，实施期订正）/ `xiaoshi-cli` / `xiaoshi-mcp` / `duckdb`。三态标准：`closed →（连续失败 ≥ threshold）→ open →（cooldown 后第一个调用放行）→ half_open →（成功 → closed 清零 / 失败 → 回 open 重置冷却）`。
+依赖各一份状态：**`llm` 按档位分**（`llm:pro` / `llm:flash`——降级链要能绕过已熔断的那一档；单份 `llm` 状态会让链在熔断后报废，实施期订正）/ `xiaoshi-cli` / `xiaoshi-mcp`。三态标准：`closed →（连续失败 ≥ threshold）→ open →（cooldown 后第一个调用放行）→ half_open →（成功 → closed 清零 / 失败 → 回 open 重置冷却）`。
 
 打开时的行为（**绝不静默**）：
 
@@ -314,6 +314,10 @@ class Dependency:
 | 数据源 | 该角色/该步就地降级，`errors` 写明「数据源熔断中（连续 N 次失败）」 |
 
 **`rate_limited` 的专门规则**：不参与「连续失败」计数（它是平台在叫我们退后，不是依赖故障），但它**立刻开路**——「429 按 `Retry-After` 停」这条红线由此在策略层强制成立，而不是靠每个调用点自觉（既有 `test_bars_refresh.py` 的 429 用例与 `test_etl.py` 的中止用例**一字不改**，继续全绿）。
+
+**`duckdb` 不进熔断**（2026-10-14 E4b 实施期收敛）：本地文件系统，失败是**确定性的**（缺片 / 损坏），熔断拦不住任何会自愈的故障，却会把「换个标的再试」这种正常重试一起挡掉；读路径也没有单一收口（14 个模块走 `dc.<fn>` 属性访问），逐个包装的代价与收益不成比例。
+
+**数据源的策略与 LLM 侧相反**（E4b 定，理由见 `reliability._DEP_DEFAULTS` 注释）：`xiaoshi-cli` **不重试**（`max_attempts=1`）——429 是停止信号、非零退出的语义归调用方、一次 300s 上限的调用重试一次会把整轮预算吃穿；`xiaoshi-mcp` 允许快失败重试一次（只读查询），慢失败由 `Retry.max_total_seconds` 拦住。两者的 429 标记由 `xiaoshi_cli.run()` 在收口处认出来并直接 `trip()`——识别本来就归那个模块，反应则统一落在策略层。
 
 ### 5.4 L0 限流
 
@@ -325,7 +329,7 @@ class Dependency:
 | `llm-research` | 3/10 分钟 | `POST /api/v1/research/runs` |
 | `task-submit` | 20/分钟 | `POST /backtest`、`POST /optimize/{grid,batch}` |
 
-- 拒绝契约：**429 + `Retry-After`** + 结构化体 `{kind: "rate_limited", message, retry_after}`。
+- 拒绝契约：**429 + `Retry-After` 头**，体与全仓既有信封同形——`{"detail": <一句人话>, "kind": "rate_limited", "retry_after": <整秒>}`（E4b 实施期收敛：`detail` 这个外壳是前端 `messageFromBody` 唯一认的键，另两个结构化键与 422 带 `findings` 同一手法）。
 - **必须在开流之前拒**：chat / research 是 SSE，首字节发出就改不了状态码（与 `api/chat.py` 既有注释同源）。
 - 额度全部进 settings（`rate_limit_*`），默认取「演示友好」档。
 - **与 E2 配额的边界写死**：L0 管**速率**（每分钟多少，进程内、重启清零），E2 管**累计用量**（跨重启需持久化）。E4 只实现前者，桶的计数件暴露成可复用对象，E2 届时配置而不是另起一套。
@@ -333,7 +337,7 @@ class Dependency:
 ### 5.5 L7 幂等键
 
 - 客户端头 `Idempotency-Key`（前端每次**用户动作**生成一个 UUID，重试复用同一个）。
-- `tasks` 表加 `idempotency_key TEXT` + 部分唯一索引 `(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL`（幂等 ALTER，与既有九张表同约定）；`request` 里存 body 指纹。
+- `tasks` 表加 `idempotency_key TEXT` + 部分唯一索引 `(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL`（幂等 ALTER，与既有九张表同约定）；`request["_fingerprint"]` 存指纹——取的是**原始请求体**而不是落库后的 `request`（后者含 `resolve_window` 解析出的区间，拿它算指纹就得先跑闸门，正好把短路要省的那步赔回去），下划线开头即内部字段。
 - 命中：**202 + 同一个 `task_id`**；**同 key 不同 body → 409**（宁可吵一声，不静默跑错的那份）。
 - 顺序：查 key 在闸门之前（重复提交不再走一遍静态检查的算力），body 指纹比对在命中之后。
 - 覆盖 `POST /backtest`、`POST /optimize/{grid,batch}` 三个端点；`POST /research/runs` 不做（要动 `research_runs` 表且该端点带 HITL 语义，留给 E2 那轮）。
@@ -398,13 +402,13 @@ L6：深路径的 `Budget` 并进 policy 的「运行级」半边（**定义不�
 - **E1b 走查**：`frontend/scripts/capture-e1b.mjs` 5 条（刷新自动接回 / 停止不落库）；`capture-m5b.mjs` 14 条为回归。
 - **前端**：`lib/task.test.ts`（终态判定 / 进度文案 / 失败映射 / `pollTask` 的取数与等待全注入，**不 sleep**；首轮 400ms、其后 1s 也钉死）；既有 423 例全绿。
 
-### E4（计划，待实施）
+### E4（E4a + E4b 已交付；E4c 待做）
 
-- **LLM 侧（E4a）**：`tests/test_reliability.py`（分类纯函数、退避与 `Retry-After` 封顶、熔断三态与半开——**假时钟，不 sleep**）；`tests/test_llm_policy.py`（`PolicyChatModel`：重试后成功、降级链换档且 `kwargs["model"]` 真变、4xx 不重试、`CancelledError` 不重试、库内层为 0）；`test_deep_graph.py` 增补节点 `timeout` 与 `NodeTimeoutError` → run `failed`；`test_deep_roles.py` 增补 `RoleResult.model` 记的是**实际**模型。
-- **服务侧（E4b）**：`tests/test_rate_limit.py`（三桶额度 / `Retry-After` / SSE 端点**未开流**即 429）；`tests/test_idempotency.py`（同 key 同 body 返同一 `task_id` / 同 key 异 body 409 / 不同用户同 key 各跑各的）；数据源熔断与 `rate_limited` 立刻开路（接在 `test_bars_refresh.py`、`test_etl.py` 既有红线用例**上方**，那两条不改）。
-- **集成**：`tests/integration/test_reliability_e4.py`——真库 + 真 lifespan 下的 429 与幂等键端到端。
-- **前端**：`lib/idempotency.test.ts`（同一次用户动作复用 key、新动作换 key）；限流与降级提示**照抄服务端文案**。
-- **演练**：`scripts/drill_reliability.py` 四幕，产物 `logs/e4-drill/`。
+- **LLM 侧（E4a）**：`tests/test_reliability.py` 36 例（分类纯函数、退避与 `Retry-After` 封顶、熔断三态与半开、令牌桶容量/补充/分键/惰性清理——**假时钟，不 sleep**）；`tests/test_llm_policy.py` 12 例（`PolicyChatModel`：重试后成功、降级链换档且 `kwargs["model"]` 真变、4xx 不重试、`CancelledError` 不重试、库内层为 0、熔断后不碰上游、实际模型回执）；`test_deep_graph.py` 增补节点 `timeout` 与 `NodeTimeoutError` → run `failed`（点名节点）；`test_deep_roles.py` 增补 `RoleResult.model` 记的是**实际**模型且预算按它计价。
+- **服务侧（E4b）**：`tests/test_rate_limit.py` 7 例（三桶各自触发 / **SSE 端点未开流即 429** / 桶之间不串 / 按用户分 / 未登录仍 401 / 读端点不限流）；`tests/test_idempotency.py` 12 例（同 key 同 body 返同一 `task_id` 且 status 取真值 / 同 key 异 body 409 / 不同用户同 key 各跑各的 / 无 key 照旧 / 超长 422 / **短路在闸门之前**（打桩让闸门必炸，仍回同一任务）/ 用户策略与网格两条分支各一例）；`tests/test_source_policy.py` 9 例（CLI 不重试、连撞开路后不再起子进程、429 标记一次即开路、MCP 工具包装透传结果与身份、熔断后不再发调用、不可包装的工具原样返回、会话读超时进了连接配置）。
+- **测试隔离**：`tests/conftest.py` 的 autouse `_clean_limiters`——令牌桶是进程级状态，用例之间共享它会串味（一个文件打满 20 发，另一个文件的提交就开始收 429）。
+- **前端**：`lib/idempotency.test.ts` 5 例（同一次用户动作复用键 / 新动作换键 / 落定判定 / 实例互不影响）。
+- **演练**：`scripts/drill_reliability.py` 四幕，产物 `logs/e4-drill/`（E4c）。
 
 ## 11. 变更记录
 
@@ -412,6 +416,7 @@ L6：深路径的 `Budget` 并进 policy 的「运行级」半边（**定义不�
 |---|---|---|
 | v2.0 | 2026-10-13 | 规划评估拍板（底稿 docs/private/Pn-n/P3-En/P3-En-规划评估.md）：四处裁剪（E1 定向接缝 / E4 L0+L4 进程内 / E7 eval gate 只跑确定性断言 / E8 清单库直用化）+ E6 砍；PRD v0.10 / CLAUDE.md / ROADMAP 同步。正文待按功能 ID 滚动填写 |
 | v2.1 | 2026-10-14 | §2（E1）正文定稿（底稿 docs/private/Pn-n/P3-En/P3-E1-规划评估.md）：**E1a（任务队列 + 单次回测异步）+ E1c（LLM 调用面取用式）先做，E1b（网格/批量迁入）后延**。三处现状订正——API 版本化已是基线、数据侧接缝已存在（零代码只登记）、LLM 侧绑定导入是真缺口；痛点订正——单次回测实测 0.3–2s，E1a 不得声称解决长任务丢失。队列实体 = 任务表（理由：`asyncio.Queue` 绑事件循环，与模块级 `TestClient` 的每请求 loop 冲突） |
+| v2.7 | 2026-10-14 | **E4b 交付 —— 服务侧防护：L0 限流 + 数据源熔断 + L7 幂等键**（落地记录 `docs/private/Pn-n/P3-En/P3-E4b.md`）。① **交付**：`core/reliability.py` 加令牌桶（`Bucket`/`Limiter`/`take`，键 `(user, bucket)`，桶名 `llm-chat`/`llm-research`/`task-submit`，额度进 settings）；新 `app/api/limits.py`（`limit(bucket)` 依赖）——**挂在依赖里就保证了「在开流之前拒」**（chat / research 是 SSE，首字节发出就改不了状态码），拒绝体 `{detail, kind, retry_after}` + `Retry-After` 头；L7 幂等键（`tasks.idempotency_key` + 部分唯一索引、新 `app/api/idempotency.py`、`POST /backtest` 与 `POST /optimize/{grid,batch}` 三个端点、`ON CONFLICT DO NOTHING` 由唯一索引兜并发窗口）；数据源接进 policy（`xiaoshi_cli.run()` 经 `guard_sync`，429 标记在收口处 `trip()`；MCP 工具经 `StructuredTool.coroutine` 包装纳入熔断；`adapter_connection()` 补 `session_kwargs` 读超时）；前端 `lib/idempotency.ts` + 三处提交面（`use-task` 覆盖三个入口、`use-optimize`）。② **实施期收敛两条**：`duckdb` **不进熔断**（本地确定性失败，拦不住会自愈的故障却会挡掉「换个标的再试」）；拒绝体外壳改成全仓既有的 `{"detail": ...}` + 两个结构化键。③ **实施期逮到一条真 bug（只有集成逮得到）**：`app/agent/tools.py` 没有导入 `Any`，而文件头有 `from __future__ import annotations`——新注解放进去后某处 `get_type_hints` 求值 `"Any"` 抛 `NameError`，**Agent 装配失败 → `/chat` 全 503**；离线用例走不到那条路（`ainvoke` 不触发 hints 求值），4 条 chat 集成用例当场红。④ **实施期发现一条测试纪律**：令牌桶是进程级状态，**测试之间会互相扣额度**（默认 20/分钟，一套跑下来后面的提交就开始收 429）⇒ `tests/conftest.py` 加 autouse 的 `reset_limiters`，集成侧同理。⑤ **回归**：后端离线 **1437 passed**（基线 1403，+34）、集成 **110 passed**（+4 = 新 `tests/integration/test_reliability_e4.py`——**幂等那条必须在真库上验**：`ON CONFLICT` 的推断子句与部分唯一索引对不对得上，离线替身照不出来）、前端 **459 passed**（+5）+ typecheck/lint 全绿（**build 未跑**：dev 在跑，`pnpm build` 会覆盖 `.next` 弄坏 dev——本仓踩过三次）。⑥ **真机冒烟**（uvicorn + 真库，重启后跑）：同键两次 → 202/202 且 `task_id` 相同；同键异 body → **409**；连打 `/backtest` 第 **23** 次被拒 → **429 + `retry-after: 1`** + `{"detail":"请求过于频繁，请 1 秒后再试","kind":"rate_limited","retry_after":1}`（额度 20/分、1 发/3 秒补充，23 次 ≈ 8 秒里净耗 20 发——**数对得上**）|
 | v2.6 | 2026-10-14 | **E4a 交付 —— 统一 policy + LLM 侧可靠性**（落地记录 `docs/private/Pn-n/P3-En/P3-E4a.md`）。① **交付**：新 `app/core/reliability.py`（`Retry`/`Circuit`/`Dependency` + `classify()` 纯函数 + `guard()`/`guard_sync()`，三层生命周期、时钟与睡眠可注入）；`core/llm.py` 新 `PolicyChatModel(ChatLiteLLM)` 重写两个 `*_with_retry`（`max_retries=0` 关掉库内层、`request_timeout=60` 补上 chat 主链路**此前完全没有的**超时、单向降级链 pro→flash、`on_model_used` 回执实际模型）；模型如实——角色/综合/辩论的 `model` 字段与**预算计价**都改用实际模型，降级时补 note；节点级墙钟兜底（新 settings `research_node_timeout_seconds=120`，`runner.py` 单独捕获 `NodeTimeoutError` 转**点名节点**的失败文案）。② **实施期订正**：熔断状态**按档位分**（`llm:pro`/`llm:flash`）——单份 `llm` 状态会让降级链在熔断后报废，SPEC §5.3 已同步。③ **实施期发现三点**：库自带「重试」的 `stop_after_attempt(max_retries)` 默认 1 = **1 次尝试**（实测 1→1、3→3，即一直是关的）；`CircuitOpen` 身上也有 `retry_after` 属性，会被 `classify` 结构化成 `rate_limited`（判断须排在 `retry_after_of` 前）；`asyncio.wait_for` 把调用放进子任务，**子任务里写的 contextvar 父上下文看不见**——实际模型回执改用回调。④ **回归**：后端离线 **1403 passed**（基线 1358，+45）、集成 **106 passed**（真库，含真 pro/flash 与真流式工具调用）；真机核对 `build_chat_model()` → `PolicyChatModel`（`max_retries=0` / `request_timeout=60`），一次真实 flash 调用 1.84s 且 `Completion.model` 报实际模型 |
 | v2.5 | 2026-10-14 | **§5（E4 可靠性 L0–L7）规格定稿**（底稿 `docs/private/Pn-n/P3-En/P3-E4-规划评估.md`）：拍板**乙案**（按真实缺口做满）。三处现状订正——① **L1 网关已在，但库自带的 tenacity 重试是死的**：装饰器写 `stop_after_attempt(max_retries)`，默认 `max_retries=1` ⇒ 1 次尝试 = 不重试（实测 1→1 次调用、3→3 次），且等待固定 4–10s、不读 `Retry-After`；② **L2 的节点级 `RetryPolicy` 在本仓是死配置**（所有会调 LLM 的节点内部已全量 catch），且节点级 `timeout` 实测节点内接不住（整图抛 `NodeTimeoutError`）⇒ 重试落**调用层**、节点 timeout 只作兜底；③ **L5 是既有资产不是缺口**（角色降级 → gaps → run degraded → 报告块 → 前端徽章已全线通）。设计：`app/core/reliability.py`（`Retry`/`Circuit`/`Dependency` + 三层生命周期 + 可注入时钟）、`PolicyChatModel(ChatLiteLLM)` 重写两个 `*_with_retry`（实测四条执行路径全部经由它们，含 chat 流式与工具调用）、降级链单向 pro→flash 且**模型如实记录**、四依赖熔断（`rate_limited` 不计数但**立刻开路**）、三桶令牌桶 + 429 契约（SSE 端点未开流即拒）、tasks 三端点幂等键、chat 主链路 `request_timeout=60` 与 MCP `session_kwargs` 两处调用级超时。故障注入双轨：pytest 12 条矩阵（夹具注入，**生产不留故障开关**）+ 四幕演练脚本（新增 `DEEPSEEK_API_BASE` 作「杀 LLM」开关，不动密钥）。**待用户确认后开工** |
 | v2.4 | 2026-10-14 | **E1b 交付 —— 网格/批量迁入任务队列，M5b 的「断线即丢」收掉**。① **交付**：`app/tasks/bus.py`（按 task_id 的累积缓冲 + 订阅者）、`app/tasks/stream.py`（`task_frames`：先订阅再查状态；终态从 `optimization_runs` 回放）、`app/tasks/executors.py` 加 `grid`/`batch`（复用 `run_cells`，逐格 `publish` + `progress`，中止则**不落库**）、`app/api/optimize.py` 两个 POST 改 **202 + `{task_id}`**（执行材料冻结进 `request.exec`）、`app/api/tasks.py` 加 `GET /{id}/events` 与**协作式中止**的取消分支、`worker.request_stop` 中止投递口 + 三态终态帧广播。前端：`lib/optimize-stream.ts`（纯函数视图模型）+ `use-optimize` 重写（提交与订阅分开、`detached` 保留已收到的格、`stop()` 改成真取消）+ 页面去 `beforeunload` 拦截、`?task=` 自动重连。② **与草案的偏差**：`POST` 不再是 SSE 而是 202（理由见 §2.8「与草案的偏差」——请求内开流会挂到终态，离线用例无法驱动），`X-Task-Id` 兜底头随之取消。③ **走查与真机**：`capture-e1b.mjs` **5/5**（`?task=` 入地址栏 / **刷新后结果照常出现** / 跑完照常落库 / 停止后说明「未落库」/ **中止不落库**——记录数 4→4）；`capture-m5b.mjs` 回归 **14/14**（含「点一格重跑」）。④ **实施期逮到两个 bug**：worker 从不广播终态帧（在线订阅者永远停在「运行中」，只有「在线跑完并且在看」才暴露）；`?task=` 重连去重用 `useRef` 在 StrictMode 下失效（effect 双跑 → 一条订阅都没有）。两条都写进 §2.8 防复现。⑤ **回归**：后端离线 **1358 passed**（+12）、集成**全量 106 passed / 0 failed**（含新 `test_optimize_e1b.py` 两条：断开订阅后照跑完并落库 / 中止不落库；`test_optimize_m5b.py` 的辅助件按新契约改写，断言一字未改）、前端 **454 passed**（+10）、typecheck/lint/build 全绿。同轮 P2 SPEC 的 M5b 断线条款划掉并指路（v1.59） |

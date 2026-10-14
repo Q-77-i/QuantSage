@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api, describeError, streamTask, submitOptimize } from "@/lib/api";
+import { SubmissionKey } from "@/lib/idempotency";
 import {
   applyFrame,
   emptyStream,
@@ -36,6 +37,9 @@ export function useOptimize() {
   const [runId, setRunId] = useState<string | null>(null);
   const seqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const keyRef = useRef(new SubmissionKey());
+  /** 上一单落定了没有：它决定下一次提交是「同一次动作的重试」还是「新动作」 */
+  const runningRef = useRef(false);
 
   /** 订阅一条任务流。发起与「继续查看」共用——同一份帧，同一条路。 */
   const subscribe = useCallback((id: string, seq: number) => {
@@ -50,6 +54,9 @@ export function useOptimize() {
         setStream((prev) => {
           const next = applyFrame(prev, frame);
           if (next.done) setRunId(next.done.run_id);
+          // 收到终态帧才算这一单落定——**断线不算**（任务还在后台跑，
+          // 那时再点「运行」应当复用同一个键把同一件事接回来，而不是又派一单）
+          if (next.done) runningRef.current = false;
           return next;
         });
       },
@@ -70,13 +77,17 @@ export function useOptimize() {
   const run = useCallback(
     (kind: "grid" | "batch", body: GridRequest | BatchRequest) => {
       const seq = ++seqRef.current;
+      // 幂等键（E4b）：任务还在跑时再点「运行」是**同一次动作**（复用键，后端只跑一遍）；
+      // 上一单落定之后再点是新动作（换键——用户就是想再跑一遍）
+      const key = keyRef.current.current(runningRef.current);
       setRunning(true);
+      runningRef.current = true;
       setStream(startStream());
       setRunId(null);
 
       void (async () => {
         try {
-          const { task_id } = await submitOptimize(kind, body);
+          const { task_id } = await submitOptimize(kind, body, key);
           if (seq !== seqRef.current) return;
           setTaskId(task_id);
           subscribe(task_id, seq);

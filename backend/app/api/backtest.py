@@ -29,6 +29,9 @@ from typing import Any, Literal, Self
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.api import idempotency
+from app.api.idempotency import body_fingerprint, idempotency_key
+from app.api.limits import limit
 from app.api.strategies import normalize_strategy_id
 from app.backtest.costs import CostModel
 from app.backtest.report import resolve_window
@@ -140,7 +143,12 @@ def normalize_run_id(raw: str) -> str:
 
 
 async def submit_user_backtest(
-    request: Request, body: BacktestRequest, user: dict[str, Any]
+    request: Request,
+    body: BacktestRequest,
+    user: dict[str, Any],
+    *,
+    key: str | None = None,
+    fingerprint: str = "",
 ) -> dict[str, Any]:
     """用户策略分支（M4c）：`先保存才能跑`，跑的是**库里那条**源码（提交时冻结进任务行）。
 
@@ -179,6 +187,8 @@ async def submit_user_backtest(
         body,
         start,
         end,
+        key=key,
+        fingerprint=fingerprint,
         # 冻结：源码全文与参数校验结果一起进任务行，执行体照它跑（SPEC §2.1）
         source=code,
         strategy_name=row["name"],
@@ -194,6 +204,9 @@ async def _enqueue(
     body: BacktestRequest,
     start: date,
     end: date,
+    *,
+    key: str | None = None,
+    fingerprint: str = "",
     **execution: Any,
 ) -> dict[str, Any]:
     """建任务行并回 `{task_id, status}`。**队列实体就是任务表**（SPEC §2.2）：
@@ -201,10 +214,15 @@ async def _enqueue(
     因此离线用例（模块级 `TestClient`，每请求一个事件循环）不会碰到跨 loop 的队列。
     """
     task_id = str(uuid.uuid4())
-    await db.create_task(
-        task_id, user_id, "backtest", _stored_request(body, start, end, **execution)
+    return await idempotency.create_task(
+        db,
+        task_id=task_id,
+        user_id=user_id,
+        kind="backtest",
+        request=_stored_request(body, start, end, **execution),
+        key=key,
+        fingerprint=fingerprint,
     )
-    return {"task_id": task_id, "status": "queued"}
 
 
 @router.post("", status_code=202)
@@ -212,10 +230,25 @@ async def run_backtest(
     request: Request,
     body: BacktestRequest,
     user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("task-submit")),
+    key: str | None = Depends(idempotency_key),
 ) -> dict[str, Any]:
-    """提交一次回测：**202 + `{task_id}`**，不等引擎。轮询 `GET /api/v1/tasks/{task_id}`。"""
+    """提交一次回测：**202 + `{task_id}`**，不等引擎。轮询 `GET /api/v1/tasks/{task_id}`。
+
+    带 `Idempotency-Key` 时：**先短路、再闸门**（重复提交不该再走一遍静态检查与窗口解析，
+    后者要真读一次行情），撞上唯一索引那条并发路径由 `idempotency.create_task` 兜住。
+    """
+    db = require_db(request)
+    user_id = int(user["id"])
+    fingerprint = body_fingerprint(body)
+    early = await idempotency.replay(db, user_id, key, fingerprint)
+    if early is not None:
+        return early
+
     if body.strategy == USER_STRATEGY:
-        return await submit_user_backtest(request, body, user)
+        return await submit_user_backtest(
+            request, body, user, key=key, fingerprint=fingerprint
+        )
 
     start, end = await asyncio.to_thread(
         resolve_window, body.symbol, body.strategy, body.start, body.end
@@ -224,11 +257,13 @@ async def run_backtest(
     # ma_cross 不消费事件语料，两模式必然同结果，跑第二遍只会误导（与 CLI 同口径）
     compare_pit = body.pit_mode == "both" and body.strategy == EventDriven.name
     return await _enqueue(
-        require_db(request),
-        int(user["id"]),
+        db,
+        user_id,
         body,
         start,
         end,
+        key=key,
+        fingerprint=fingerprint,
         compare_pit=compare_pit,
     )
 

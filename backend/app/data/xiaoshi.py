@@ -71,5 +71,22 @@ def mcp_stdio_params() -> dict:
 
 
 def adapter_connection() -> dict:
-    """给 langchain-mcp-adapters 的 MultiServerMCPClient 用（T3 生产路径）。"""
-    return {MCP_SERVER_NAME: {"transport": "stdio", **mcp_stdio_params()}}
+    """给 langchain-mcp-adapters 的 MultiServerMCPClient 用（T3 生产路径）。
+
+    `session_kwargs` 给 MCP 会话一个**读超时**（E4b）——这条路径此前完全没有超时：
+    小石那边卡住就是无限等（`complete()` 那条有 `wait_for` 兜着，工具调用没有）。
+    该键是适配器连接 TypedDict 的受支持字段，直通 `ClientSession`。
+    """
+    from datetime import timedelta
+
+    return {
+        MCP_SERVER_NAME: {
+            "transport": "stdio",
+            **mcp_stdio_params(),
+            "session_kwargs": {
+                "read_timeout_seconds": timedelta(
+                    seconds=get_settings().xiaoshi_mcp_read_timeout_seconds
+                )
+            },
+        }
+    }

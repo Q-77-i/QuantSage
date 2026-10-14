@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
@@ -214,6 +215,32 @@ def filter_allowlist(tools: list[BaseTool]) -> tuple[list[BaseTool], set[str]]:
     return picked, XIAOSHI_ALLOWLIST - names
 
 
+def guard_tools(tools: list[BaseTool]) -> list[BaseTool]:
+    """把工具调用纳入可靠性策略（E4b）：小石 MCP 连不上时，撞几次之后**快速失败**，
+    不再每次调用都去起一个注定失败的子进程。
+
+    做法是换掉工具的 `coroutine`（MCP 适配器造出来的都是 `StructuredTool`，
+    `coroutine` 就是它自己的 `call_tool`），`model_copy` 不动其余字段——名字、描述、
+    参数 schema、`response_format` 全部原样，**LLM 看到的东西一个字节都不变**。
+    """
+    return [_guarded(tool) for tool in tools]
+
+
+def _guarded(tool: BaseTool) -> BaseTool:
+    from langchain_core.tools import StructuredTool
+
+    inner = getattr(tool, "coroutine", None)
+    if not isinstance(tool, StructuredTool) or inner is None:
+        return tool  # 不是「一次协程调用」形状的工具：不动它（宁可不包装，不可改语义）
+
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        from app.core import reliability
+
+        return await reliability.guard("xiaoshi-mcp", lambda: inner(*args, **kwargs))
+
+    return tool.model_copy(update={"coroutine": guarded})
+
+
 async def load_xiaoshi_tools() -> tuple[list[BaseTool], set[str]]:
     """从小石 MCP 拉取工具并按白名单过滤。
 
@@ -226,4 +253,5 @@ async def load_xiaoshi_tools() -> tuple[list[BaseTool], set[str]]:
 
     client = MultiServerMCPClient(adapter_connection())
     tools = await client.get_tools()  # 注意：不能 async with，0.3.2 已移除该用法
-    return filter_allowlist(tools)
+    picked, missing = filter_allowlist(tools)
+    return guard_tools(picked), missing

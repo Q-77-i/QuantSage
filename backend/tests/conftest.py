@@ -226,6 +226,21 @@ def ts(text: str) -> datetime:
 TEST_USER = {"id": 1, "email": "tester@example.com"}
 
 
+@pytest.fixture(autouse=True)
+def _clean_limiters() -> Any:
+    """每例一份干净的令牌桶（E4b）。
+
+    桶是**进程级状态**（这正是它该有的形态：限流就是要跨请求累积），但测试之间共享它
+    就成了串味——一个文件里打满 20 发，另一个文件的提交就开始收 429。用例要的是
+    「这次调用本身对不对」，不是「整个套件一共发了几发」。
+    """
+    from app.core import reliability
+
+    reliability.reset_limiters()
+    yield
+    reliability.reset_limiters()
+
+
 @pytest.fixture
 def jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Any:
     """给鉴权用例一个确定的密钥。环境变量优先于 .env，结果与本机配置无关。"""

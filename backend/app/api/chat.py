@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.api.limits import limit
 from app.api.sse import sse_frame
 from app.agent.graph import astream_chat
 from app.agent.history import messages_to_history
@@ -106,7 +107,10 @@ def normalize_thread_id(raw: str | None) -> str:
 
 @router.post("")
 async def chat(
-    request: Request, body: ChatRequest, user: dict[str, Any] = Depends(require_user)
+    request: Request,
+    body: ChatRequest,
+    user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("llm-chat")),
 ) -> StreamingResponse:
     # 参数校验先于资源检查：两者都在流开始前，客户端错误应当优先暴露
     thread_id = normalize_thread_id(body.thread_id)

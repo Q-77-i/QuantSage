@@ -136,9 +136,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-const jsonInit = (method: string, body: unknown): RequestInit => ({
+const jsonInit = (method: string, body: unknown, key?: string): RequestInit => ({
   method,
-  headers: { "Content-Type": "application/json" },
+  headers: {
+    "Content-Type": "application/json",
+    // 幂等键（P3-E4b）：同一次用户动作重试复用同一个，服务端据此只跑一遍
+    ...(key ? { "Idempotency-Key": key } : {}),
+  },
   body: JSON.stringify(body),
 });
 
@@ -179,8 +183,8 @@ export const api = {
    * 全部闸门仍在提交期判（401/404/422/503 照旧）；**跑起来才知道**的错误（沙箱配额、
    * 用户代码运行期异常）落在任务 `error` 里。
    */
-  submitBacktest: (body: BacktestRequest) =>
-    request<BacktestSubmitted>("/api/v1/backtest", jsonInit("POST", body)),
+  submitBacktest: (body: BacktestRequest, key?: string) =>
+    request<BacktestSubmitted>("/api/v1/backtest", jsonInit("POST", body, key)),
 
   // ── 任务（P3-E1a）─────────────────────────────────────────────────────
   tasks: (limit = 20) => request<TaskSummary[]>(`/api/v1/tasks${query({ limit })}`),
@@ -456,8 +460,9 @@ export const api = {
 export function submitOptimize(
   kind: "grid" | "batch",
   body: unknown,
+  key?: string,
 ): Promise<{ task_id: string; status: string }> {
-  return request(`/api/v1/optimize/${kind}`, jsonInit("POST", body));
+  return request(`/api/v1/optimize/${kind}`, jsonInit("POST", body, key));
 }
 
 /** 订阅任务事件流（GET + SSE）。帧与发起时逐字同形，重连与在线共用这一条。 */

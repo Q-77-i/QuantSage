@@ -30,6 +30,8 @@ from app.api.chat import router as chat_router
 from app.api.etl import router as etl_router
 from app.api.events import router as events_router
 from app.api.factor import router as factor_router
+from app.api.idempotency import IdempotencyConflict
+from app.api.limits import RateLimitedError
 from app.api.market import router as market_router
 from app.api.optimize import router as optimize_router
 from app.api.paper import router as paper_router
@@ -278,6 +280,29 @@ async def _strategy_name_taken(_: Request, exc: StrategyNameTaken) -> JSONRespon
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": f"已有一条名为「{exc.args[0]}」的策略，换个名字"},
+    )
+
+
+@app.exception_handler(IdempotencyConflict)
+async def _idempotency_conflict(_: Request, exc: IdempotencyConflict) -> JSONResponse:
+    """同一个 `Idempotency-Key` 换了另一份请求体（E4b / L7）：**409**。
+
+    与 422 分开：请求本身没写错，是「这个键已经代表过另一份请求」——改键或改回原请求。
+    """
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(RateLimitedError)
+async def _rate_limited(_: Request, exc: RateLimitedError) -> JSONResponse:
+    """限额用尽（E4b / L0）：**429 + `Retry-After`**。
+
+    装在依赖里而不是各个端点里，为的是「**在开流之前拒**」——chat / research 是 SSE，
+    首字节发出就改不了状态码（与 `api/chat.py` 开头那条注释同源）。
+    """
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": str(exc), "kind": exc.kind, "retry_after": exc.retry_after},
+        headers={"Retry-After": str(exc.retry_after)},
     )
 
 

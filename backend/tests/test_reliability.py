@@ -356,3 +356,73 @@ def test_success_resets_the_failure_streak() -> None:
 def test_snapshot_reports_each_dependency() -> None:
     make_dep()
     assert reliability.snapshot()["test:dep"]["state"] == "closed"
+
+
+# ── 令牌桶（L0 限流）────────────────────────────────────────────
+
+
+def make_limiter(capacity: int, window: float) -> tuple[reliability.Limiter, FakeClock]:
+    clock = FakeClock()
+    lim = reliability.Limiter(
+        name="test:bucket",
+        bucket=reliability.Bucket(capacity=capacity, window=window),
+        clock=clock,
+    )
+    reliability.install_limiter(lim)
+    return lim, clock
+
+
+def test_bucket_allows_up_to_capacity_then_asks_to_wait() -> None:
+    lim, _ = make_limiter(capacity=3, window=60.0)
+
+    assert [lim.take(1) for _ in range(3)] == [None, None, None]  # 前三发放行
+
+    wait = lim.take(1)
+    assert wait is not None and 0 < wait <= 60.0  # 第四发被劝退
+
+
+def test_bucket_refills_over_time() -> None:
+    lim, clock = make_limiter(capacity=3, window=60.0)  # 每 20s 补一发
+    for _ in range(3):
+        lim.take(1)
+    assert lim.take(1) is not None
+
+    clock.advance(20.0)
+    assert lim.take(1) is None  # 补回来一发
+
+
+def test_bucket_is_per_key() -> None:
+    lim, _ = make_limiter(capacity=1, window=60.0)
+
+    assert lim.take(1) is None
+    assert lim.take(2) is None  # 另一个用户有自己的桶
+    assert lim.take(1) is not None
+
+
+def test_wait_hint_shrinks_as_tokens_refill() -> None:
+    lim, clock = make_limiter(capacity=1, window=10.0)  # 10s 补一发
+    lim.take(1)
+
+    first = lim.take(1)
+    clock.advance(5.0)
+    second = lim.take(1)
+
+    assert first is not None and second is not None
+    assert second < first  # 越等越短——给的 Retry-After 才有意义
+
+
+def test_limiter_forgets_idle_keys() -> None:
+    """桶不加清理会随用户数无限涨——满了且闲置够久的键应当被丢掉。"""
+    lim, clock = make_limiter(capacity=2, window=10.0)
+    for key in range(reliability._LIMITER_KEYS_MAX + 10):
+        lim.take(key)
+    clock.advance(60.0)
+    lim.take(999_999)  # 触发一次清理
+
+    assert len(lim._tokens) < reliability._LIMITER_KEYS_MAX + 10
+
+
+def test_registry_returns_the_installed_limiter() -> None:
+    lim, _ = make_limiter(capacity=1, window=60.0)
+    assert reliability.get_limiter("test:bucket") is lim
+    assert reliability.get_limiter("test:bucket").bucket.capacity == 1

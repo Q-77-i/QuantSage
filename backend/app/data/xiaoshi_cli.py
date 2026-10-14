@@ -67,7 +67,24 @@ def cli_command() -> str:
 
 
 def run(args: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """跑一次 CLI，**密钥只经环境变量**。不判退出码——语义归调用方。"""
+    """跑一次 CLI（**经可靠性策略**，E4b）。**密钥只经环境变量**。不判退出码——语义归调用方。
+
+    策略层在这里做的是**熔断**而不是重试（小石的策略见 `reliability._DEP_DEFAULTS`）：
+    拔掉 CLI（二进制没了）或平台限流之后，连撞几次就快速失败，不再每次都起一个注定
+    失败的子进程；而 429 依旧是停止信号，"不重试" 这条红线由策略层强制。
+    """
+    from app.core import reliability
+
+    result = reliability.guard_sync("xiaoshi-cli", lambda: _invoke(args, timeout=timeout))
+    # 限流标记在这里就被认出来（识别本来就归本模块：`RATE_LIMIT_MARKERS` / `rate_limit_hit`），
+    # 顺手让策略层**立刻开路**——「429 按 Retry-After 停」这条红线由此对**所有**通道生效，
+    # 而不必指望每个调用点各自记得。**不改返回值、不改抛错语义**：要不要中止整轮仍归调用方。
+    if rate_limit_hit(result.stdout or "") or rate_limit_hit(result.stderr or ""):
+        reliability.trip("xiaoshi-cli")
+    return result
+
+
+def _invoke(args: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "XIAOSHI_API_KEY": get_settings().xiaoshi_api_key.get_secret_value()}
     limit = DEFAULT_TIMEOUT_SECONDS if timeout is None else int(timeout)
     try:

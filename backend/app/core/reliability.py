@@ -188,15 +188,144 @@ class Dependency:
         self.probes_left = 0
 
 
+@dataclass(frozen=True)
+class Bucket:
+    """令牌桶：`window` 秒内匀速补满 `capacity` 发。
+
+    两个数而不是一个「每分钟多少次」：**突发**（一次性打满）与**稳态速率**是两回事，
+    演示要的正是「连打十次都行、第十一次被拦」这种能看得见的形状。
+    """
+
+    capacity: int
+    window: float
+
+    @property
+    def rate(self) -> float:
+        """每秒钟补几发。"""
+        return self.capacity / self.window
+
+
+#: 桶的键（用户）超过这个数量才触发一次清理——单人项目远够，但它不该无限涨
+_LIMITER_KEYS_MAX = 256
+
+
+@dataclass
+class Limiter:
+    """按键（用户）分别计数的令牌桶。**进程内状态，重启清零**（单实例的既定形态）。"""
+
+    name: str
+    bucket: Bucket
+    clock: Callable[[], float] = time.monotonic
+    #: 键 → (剩余令牌, 上次结算时刻)。惰性结算：只在被访问时按流逝时间补令牌
+    _tokens: dict[int, tuple[float, float]] = field(default_factory=dict)
+
+    def take(self, key: int) -> float | None:
+        """取一发。放行返回 None；不够则返回「还要等多少秒」（给 `Retry-After` 用）。"""
+        now = self.clock()
+        capacity = float(self.bucket.capacity)
+        rate = self.bucket.rate
+        tokens, last = self._tokens.get(key, (capacity, now))
+        tokens = min(capacity, tokens + max(0.0, now - last) * rate)
+        if tokens >= 1.0:
+            self._tokens[key] = (tokens - 1.0, now)
+            self._prune(now)
+            return None
+        self._tokens[key] = (tokens, now)
+        self._prune(now)
+        return (1.0 - tokens) / rate
+
+    def _prune(self, now: float) -> None:
+        """丢掉**此刻已经回满**的键——它与「从没出现过」等价，留着只是占内存。"""
+        if len(self._tokens) <= _LIMITER_KEYS_MAX:
+            return
+        capacity = float(self.bucket.capacity)
+        rate = self.bucket.rate
+        self._tokens = {
+            key: value
+            for key, value in self._tokens.items()
+            if value[0] + max(0.0, now - value[1]) * rate < capacity
+        }
+
+
 #: 进程级注册表。单机单进程的既定形态（同 E1a 的单实例假设）。
 _DEPS: dict[str, Dependency] = {}
+
+_LIMITERS: dict[str, Limiter] = {}
+
+
+def _bucket_of(name: str) -> Bucket:
+    """按桶名取额度（settings 可改，默认取「演示友好」档）。"""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    table: dict[str, tuple[int, float]] = {
+        "llm-chat": (settings.rate_limit_chat, settings.rate_limit_chat_window),
+        "llm-research": (settings.rate_limit_research, settings.rate_limit_research_window),
+        "task-submit": (settings.rate_limit_task_submit, settings.rate_limit_task_submit_window),
+    }
+    if name not in table:
+        raise KeyError(f"未知的限流桶：{name}")
+    capacity, window = table[name]
+    return Bucket(capacity=capacity, window=window)
+
+
+def get_limiter(name: str) -> Limiter:
+    limiter = _LIMITERS.get(name)
+    if limiter is None:
+        limiter = _LIMITERS[name] = Limiter(name=name, bucket=_bucket_of(name))
+    return limiter
+
+
+def install_limiter(limiter: Limiter) -> Limiter:
+    """装一个桶（测试注入假时钟用）。"""
+    _LIMITERS[limiter.name] = limiter
+    return limiter
+
+
+def take(name: str, key: int) -> float | None:
+    """按桶名取一发。放行返回 None，否则是建议的等待秒数。"""
+    return get_limiter(name).take(key)
+
+
+def reset_limiters() -> None:
+    """清掉全部桶——**测试用**。"""
+    _LIMITERS.clear()
+
+
+#: 各依赖的默认策略。`Dependency` 自带的默认值只适合 LLM 那种「退避重试」的场景，
+#: 数据源要另配——尤其 **429 的处理方向相反**（见下）。
+_DEP_DEFAULTS: dict[str, tuple[Retry, Circuit]] = {
+    # 小石 CLI：**不重试**。三条理由，每条都独立成立——
+    #   ① 429 是停止信号（红线），`respect_retry_after=False` 让它在策略层也成立；
+    #   ② `run()` 刻意不判退出码（「非零退出算不算错」归各通道自己定），在这里重试等于
+    #      把「这一天没分片」也重试一遍；
+    #   ③ 一次 300s 上限的调用重试一次就是 600s，整轮预算（1200s）会被吃穿。
+    #   留下来的价值是**熔断**：二进制没了（`FileNotFoundError`）这类故障连撞几次后
+    #   快速失败，不再每次都去起一个注定失败的子进程。
+    "xiaoshi-cli": (
+        Retry(max_attempts=1, respect_retry_after=False),
+        Circuit(threshold=5, cooldown=60.0),
+    ),
+    # 小石 MCP：工具调用是只读查询，快失败（连不上）重试一次值得；慢失败由
+    # `max_total_seconds` 拦住（等不起就不等），不必另设判据。
+    "xiaoshi-mcp": (
+        Retry(max_attempts=2, base=0.3, max_total_seconds=20.0, respect_retry_after=False),
+        Circuit(threshold=5, cooldown=60.0),
+    ),
+}
 
 
 def get_dep(name: str) -> Dependency:
     dep = _DEPS.get(name)
     if dep is None:
-        dep = _DEPS[name] = Dependency(name=name)
+        retry, circuit = _DEP_DEFAULTS.get(name, (Retry(), Circuit()))
+        dep = _DEPS[name] = Dependency(name=name, retry=retry, circuit=circuit)
     return dep
+
+
+def trip(name: str) -> None:
+    """让某个依赖立刻开路（调用方**已经看出**平台在叫退后时用，见 `xiaoshi_cli.run`）。"""
+    get_dep(name).trip(get_dep(name).clock())
 
 
 def install(dep: Dependency) -> Dependency:

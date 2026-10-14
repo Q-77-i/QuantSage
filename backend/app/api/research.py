@@ -41,6 +41,7 @@ from app.agent.deep.runner import (
     snapshot_digest,
 )
 from app.agent.deep.types import Brief
+from app.api.limits import limit
 from app.api.sse import sse_frame, sse_response
 from app.core.auth import require_db, require_user
 from app.core.config import get_settings
@@ -231,6 +232,7 @@ async def create_run(
     body: RunRequest,
     user: dict[str, Any] = Depends(require_user),
     db: Any = Depends(require_db),
+    _: None = Depends(limit("llm-research")),
 ) -> Any:
     """建运行并启动。`mode=auto` 时先过意图路由；判 quick 就只回一帧 `route`，不建运行。"""
     checkpointer = getattr(request.app.state, "checkpointer", None)

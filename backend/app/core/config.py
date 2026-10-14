@@ -148,6 +148,18 @@ class Settings(BaseSettings):
     # 辩论轮数：默认 2（省钱且仍能演示），硬上限 3（PRD 要求 ≤3）
     research_debate_rounds: int = 2
 
+    # ── 限流（E4b / L0）：进程内令牌桶，三桶各一对「容量 / 窗口秒」──
+    # 默认取「演示友好」档：正常用不会碰到，连打才拦得住（演练第三幕要的正是这个）
+    rate_limit_chat: int = 10
+    rate_limit_chat_window: float = 60.0
+    rate_limit_research: int = 3
+    rate_limit_research_window: float = 600.0
+    rate_limit_task_submit: int = 20
+    rate_limit_task_submit_window: float = 60.0
+
+    # ── 数据源（E4b）：MCP 工具调用的读超时。此前这条路径没有超时（卡住就是无限等）──
+    xiaoshi_mcp_read_timeout_seconds: float = 60.0
+
     # ── Langfuse（默认 Cloud；自托管时把 base_url 指向 http://127.0.0.1:3000）──
     langfuse_base_url: str = "https://cloud.langfuse.com"
     langfuse_public_key: SecretStr = SecretStr("")
