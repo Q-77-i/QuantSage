@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -20,7 +21,9 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agent.deep.budget import Budget, Limits
 from app.agent.prompts import SYSTEM_PROMPT
+from app.core.config import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +39,36 @@ TOOL_RESULT_PREVIEW = 1500
 
 # 单轮对话的 super-step 上限（默认 25 太宽松，防工具循环烧钱）
 RECURSION_LIMIT = 12
+
+#: 四个计数器的名字 → 给人看的说法（到限文案要能读懂）
+_BUDGET_LABELS = {
+    "llm_calls": "模型调用次数",
+    "tokens": "token 用量",
+    "seconds": "耗时",
+    "cost_usd": "成本",
+}
+
+
+def chat_limits() -> Limits:
+    """单轮对话的硬上限（E4c / L6）。
+
+    **步数由图自己管**（`RECURSION_LIMIT` 拦 super-step），这里管另外三样：token、成本、
+    墙钟——它们的用处是让「一轮跑飞」有个确定的终点，而不是靠用户盯着点停止。
+    复用深路径的 `Limits`（SPEC §5.6：**定义不搬家**，两条路径用同一件）。
+    """
+    settings = get_settings()
+    return Limits(
+        llm_calls=RECURSION_LIMIT,
+        tokens=settings.chat_max_tokens,
+        seconds=settings.chat_max_seconds,
+        cost_usd=settings.chat_max_cost_usd,
+    )
+
+
+def budget_message(reason: str) -> str:
+    """到限文案。**部分结果 + 明确告知**：说清停在哪、以及已经产出的那部分还在。"""
+    label = _BUDGET_LABELS.get(reason, reason)
+    return f"本轮达到{label}上限，已停止——以上是已产出的部分。"
 
 
 def build_agent(
@@ -79,6 +112,17 @@ def _tool_result_text(output: Any) -> str:
             if isinstance(block, dict) and block.get("type") == "text"
         )
     return str(content)
+
+
+def _model_of(output: Any) -> str:
+    """这次调用用的模型名（给成本计价用）。
+
+    取 `response_metadata.model_name`——ChatLiteLLM 写的是**实例自己的**模型名。chat 跑的是
+    flash 档，而 flash **没有下一档**（降级链只从 pro 往 flash 走），所以这里与「实际用的」
+    一致。取不到就回空串：`estimate_cost_usd` 对不认识的模型返回 0（**宁可少算，不猜价**）。
+    """
+    metadata = getattr(output, "response_metadata", None) or {}
+    return str(metadata.get("model_name") or "")
 
 
 def _dangling_tool_calls(messages: Sequence[Any]) -> list[tuple[str, str]]:
@@ -154,6 +198,11 @@ async def astream_chat(
     answer: list[str] = []
     tool_names: dict[str, str] = {}  # run_id → 工具名（on_tool_end 不带名字）
     usage: dict[str, Any] | None = None
+    # 四道硬上限（E4c）：逐次模型调用**累加**——此前这里只留最后一次的 usage，
+    # 一轮多步的真实用量根本看不见（`done` 帧回给前端的那份仍是最后一次，语义不动）
+    limits = chat_limits()
+    budget = Budget(limits=limits)
+    started = time.monotonic()
 
     async for event in agent.astream_events(
         {"messages": [{"role": "user", "content": message}]}, config, version="v2"
@@ -170,9 +219,20 @@ async def astream_chat(
             yield "token", {"text": text}
 
         elif kind == "on_chat_model_end":
-            meta = getattr(event["data"].get("output"), "usage_metadata", None)
+            output = event["data"].get("output")
+            meta = getattr(output, "usage_metadata", None)
             if meta:
                 usage = dict(meta)
+                budget.record_llm(_model_of(output), usage)
+            # 与深路径同口径：**在边界上问一次**（不打断已经发出去的调用）。
+            # 到限就如实说、停下——半截回答比一句「已达上限」更让人困惑。
+            reason = budget.exceeded()
+            if reason is None and time.monotonic() - started >= limits.seconds:
+                reason = "seconds"
+            if reason is not None:
+                log.warning("对话达到 %s 上限（thread=%s）", reason, thread_id)
+                yield "error", {"code": "budget", "message": budget_message(reason)}
+                return  # 不再发 done：这一轮是被上限停住的，别让前端当成正常收尾
 
         elif kind == "on_tool_start":
             # input 是**纯工具参数**（注入参数已被框架滤掉），工具名在 event["name"]；

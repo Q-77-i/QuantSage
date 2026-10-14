@@ -161,10 +161,14 @@ def build_chat_model(
     `thinking=False` 关掉 reasoning（M8 默认关，实测把单次调用从 8.99s/107.03s 压到
     0.84s/1.48s 且这类摘要解读任务的正文信息不变；见 SPEC §9 M8「模型与思考开关」）。
     """
-    api_key = get_settings().deepseek_api_key.get_secret_value()
+    settings = get_settings()
+    api_key = settings.deepseek_api_key.get_secret_value()
     if not api_key:
         raise LLMNotConfigured("DEEPSEEK_API_KEY 未在 .env 配置")
     kwargs: dict = {} if thinking else {"model_kwargs": dict(THINKING_OFF)}
+    # 上游地址只在配了的时候传：空串会被 LiteLLM 当成一个真的 base（而不是「没配」）
+    if settings.deepseek_api_base:
+        kwargs["api_base"] = settings.deepseek_api_base
     return PolicyChatModel(
         model=model,
         api_key=api_key,

@@ -25,8 +25,9 @@ from langchain_core.language_models import BaseChatModel
 from app.agent.deep.budget import Budget
 from app.agent.deep.numbers import allowed_numbers, extract_numbers, untraceable_numbers
 from app.agent.deep.types import ROLE_LABELS, Brief, EvidenceRef, RoleResult
-from app.core.config import get_settings
 from app.core import llm
+from app.core.config import get_settings
+from app.core.reliability import CircuitOpen
 
 #: 解读的统一硬要求：数字只能来自给定材料，不许算、不许编（claim 闸门在角色层的预演）
 INTERPRET_RULES = (
@@ -126,6 +127,11 @@ async def interpret(
     except TimeoutError:
         ctx.budget.record_wait(time.perf_counter() - started)
         return RoleResult(**base, errors=(f"解读超时（>{ctx.timeout:.0f}s）",))
+    except CircuitOpen as exc:
+        # 熔断是**已知原因**的降级，那就如实说是谁在熔断、还要等多久（E4c）。
+        # 落进下面那条通用分支会写成「解读不可用（CircuitOpen）」——等于什么都没说。
+        ctx.budget.record_wait(time.perf_counter() - started)
+        return RoleResult(**base, errors=(f"解读跳过（{exc}）",))
     except Exception as exc:  # noqa: BLE001 —— 解读失败不拖垮取证
         ctx.budget.record_wait(time.perf_counter() - started)
         return RoleResult(**base, errors=(f"解读不可用（{type(exc).__name__}）",))

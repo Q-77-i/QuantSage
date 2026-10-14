@@ -24,6 +24,7 @@ from typing import Any
 from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.types import Brief, EvidenceRef
 from app.core import llm
+from app.core.reliability import CircuitOpen
 
 SIDE_BULL = "bull"
 SIDE_BEAR = "bear"
@@ -220,6 +221,11 @@ async def run_turn(
             DebateTurn(round=round_, side=side, error=f"发言超时（>{ctx.timeout:.0f}s）"),
             error=f"发言超时（>{ctx.timeout:.0f}s）",
         )
+    except CircuitOpen as exc:
+        # 熔断：如实说是谁在熔断、还要等多久（E4c；落进通用分支只会写成「发言不可用（CircuitOpen）」）
+        ctx.budget.record_wait(time.perf_counter() - started)
+        message = f"发言跳过（{exc}）"
+        return TurnResult(DebateTurn(round=round_, side=side, error=message), error=message)
     except Exception as exc:  # noqa: BLE001 —— 辩论失败不拖垮整条流程
         ctx.budget.record_wait(time.perf_counter() - started)
         return TurnResult(

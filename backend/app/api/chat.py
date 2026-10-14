@@ -31,11 +31,32 @@ from app.api.limits import limit
 from app.api.sse import sse_frame
 from app.agent.graph import astream_chat
 from app.agent.history import messages_to_history
+from app.core import reliability
 from app.core.auth import require_db, require_user
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+
+def failure_frame(exc: BaseException) -> dict[str, str]:
+    """把这一轮的失败翻成 **user 能读懂的一句话**（E4c / L5）。
+
+    此前一律「内部错误，请重试」——上游挂了、限流了、超时了，对用户是同一句话，
+    而该做的事完全不同（等一会儿 / 换个问法 / 报 bug）。分类复用策略层那套
+    （`reliability.classify`），**词汇与深路径一致**，不新增第二套。
+    """
+    if isinstance(exc, reliability.CircuitOpen):
+        return {"code": "upstream_unavailable", "message": "模型服务暂时不可用（熔断中）——过一会儿再问"}
+    kind = reliability.classify(exc)
+    status = getattr(exc, "status_code", None)
+    if isinstance(exc, TimeoutError) or status == 408:
+        return {"code": "upstream_timeout", "message": "模型服务响应超时——这轮没有产出，可以直接重试"}
+    if kind == "rate_limited":
+        return {"code": "rate_limited", "message": "模型服务正在限流——稍等一会儿再问"}
+    if kind == "retryable":
+        return {"code": "upstream_unavailable", "message": "模型服务暂时不可用——稍后重试"}
+    return {"code": "internal", "message": "内部错误，请重试"}
 
 # 静默超过这个秒数就发一个注释帧：MCP 子进程冷启动 + 模型首 token + 工具查询叠起来
 # 可能十几秒没有事件，前端与中间层都会以为连接死了
@@ -168,9 +189,7 @@ async def chat(
                     break
                 if kind == "error":
                     log.exception("对话失败 thread_id=%s", thread_id, exc_info=payload)
-                    yield sse_frame(
-                        "error", {"code": "internal", "message": "内部错误，请重试"}
-                    )
+                    yield sse_frame("error", failure_frame(payload))
                     break
                 event, data = payload
                 yield sse_frame(event, data)

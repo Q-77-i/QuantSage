@@ -128,6 +128,9 @@ class Settings(BaseSettings):
 
     # ── 模型（T3 使用）──
     deepseek_api_key: SecretStr = SecretStr("")
+    #: 上游地址覆盖，**空 = 走 provider 默认**。存在的理由只有一个：可靠性演练要一个
+    #: 「真杀 LLM」又不碰密钥的手段（指向 `http://127.0.0.1:9` 这种不可达端口即可还原）。
+    deepseek_api_base: str = ""
 
     # ── 深度研报多 Agent（M8）──
     research_fast_model: str = "deepseek/deepseek-flash"  # 取证 / 路由
@@ -159,6 +162,12 @@ class Settings(BaseSettings):
 
     # ── 数据源（E4b）：MCP 工具调用的读超时。此前这条路径没有超时（卡住就是无限等）──
     xiaoshi_mcp_read_timeout_seconds: float = 60.0
+
+    # ── 单轮对话的硬上限（E4c / L6）：步数由图自己管，这里是另外三样 ──
+    # 默认按「实测一轮 flash 多步问答」留了十倍量级的余量，撞上它们是异常而不是常态
+    chat_max_tokens: int = 120_000
+    chat_max_seconds: float = 180.0
+    chat_max_cost_usd: float = 0.20
 
     # ── Langfuse（默认 Cloud；自托管时把 base_url 指向 http://127.0.0.1:3000）──
     langfuse_base_url: str = "https://cloud.langfuse.com"

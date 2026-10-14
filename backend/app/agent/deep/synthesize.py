@@ -22,6 +22,7 @@ from app.agent.deep.merge import MergedEvidence
 from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.types import Brief, ROLE_LABELS
 from app.core import llm
+from app.core.reliability import CircuitOpen
 
 #: prompt 版本（进报告正文——综述以它为身份，重放要认得出来）
 PROMPT_VERSION = "m8-synthesis-1"
@@ -203,6 +204,10 @@ async def build_draft(
     except TimeoutError:
         ctx.budget.record_wait(time.perf_counter() - started)
         return code_fallback(merged=merged, turns=turns, note=f"综合超时（>{ctx.timeout:.0f}s）")
+    except CircuitOpen as exc:
+        # 熔断：如实说是谁在熔断、还要等多久（E4c），并降级成代码版结论
+        ctx.budget.record_wait(time.perf_counter() - started)
+        return code_fallback(merged=merged, turns=turns, note=f"综合跳过（{exc}）")
     except Exception as exc:  # noqa: BLE001
         ctx.budget.record_wait(time.perf_counter() - started)
         return code_fallback(merged=merged, turns=turns, note=f"综合不可用（{type(exc).__name__}）")

@@ -259,9 +259,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "stopped":
       return finish(state, "stopped");
 
-    case "ended":
-      // 流正常关闭却没等到 done：连接被中间层掐了，如实说明而不是假装正常结束
+    case "ended": {
+      // 流正常关闭却没等到 done：连接被中间层掐了，如实说明而不是假装正常结束。
+      // **服务端已经说明过的（error 帧）就别覆盖**——那句话是按失败分类写的，比这句
+      // 通用猜测准得多；覆盖掉等于把 E4c 的分类文案吃掉（判据：`message.error` 非空）。
+      const target = state.messages.find((message) => message.id === state.streamingId);
+      if (target?.error) return finish(state, "error");
       return finish(state, "stopped", () => ({ error: "连接提前结束，回答可能不完整" }));
+    }
 
     case "failed": {
       const target = state.streamingId;

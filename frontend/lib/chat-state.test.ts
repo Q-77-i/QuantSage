@@ -139,6 +139,25 @@ describe("chatReducer", () => {
     expect(state.messages[1].error).toContain("连接提前结束");
   });
 
+  it("服务端已经说明过的失败，不被「连接提前结束」覆盖（E4c）", () => {
+    // 失败分类文案是服务端按上游状态写的（超时 / 限流 / 熔断），比这句通用猜测准得多。
+    // 后端在 error 帧之后**不发 done**（这一轮是被停住的），所以这条路的收尾就在 ended 上。
+    let state = streaming();
+    state = chatReducer(state, { type: "frame", frame: frame("token", { text: "半" }) });
+    state = chatReducer(state, {
+      type: "frame",
+      frame: frame("error", { code: "upstream_timeout", message: "模型服务响应超时——可以直接重试" }),
+    });
+    expect(state.messages[1].error).toContain("超时");
+
+    state = chatReducer(state, { type: "ended" });
+
+    expect(state.messages[1].error).toContain("超时"); // 原话还在
+    expect(state.messages[1].error).not.toContain("连接提前结束");
+    expect(state.messages[1].status).toBe("error");
+    expect(state.messages[1].content).toBe("半"); // 部分结果照留
+  });
+
   it("坏帧被丢弃：非法 JSON、未知事件名、没有流式目标", () => {
     const state = streaming();
     expect(chatReducer(state, { type: "frame", frame: { event: "token", data: "{半截" } })).toBe(state);

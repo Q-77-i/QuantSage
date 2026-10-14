@@ -80,8 +80,19 @@ class ToolCallingFakeModel(FakeMessagesListChatModel):
                 )
             return
 
-        for char in str(message.content):
-            yield ChatGenerationChunk(message=AIMessageChunk(content=char))
+        # 真模型的用量在**最后一个包**里（`stream_options.include_usage` 的尾包），
+        # 假模型要照抄这一点——否则「按 usage 计数」的护栏在离线用例里永远看不到数
+        # （E4c 的 chat 上限就是这么被测出来的）
+        text = str(message.content)
+        for index, char in enumerate(text):
+            last = index == len(text) - 1
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content=char,
+                    usage_metadata=message.usage_metadata if last else None,
+                    response_metadata=message.response_metadata if last else {},
+                )
+            )
 
 
 class FakeDatabase:
