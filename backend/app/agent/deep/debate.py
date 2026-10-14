@@ -23,7 +23,7 @@ from typing import Any
 
 from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.types import Brief, EvidenceRef
-from app.core.llm import complete
+from app.core import llm
 
 SIDE_BULL = "bull"
 SIDE_BEAR = "bear"
@@ -207,7 +207,7 @@ async def run_turn(
     allowed_keys = [item.key for item in evidence]
     started = time.perf_counter()
     try:
-        result = await complete(
+        result = await llm.complete(
             debate_prompt(side, round_=round_, brief=ctx.brief, evidence=evidence, transcript=transcript),
             model=settings_model,
             timeout=ctx.timeout,

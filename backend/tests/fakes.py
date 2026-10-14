@@ -123,6 +123,10 @@ class FakeDatabase:
         self._report_order: list[str] = []
         self.runs: dict[str, dict[str, Any]] = {}
         self._run_order: list[str] = []
+        # 异步任务（P3-E1a）：task_id → 行；顺序另记（真库按 `created_at, id`，替身里
+        # 同一微秒内建的两条分不出先后，插入序才是那个判据的忠实等价物）
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self._task_order: list[str] = []
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -651,6 +655,100 @@ class FakeDatabase:
                 # 真库那条 SELECT 不带 user_id——替身也**不带**，否则公开端点会静默多拿一个字段
                 return {k: v for k, v in row.items() if k != "user_id"}
         return None
+
+    # ── 异步任务（P3-E1a）──────────────────────────────────
+
+    def _task_row(self, task_id: str) -> dict[str, Any]:
+        row = self.tasks[task_id]
+        return {k: v for k, v in row.items() if k != "user_id"}
+
+    async def create_task(
+        self,
+        task_id: str,
+        user_id: int,
+        kind: str,
+        request: dict[str, Any],
+        *,
+        total: int = 1,
+    ) -> dict[str, Any]:
+        self.tasks[task_id] = {
+            "id": task_id,
+            "user_id": user_id,
+            "kind": kind,
+            "status": "queued",
+            "request": dict(request),
+            "progress": {"done": 0, "total": total},
+            "result": None,
+            "error": None,
+            "created_at": datetime.now(UTC),
+            "started_at": None,
+            "finished_at": None,
+        }
+        self._task_order.append(task_id)
+        return self._task_row(task_id)
+
+    async def get_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
+        row = self.tasks.get(task_id)
+        return None if row is None or row["user_id"] != user_id else self._task_row(task_id)
+
+    async def list_tasks(self, user_id: int, limit: int) -> list[dict[str, Any]]:
+        """摘要：与真库同形（不带整份 `request`，只抽 symbol / strategy 两列）。"""
+        out: list[dict[str, Any]] = []
+        for task_id in reversed(self._task_order):
+            row = self.tasks[task_id]
+            if row["user_id"] != user_id:
+                continue
+            summary = {
+                k: v for k, v in self._task_row(task_id).items() if k != "request"
+            }
+            summary["symbol"] = row["request"].get("symbol")
+            summary["strategy"] = row["request"].get("strategy")
+            out.append(summary)
+            if len(out) == limit:
+                break
+        return out
+
+    async def claim_next_task(self) -> dict[str, Any] | None:
+        for task_id in self._task_order:
+            if self.tasks[task_id]["status"] == "queued":
+                self.tasks[task_id].update(status="running", started_at=datetime.now(UTC))
+                # 与真库同形：取件**多带 `user_id`**（执行体要拿它落归属），其余对外列照旧
+                return dict(self.tasks[task_id])
+        return None
+
+    async def update_task_progress(self, task_id: str, *, done: int, total: int) -> None:
+        row = self.tasks.get(task_id)
+        if row is not None and row["status"] == "running":
+            row["progress"] = {"done": done, "total": total}
+
+    async def finish_task(self, task_id: str, *, result: dict[str, Any]) -> None:
+        row = self.tasks.get(task_id)
+        # 与真库的条件更新同语义：只有 `running` 能被标完成（被扫尾成 failed 的不覆盖）
+        if row is not None and row["status"] == "running":
+            row.update(status="done", result=dict(result), finished_at=datetime.now(UTC))
+
+    async def fail_task(self, task_id: str, *, error: dict[str, Any]) -> None:
+        row = self.tasks.get(task_id)
+        if row is not None and row["status"] == "running":
+            row.update(status="failed", error=dict(error), finished_at=datetime.now(UTC))
+
+    async def cancel_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
+        row = self.tasks.get(task_id)
+        if row is None or row["user_id"] != user_id:
+            return None
+        if row["status"] == "queued":
+            row.update(status="cancelled", finished_at=datetime.now(UTC))
+        return self._task_row(task_id)
+
+    async def sweep_interrupted_tasks(self) -> int:
+        stale = [row for row in self.tasks.values() if row["status"] == "running"]
+        for row in stale:
+            row.update(
+                status="failed",
+                error={"kind": "interrupted", "message": "服务重启中断"},
+                finished_at=datetime.now(UTC),
+            )
+        return len(stale)
 
     def _touch(self, thread_id: str) -> None:
         self._recent = [tid for tid in self._recent if tid != thread_id]

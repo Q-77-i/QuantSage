@@ -1,12 +1,17 @@
 """离线单测：`POST /api/v1/backtest` 的用户策略分支（M4c）。
 
-这里守三件事，都在 HTTP 层（闸门顺序写在 SPEC §5 M4c）：
+这里守三件事（闸门顺序写在 SPEC §5 M4c）：
 
-  * **闸门**：归属 404 → 静态检查 `error`=0 → 参数 → 沙箱。检查必须在 spawn **之前**——
+  * **闸门**：归属 404 → 静态检查 `error`=0 → 参数 → 入队。检查必须在跑之前——
     「运行前带行号给话术」正是这么成立的；
   * **沙箱**：真子进程跑真模板，报告与内置策略同构（只多两个标识键）；
   * **落库身份**：`strategy_id` + `code_sha256` 落进记录，重开时能取回来（前端据此判断
     「已非当次运行的代码」）。
+
+**P3-E1a 的语义分界**（异步化后的必然结果，别把它当回归）：提交期能判的一律仍是同步 4xx——
+归属 404、静态检查 422（带 findings）、参数 422、窗口 404/503；只有**跑起来才知道**的那些
+（沙箱配额、用户代码运行期异常）落在任务的 `error` 里（`{kind, message}`，用户代码的问题
+另带 `line`，与旧 422 响应体逐字同形）。所以下面分成「闸门」与「运行期」两组用例。
 
 行情走合成 Parquet，**`DATA_DIR` 环境变量是唯一能穿过进程边界的注入方式**——父进程里
 monkeypatch 查询层对子进程无效（子进程是另一个解释器）。
@@ -27,7 +32,7 @@ from app.main import app
 from app.strategy import SandboxLimits
 from app.strategy.sandbox import default_limits as real_default_limits
 from app.strategy.templates import TEMPLATES, template_source
-from tests.conftest import make_backtest_dir, trading_days, ts
+from tests.conftest import drive_tasks, make_backtest_dir, submit_and_run, trading_days, ts
 from tests.fakes import FakeDatabase
 
 client = TestClient(app)
@@ -94,11 +99,29 @@ def make_strategy(code: str, name: str = "我的策略") -> dict[str, Any]:
     return response.json()
 
 
-def run_user(strategy_id: str | None, **overrides: Any):
+def user_body(strategy_id: str | None, **overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {"strategy": "user", "symbol": SYMBOL, **overrides}
     if strategy_id is not None:
         body["strategy_id"] = strategy_id
-    return client.post("/api/v1/backtest", json=body)
+    return body
+
+
+def run_user(strategy_id: str | None, **overrides: Any):
+    """**提交**一次用户策略回测（P3-E1a 起回 202）。验闸门状态码的用例用它。"""
+    return client.post("/api/v1/backtest", json=user_body(strategy_id, **overrides))
+
+
+def run_user_task(strategy_id: str | None, **overrides: Any) -> dict[str, Any]:
+    """提交 + 跑队列，返回**任务详情**——运行期失败看 `error`，成功看 `result`。"""
+    response = run_user(strategy_id, **overrides)
+    assert response.status_code == 202, response.text
+    drive_tasks(app.state.db)
+    return client.get(f"/api/v1/tasks/{response.json()['task_id']}").json()
+
+
+def run_user_report(strategy_id: str | None, **overrides: Any) -> dict[str, Any]:
+    """提交 + 跑 + 取回 `{run_id, report}`（成功路径）。"""
+    return submit_and_run(client, user_body(strategy_id, **overrides))
 
 
 # ── 跑通 ────────────────────────────────────────────────────────────────────
@@ -108,10 +131,8 @@ def test_user_strategy_runs_and_reports_identity(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
     created = make_strategy(template_source("ma_cross"), name="我的双均线")
-    response = run_user(created["id"])
-    assert response.status_code == 200, response.text
+    payload = run_user_report(created["id"])
 
-    payload = response.json()
     meta = payload["report"]["meta"]
     assert meta["strategy_kind"] == "user"
     assert meta["strategy_name"] == "我的双均线"
@@ -130,9 +151,7 @@ def test_user_strategy_runs_and_reports_identity(
 def test_builtin_runs_keep_strategy_name_null(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    assert client.post(
-        "/api/v1/backtest", json={"strategy": "ma_cross", "symbol": SYMBOL}
-    ).status_code == 200
+    submit_and_run(client, {"strategy": "ma_cross", "symbol": SYMBOL})
     assert client.get("/api/v1/backtest/runs").json()[0]["strategy_name"] is None
 
 
@@ -144,18 +163,18 @@ def test_event_template_yields_pit_comparison(
     判据从「策略名 = event_driven」泛化成源码声明之后，这条是它唯一的行为证据。
     """
     created = make_strategy(template_source("event_driven"), name="事件驱动")
-    response = run_user(created["id"], pit_mode="both", start="2026-02-01", end="2026-02-10")
-    assert response.status_code == 200, response.text
-    assert response.json()["report"]["pit_comparison"] is not None
+    report = run_user_report(
+        created["id"], pit_mode="both", start="2026-02-01", end="2026-02-10"
+    )["report"]
+    assert report["pit_comparison"] is not None
 
 
 def test_not_using_events_skips_pit_comparison(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
     created = make_strategy(template_source("ma_cross"), name="不看事件")
-    response = run_user(created["id"], pit_mode="both")
-    assert response.status_code == 200, response.text
-    assert response.json()["report"]["pit_comparison"] is None  # 两模式必然同结果
+    report = run_user_report(created["id"], pit_mode="both")["report"]
+    assert report["pit_comparison"] is None  # 两模式必然同结果
 
 
 # ── 闸门 ────────────────────────────────────────────────────────────────────
@@ -210,44 +229,56 @@ def test_gate_validates_params_against_source_schema(
     assert out_of_range.status_code == 422
     assert "上限" in out_of_range.json()["detail"]
 
-    # 跨字段约束走用户自己的 validate_params（`fast < slow`）
-    crossed = run_user(created["id"], params={"fast": 20, "slow": 5})
-    assert crossed.status_code == 422
-    assert "慢线" in crossed.json()["detail"]
+    # 跨字段约束走**用户自己**的 validate_params（`fast < slow`）——它在沙箱里跑，
+    # 所以是运行期错误：提交 202，失败落在任务的 `error`（E1a 的分界，见文件头）
+    crossed = run_user_task(created["id"], params={"fast": 20, "slow": 5})
+    assert crossed["status"] == "failed"
+    assert crossed["error"]["kind"] == "rejected"
+    assert "慢线" in crossed["error"]["message"]
 
 
-def test_runtime_error_maps_to_422_with_line(
+def test_runtime_error_lands_in_task_with_line(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
-    created = make_strategy(
-        "def on_bar(ctx):\n    return [1 / 0]\n", name="除零"
-    )
-    response = run_user(created["id"])
-    assert response.status_code == 422, response.text
-    assert response.json()["line"] == 2
+    """运行期异常：提交是 202（那时还看不到它），失败落在任务 `error`——**行号照给**。
+
+    `line` 的形状与旧 422 响应体逐字一致（`{kind, message, line}`），前端不写第二套。
+    """
+    created = make_strategy("def on_bar(ctx):\n    return [1 / 0]\n", name="除零")
+    task = run_user_task(created["id"])
+
+    assert task["status"] == "failed"
+    assert task["result"] is None
+    assert task["error"]["kind"] == "rejected"
+    assert task["error"]["line"] == 2
+    assert signed_in.runs == {}  # 失败照样不落记录
 
 
 # ── 故障矩阵（坏代码不拖垮服务）─────────────────────────────────────────────
 
 
-BAD_CODES: dict[str, tuple[str, int]] = {
-    # 名字 → （源码，期望状态码）
-    "死循环": ("def on_bar(ctx):\n    while True:\n        pass\n", 400),
+#: 六条坏法 → 它们在**哪一关**被拦：静态检查（提交期 422，带 findings）还是运行期（任务 error）。
+#: 这条分界就是 P3-E1a 的语义边界：能静态判的仍然同步，跑起来才知道的落任务。
+BAD_CODES: dict[str, tuple[str, str, object]] = {
+    # 名字 → （源码，拦截点，期望值）
+    "死循环": ("def on_bar(ctx):\n    while True:\n        pass\n", "runtime", {"wall", "cpu"}),
     "大内存": (
         "def on_bar(ctx):\n    blob = []\n    while True:\n        blob.append(bytearray(1024 * 1024))\n",
-        400,
+        "runtime",
+        {"memory"},
     ),
-    "语法错": ("def on_bar(ctx)\n    return []\n", 422),
-    "缺 on_bar": ("x = 1\n", 422),
-    "数据绕行": ("import duckdb\n\n\ndef on_bar(ctx):\n    return []\n", 422),
-    "返回值形态": ("def on_bar(ctx):\n    return 1\n", 422),
+    "语法错": ("def on_bar(ctx)\n    return []\n", "submit", 422),
+    "缺 on_bar": ("x = 1\n", "submit", 422),
+    "数据绕行": ("import duckdb\n\n\ndef on_bar(ctx):\n    return []\n", "submit", 422),
+    # R5 静态规则就能看出返回形态不对（`return 1`），所以它在提交期被拦，不用等跑
+    "返回值形态": ("def on_bar(ctx):\n    return 1\n", "submit", 422),
 }
 
 
 def test_fault_matrix_keeps_service_alive(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
-    """六条坏法各给明确错误码，且**每条之后服务仍活着**（`/health` 200）。
+    """六条坏法各给明确错误，且**每条之后服务仍活着**（`/health` 200）。
 
     配额压到「2s CPU / 1.5s 墙钟 / 200MB 内存 / 64KB 输出」，与 M4a 的矩阵同口径——
     否则一条死循环用例就要真等 20s。
@@ -255,25 +286,32 @@ def test_fault_matrix_keeps_service_alive(
     limits["value"] = SandboxLimits(
         wall_seconds=1.5, cpu_seconds=2, memory_mb=200, output_bytes=64 * 1024
     )
-    seen: dict[str, int] = {}
-    for name, (code, expected) in BAD_CODES.items():
+    seen: dict[str, object] = {}
+    for name, (code, stage, expected) in BAD_CODES.items():
         created = make_strategy(code, name=f"坏法-{name}")
-        response = run_user(created["id"])
-        assert response.status_code == expected, (name, response.status_code, response.text)
+        if stage == "submit":  # 静态检查拦在提交期：202 都不给，findings 直接交出去
+            response = run_user(created["id"])
+            assert response.status_code == expected, (name, response.status_code, response.text)
+            assert response.json()["findings"]
+            seen[name] = response.status_code
+        else:  # 运行期才知道的：提交 202，失败落任务
+            task = run_user_task(created["id"])
+            assert task["status"] == "failed", (name, task)
+            assert task["error"]["kind"] in expected, (name, task["error"])
+            seen[name] = task["error"]["kind"]
         assert client.get("/health").status_code == 200
-        seen[name] = response.status_code
 
-    # 紧配额下超长输出（报告本身超过 64KB）也要被拦成 400
+    # 紧配额下超长输出（报告本身超过 64KB）也要被拦成运行期错误
     limits["value"] = SandboxLimits(
         wall_seconds=20, cpu_seconds=15, memory_mb=512, output_bytes=200
     )
     created = make_strategy(template_source("ma_cross"), name="输出超限")
-    assert run_user(created["id"]).status_code == 400
+    assert run_user_task(created["id"])["error"]["kind"] == "output"
 
     # 服务照常：换回正常配额，好策略仍能跑通
     limits["value"] = real_default_limits()
     healthy = make_strategy(template_source("ma_cross"), name="恢复后")
-    assert run_user(healthy["id"]).status_code == 200
+    assert run_user_report(healthy["id"])["report"]["metrics"]["trade_count"] >= 1
     assert client.get("/health").status_code == 200
     assert set(seen) == set(BAD_CODES)
 
@@ -281,21 +319,20 @@ def test_fault_matrix_keeps_service_alive(
 def test_sandbox_termination_carries_kind(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
-    """配额类失败是 **400 + kind**（请求合法，是这次运行没能完成）。"""
+    """配额类失败带 `kind`（请求合法，是这次运行没能完成）——现在落在任务的 `error` 里。"""
     limits["value"] = SandboxLimits(wall_seconds=1.5, cpu_seconds=600, memory_mb=512)
     created = make_strategy("def on_bar(ctx):\n    while True:\n        pass\n", name="死循环")
-    response = run_user(created["id"])
-    assert response.status_code == 400
-    assert response.json()["kind"] in {"wall", "cpu"}
+    task = run_user_task(created["id"])
+    assert task["status"] == "failed"
+    assert task["error"]["kind"] in {"wall", "cpu"}
 
 
 def test_all_templates_run(signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]) -> None:
-    """5 个模板都经 HTTP + 沙箱跑得通（M4b 的模板在真实链路上的一次全量回归）。"""
+    """5 个模板都经 HTTP + 队列 + 沙箱跑得通（M4b 的模板在真实链路上的一次全量回归）。"""
     for template in TEMPLATES:
         created = make_strategy(template.source, name=f"模板-{template.key}")
-        response = run_user(created["id"])
-        assert response.status_code == 200, (template.key, response.text)
-        assert response.json()["report"]["meta"]["strategy_name"] == f"模板-{template.key}"
+        report = run_user_report(created["id"])["report"]
+        assert report["meta"]["strategy_name"] == f"模板-{template.key}"
 
 
 def test_run_window_defaults_follow_uses_events(
@@ -303,9 +340,8 @@ def test_run_window_defaults_follow_uses_events(
 ) -> None:
     """缺省窗口按 `USES_EVENTS` 走：声明 True 的从事件语料起点开跑。"""
     created = make_strategy(template_source("event_driven"), name="看事件")
-    response = run_user(created["id"], start=None)
-    assert response.status_code == 200, response.text
-    assert response.json()["report"]["meta"]["start"] == "2026-02-01"
+    report = run_user_report(created["id"], start=None)["report"]
+    assert report["meta"]["start"] == "2026-02-01"
 
 
 def test_deleted_strategy_leaves_runs_intact(
@@ -313,7 +349,7 @@ def test_deleted_strategy_leaves_runs_intact(
 ) -> None:
     """删策略**不级联删**回测记录：报告 JSONB 自足，`strategy_id` 悬空即可。"""
     created = make_strategy(template_source("ma_cross"))
-    payload = run_user(created["id"]).json()
+    payload = run_user_report(created["id"])
     assert client.delete(f"/api/v1/strategies/{created['id']}").status_code == 200
 
     detail = client.get(f"/api/v1/backtest/runs/{payload['run_id']}").json()

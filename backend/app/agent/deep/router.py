@@ -21,7 +21,8 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 
 from app.agent.deep.types import Brief
-from app.core.llm import DEFAULT_MODEL, complete
+from app.core import llm
+from app.core.llm import DEFAULT_MODEL
 from app.data.naming import load_dictionary, normalize_name, primary_names
 
 PATH_QUICK = "quick"
@@ -223,7 +224,9 @@ async def route_question(
         return RouteDecision(force, "请求指定路径", symbols, notes=notes)
 
     try:
-        result = await complete(ROUTE_PROMPT.format(question=question), model=model, timeout=timeout, chat=chat)
+        result = await llm.complete(
+        ROUTE_PROMPT.format(question=question), model=model, timeout=timeout, chat=chat
+    )
     except TimeoutError:
         return RouteDecision(PATH_QUICK, f"路由超时（>{timeout:.0f}s），回落快路径", symbols, notes=notes)
     except Exception as exc:  # noqa: BLE001 —— 路由失败不该让提问失败

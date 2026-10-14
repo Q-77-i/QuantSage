@@ -13,9 +13,12 @@ import type { BacktestReport, Metrics } from "@/lib/types";
 export function MetricsSummary({
   report,
   running,
+  phase,
 }: {
   report: BacktestReport;
   running: boolean;
+  /** 「排队中」/「执行中」，来自任务状态（P3-E1a）；没有就退回笼统的「运行中」 */
+  phase?: string | null;
 }) {
   const { meta, metrics } = report;
   const cells = metricCells(metrics);
@@ -71,7 +74,7 @@ export function MetricsSummary({
             </span>
           </>
         )}
-        {running && <span className="text-ink-3">运行中…</span>}
+        {running && <span className="text-ink-3">{phase ?? "运行中"}…</span>}
       </p>
     </section>
   );

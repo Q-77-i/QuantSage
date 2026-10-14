@@ -46,6 +46,19 @@ class CostModel:
         """费用与滑点全关。"""
         return cls(fee_enabled=False, slippage_enabled=False)
 
+    @classmethod
+    def from_options(
+        cls, *, fees: bool = True, slippage: bool = True, slippage_bps: float = 5.0
+    ) -> CostModel:
+        """按三个开关造模型。API 的 `CostOptions.to_model()` 与任务执行体**共用这一处**——
+        两处各写一份开关逻辑必然漂移（费用的两个开关是验收项，不是内部细节）。"""
+        model = cls(slippage_bps=slippage_bps)
+        if not fees:
+            model = model.without_fees()
+        if not slippage:
+            model = model.without_slippage()
+        return model
+
     def without_slippage(self) -> CostModel:
         return replace(self, slippage_enabled=False)
 

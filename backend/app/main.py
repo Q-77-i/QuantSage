@@ -36,6 +36,7 @@ from app.api.paper import router as paper_router
 from app.api.reports import router as reports_router
 from app.api.research import router as research_router
 from app.api.strategies import router as strategies_router
+from app.api.tasks import router as tasks_router
 from app.api.watchlist import router as watchlist_router
 from app.backtest.batch import BatchRequestError
 from app.backtest.types import BacktestError, NoDataError
@@ -54,10 +55,11 @@ from app.strategy import SandboxError, StrategyCheckFailed, StrategyRejected
 from app.core.langfuse import build_langfuse_handler
 from app.memory.decision_store import MemoryHolder
 from app.memory.scheduler import start_settlement_scheduler
-from app.core.llm import build_chat_model
+from app.core import llm
 from app.core.logging import setup_logging
 from app.etl.scheduler import start_scheduler
 from app.data.duckdb_client import DataNotReady
+from app.tasks import worker as task_worker
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = None
     app.state.memory = None
     app.state.settle_scheduler = None
+    app.state.task_worker = None
 
     if not settings.jwt_secret.get_secret_value():
         # 不静默降级成无鉴权：/api/v1/auth/* 会返回 503，缺的是配置不是代码
@@ -145,12 +148,22 @@ async def lifespan(app: FastAPI):
         try:
             # 图必须在事件循环内、checkpointer 就绪后构建：saver 在 compile 期固化
             app.state.agent = build_agent(
-                build_chat_model(), tools, checkpointer=app.state.checkpointer
+                llm.build_chat_model(), tools, checkpointer=app.state.checkpointer
             )
             app.state.langfuse_handler = build_langfuse_handler()
             log.info("Agent 就绪，共 %d 个工具", len(tools))
         except Exception as exc:  # noqa: BLE001 —— 缺 key 时不要让整个服务起不来
             log.warning("Agent 未就绪（%s），/api/v1/chat 将返回 503", type(exc).__name__)
+
+        # 异步任务 worker（P3-E1a）：**队列实体就是 `tasks` 表**，这里只起常驻取件循环
+        # （起来先扫尾上一条进程留下的 `running`）。业务库不可用就不起——提交端点本来就 503；
+        # worker 起不来也不阻断启动，提交的任务会一直排在 `queued`（状态可查，不是静默丢失）。
+        if app.state.db is not None:
+            try:
+                app.state.task_worker = await task_worker.start(app.state.db)
+                log.info("任务 worker 已启动（单 worker 串行，队列 = tasks 表）")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("任务 worker 未启动（%s），提交的任务将排队等待", type(exc).__name__)
 
         # 决策记忆（M7b）：LangGraph Store 首用——与 checkpointer 同库不同表。
         # **按需建**（`MemoryHolder`）：`AsyncBatchedBaseStore` 在构造时捕获事件循环，
@@ -178,6 +191,10 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            if app.state.task_worker is not None:
+                # 只掐取件循环，**不等**正在跑的那一件（取消不了线程/子进程，硬等只会拖长停机）；
+                # 它的行留在 `running`，下次启动由 `task_worker.start` 扫成 failed/interrupted
+                await task_worker.stop(app.state.task_worker)
             for scheduler in (app.state.scheduler, app.state.settle_scheduler):
                 if scheduler is not None:
                     scheduler.shutdown(wait=False)
@@ -218,6 +235,7 @@ for router in (
     paper_router,
     reports_router,
     research_router,
+    tasks_router,
 ):
     app.include_router(router)
 

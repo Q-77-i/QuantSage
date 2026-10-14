@@ -21,7 +21,7 @@ from app.agent.deep.debate import DebateTurn, SIDE_LABELS, citation_index
 from app.agent.deep.merge import MergedEvidence
 from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.types import Brief, ROLE_LABELS
-from app.core.llm import complete
+from app.core import llm
 
 #: prompt 版本（进报告正文——综述以它为身份，重放要认得出来）
 PROMPT_VERSION = "m8-synthesis-1"
@@ -193,7 +193,7 @@ async def build_draft(
     allowed_keys = [item.key for item in merged.evidence]
     started = time.perf_counter()
     try:
-        result = await complete(
+        result = await llm.complete(
             synthesis_prompt(brief=ctx.brief, merged=merged, turns=turns, feedback=feedback),
             model=ctx.deep_model,
             timeout=ctx.timeout,

@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 
+import { useBacktestTask } from "@/components/tasks/use-task";
 import { api, describeError } from "@/lib/api";
 import type {
   BacktestReport,
@@ -21,8 +22,12 @@ import type {
  * K 线的窗口与复权口径一律取**响应**而非表单：缺省区间是后端 `resolve_window`
  * 定的（事件驱动从事件窗口起点开跑），用表单值或全量取数会让 K 线范围与净值曲线对不上。
  *
- * M1c 起 `POST /backtest` 返回信封 `{run_id, report}`：`runId` 用来把地址栏换成
- * `?run=<id>`，刷新或分享时能直接回到这一份报告。
+ * M1c 起每次运行都落一条记录：`runId` 用来把地址栏换成 `?run=<id>`，刷新或分享时能直接
+ * 回到这一份报告。
+ *
+ * P3-E1a 起 `POST /backtest` 只**提交**（202 + 任务号），报告在任务跑完后经
+ * `GET /backtest/runs/{id}` 取回——「提交 → 轮询 → 取报告」这段收在 `useBacktestTask` 里，
+ * 三个入口共用。
  */
 export function useBacktest() {
   const [loading, setLoading] = useState(false);
@@ -32,6 +37,7 @@ export function useBacktest() {
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const seqRef = useRef(0);
+  const task = useBacktestTask();
 
   /** 报告落定后补上配套的行情与事件。作废的流水线一律不落状态 */
   const fill = useCallback(async (next: BacktestReport, seq: number) => {
@@ -54,20 +60,28 @@ export function useBacktest() {
       setError(null);
 
       void (async () => {
+        // 提交 → 轮询到终态 → 取 run_id（失败原因由返回值带出，含运行期错误）
+        const outcome = await task.submit(body);
+        if (seq !== seqRef.current) return;
+        if (!outcome.ok) {
+          setError(outcome.failure.message);
+          setLoading(false);
+          return;
+        }
         try {
-          const { run_id, report: next } = await api.backtest(body);
-          await fill(next, seq);
-          if (seq === seqRef.current) setRunId(run_id);
+          const detail = await api.run(outcome.runId);
+          await fill(detail.report, seq);
+          if (seq === seqRef.current) setRunId(detail.id);
         } catch (cause) {
           if (seq !== seqRef.current) return;
-          setError(describeError(cause, "回测请求失败：后端未启动或网络不通。"));
+          setError(describeError(cause, "回测报告加载失败：后端未启动或网络不通。"));
         } finally {
           // 只有仍是最新一次运行时才收掉 loading——否则会把后来者的加载态提前关掉
           if (seq === seqRef.current) setLoading(false);
         }
       })();
     },
-    [fill],
+    [fill, task],
   );
 
   /**
@@ -99,5 +113,6 @@ export function useBacktest() {
     [fill],
   );
 
-  return { loading, report, bars, events, error, runId, run, loadRun };
+  /** `phase` 是「排队中 / 执行中」——提交不再等于跑完，界面要能说出此刻在哪一步 */
+  return { loading, report, bars, events, error, runId, phase: task.phase, run, loadRun };
 }

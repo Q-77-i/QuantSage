@@ -1,21 +1,22 @@
-"""回测 API：SPEC §5 报告结构的同步出口 + 我的回测（M1c）+ 用户策略分支（M4c）。
+"""回测 API：提交任务（P3-E1a）+ 我的回测（M1c）+ 用户策略分支（M4c）。
 
-`build_report` 是**同步 CPU + DuckDB IO**，必须卸载到线程——直接在 async 端点里跑会
-阻塞事件循环（T3 在 DuckDB 工具上已踩过同一个坑）。
+**P3-E1a 起这里不再同步跑回测**：`POST /api/v1/backtest` 只做闸门与冻结，建一条 `tasks`
+行后回 **202 + `{task_id}`**；执行在 `app/tasks/worker.py`，报告经
+`GET /api/v1/backtest/runs/{run_id}` 取回（深链 `?run=` 一直在用这条路）。
+
+**闸门顺序不变、且必须在入队前**（SPEC §2.2）：归属 404 → 静态检查 `error`=0 → 参数校验
+→ `resolve_window`。错误若挪进 worker，HTTP 就只剩 202 一种回应，M4c「运行前带行号给话术」
+（422 + findings）当场失效——所以本文件的 try/except 依然是零。
+
+**冻结执行材料**（SPEC §2.1）：任务行里的 `request` = 用户可见入参 + 执行字段（用户策略的
+**源码全文**在内）。异步化出现了「提交后被改源码」的窗口，不冻结就会跑出与提交时不同的策略。
+落 `backtest_runs.request` 时执行字段由执行体剔掉（`tasks/executors.py`）。
 
 错误映射由 `main.py` 的异常处理器统一完成：`DataNotReady` → 503、`NoDataError` → 404、
-其余 `BacktestError` → 400，这里不写 try/except。
+其余 `BacktestError` → 400。
 
-M1c 起本组端点**纳入鉴权**：跑完要落库，归属就是必要信息。响应随之改信封
-`{run_id, report}`——报告结构本身没动（P1 SPEC §6），信封只是把「这次跑的是哪一条记录」
-一并交出去，「我的回测」才重开得起来。落库放在 `build_report` **成功之后**：
-异常路径（404 / 503 / 400）不该留下半条记录。
-
-M4c 起多一条分支：`strategy="user"` 时**只认库里的源码**（先保存才能跑），依次过
-「归属 404 → 静态检查 `error`=0 → 参数校验 → 沙箱子进程」，落库时记 `strategy_id` +
-`code_sha256`。**闸门顺序写在 SPEC §5 M4c 的表里，环环不可省**——尤其是静态检查必须
-在 spawn 之前（那正是它能给出可读报错的前提）。`compare_pit` 的判据从「策略名 =
-event_driven」泛化为源码里的 `USES_EVENTS`（`uses_events_of`）。
+M4c 的用户策略分支一字未改其闸门：`strategy="user"` 时**只认库里的源码**（先保存才能跑），
+`compare_pit` 的判据是源码里的 `USES_EVENTS`（`uses_events_of`）。
 """
 
 from __future__ import annotations
@@ -30,15 +31,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.api.strategies import normalize_strategy_id
 from app.backtest.costs import CostModel
-from app.backtest.engine import BacktestConfig
-from app.backtest.report import build_report, resolve_window
+from app.backtest.report import resolve_window
 from app.backtest.strategies import EventDriven, available_strategies, validate_params
-from app.backtest.types import Mode
 from app.core.auth import require_db, require_user
-from app.strategy import USER_STRATEGY, StrategyCheckFailed, code_sha256
+from app.strategy import USER_STRATEGY, StrategyCheckFailed
 from app.strategy.api import parse_meta
 from app.strategy.params import validate_params as validate_user_params
-from app.strategy.sandbox import run_user_strategy
 from app.strategy.static_check import check_source, has_errors
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["backtest"])
@@ -58,12 +56,11 @@ class CostOptions(BaseModel):
     slippage_bps: float = Field(default=5.0, ge=0.0, le=100.0)
 
     def to_model(self) -> CostModel:
-        model = CostModel(slippage_bps=self.slippage_bps)
-        if not self.fees:
-            model = model.without_fees()
-        if not self.slippage:
-            model = model.without_slippage()
-        return model
+        # 开关逻辑只有一处实现（`CostModel.from_options`）——任务执行体从冻结的
+        # `costs` 字典重建时走的是同一个函数
+        return CostModel.from_options(
+            fees=self.fees, slippage=self.slippage, slippage_bps=self.slippage_bps
+        )
 
 
 class BacktestRequest(BaseModel):
@@ -110,18 +107,22 @@ class BacktestRequest(BaseModel):
         return self
 
 
-def _stored_request(body: BacktestRequest, start: date, end: date) -> dict[str, Any]:
-    """落库的 `request` = **解析后的 config**（区间已填好），不是原始请求体。
+def _stored_request(body: BacktestRequest, start: date, end: date, **execution: Any) -> dict[str, Any]:
+    """任务行的 `request` = **解析后的 config**（区间已填好）+ 冻结的执行字段。
 
     `mode="json"` 不是可选项：`start`/`end` 是 `date`，原样塞进 Jsonb 会在 dump 时 TypeError。
     `adjust` 不在请求体里（引擎写死 qfq），补上；`costs` 用**请求的** `CostOptions`
     ——`config.costs` 是 `CostModel`，不可序列化；`pit_mode` 存请求值（`both` 也是合法记录），
     不存归一后的 `Mode.PIT`，否则回看时分不清当初请求的是哪种。
+
+    这份字典两处用：任务行（worker 照它执行）与 `backtest_runs.request`（执行体剔掉执行字段
+    后落库）——**同一份材料，不给执行另造一套形状**。
     """
     stored = body.model_dump(mode="json")
     stored["start"] = start.isoformat()
     stored["end"] = end.isoformat()
     stored["adjust"] = "qfq"
+    stored.update(execution)
     return stored
 
 
@@ -133,13 +134,13 @@ def normalize_run_id(raw: str) -> str:
         raise HTTPException(status_code=422, detail="run_id 必须是 UUID") from exc
 
 
-async def run_user_backtest(
+async def submit_user_backtest(
     request: Request, body: BacktestRequest, user: dict[str, Any]
 ) -> dict[str, Any]:
-    """用户策略分支（M4c）：`先保存才能跑`，跑的是**库里那条**源码。
+    """用户策略分支（M4c）：`先保存才能跑`，跑的是**库里那条**源码（提交时冻结进任务行）。
 
-    闸门顺序（SPEC §5 M4c，环环不可省）：归属 404 → 静态检查 `error`=0 → 参数校验 → 沙箱。
-    静态检查必须在 spawn **之前**：那正是「运行前带行号给话术」成立的前提。
+    闸门顺序（SPEC §5 M4c，环环不可省）：归属 404 → 静态检查 `error`=0 → 参数校验 → 入队。
+    静态检查必须在这里（**入队前**）：那正是「运行前带行号给话术」成立的前提。
     """
     db = require_db(request)
     user_id = int(user["id"])
@@ -167,45 +168,49 @@ async def run_user_backtest(
     )
     # 同内置策略的口径：不消费事件的策略两模式必然同结果，跑第二遍只会误导
     compare_pit = body.pit_mode == "both" and meta.uses_events
-    config = BacktestConfig(
-        symbol=body.symbol,
-        strategy=USER_STRATEGY,
-        start=start,
-        end=end,
-        adjust="qfq",
-        pit_mode=Mode.PIT if body.pit_mode == "both" else Mode(body.pit_mode),
-        costs=body.costs.to_model(),
-        params=params,
-    )
-    outcome = await run_user_strategy(
-        code,
-        config=config,
+    return await _enqueue(
+        db,
+        user_id,
+        body,
+        start,
+        end,
+        # 冻结：源码全文与参数校验结果一起进任务行，执行体照它跑（SPEC §2.1）
+        source=code,
         strategy_name=row["name"],
         uses_events=meta.uses_events,
         compare_pit=compare_pit,
+        params=params,
     )
 
-    run_id = str(uuid.uuid4())
-    await db.save_backtest_run(
-        run_id,
-        user_id,
-        _stored_request(body, start, end),
-        outcome.report,
-        strategy_id=strategy_id,
-        code_sha256=code_sha256(code),
+
+async def _enqueue(
+    db: Any,
+    user_id: int,
+    body: BacktestRequest,
+    start: date,
+    end: date,
+    **execution: Any,
+) -> dict[str, Any]:
+    """建任务行并回 `{task_id, status}`。**队列实体就是任务表**（SPEC §2.2）：
+    这里只落一行 `queued`，worker 自己会来取——不往任何进程内队列里塞东西，
+    因此离线用例（模块级 `TestClient`，每请求一个事件循环）不会碰到跨 loop 的队列。
+    """
+    task_id = str(uuid.uuid4())
+    await db.create_task(
+        task_id, user_id, "backtest", _stored_request(body, start, end, **execution)
     )
-    return {"run_id": run_id, "report": outcome.report}
+    return {"task_id": task_id, "status": "queued"}
 
 
-@router.post("")
+@router.post("", status_code=202)
 async def run_backtest(
     request: Request,
     body: BacktestRequest,
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """跑一次回测，落库并返回 `{run_id, report}`。"""
+    """提交一次回测：**202 + `{task_id}`**，不等引擎。轮询 `GET /api/v1/tasks/{task_id}`。"""
     if body.strategy == USER_STRATEGY:
-        return await run_user_backtest(request, body, user)
+        return await submit_user_backtest(request, body, user)
 
     start, end = await asyncio.to_thread(
         resolve_window, body.symbol, body.strategy, body.start, body.end
@@ -213,24 +218,14 @@ async def run_backtest(
 
     # ma_cross 不消费事件语料，两模式必然同结果，跑第二遍只会误导（与 CLI 同口径）
     compare_pit = body.pit_mode == "both" and body.strategy == EventDriven.name
-
-    config = BacktestConfig(
-        symbol=body.symbol,
-        strategy=body.strategy,
-        start=start,
-        end=end,
-        adjust="qfq",
-        pit_mode=Mode.PIT if body.pit_mode == "both" else Mode(body.pit_mode),
-        costs=body.costs.to_model(),
-        params=body.params,
+    return await _enqueue(
+        require_db(request),
+        int(user["id"]),
+        body,
+        start,
+        end,
+        compare_pit=compare_pit,
     )
-    report = await asyncio.to_thread(build_report, config, compare_pit=compare_pit)
-
-    run_id = str(uuid.uuid4())
-    await require_db(request).save_backtest_run(
-        run_id, int(user["id"]), _stored_request(body, start, end), report
-    )
-    return {"run_id": run_id, "report": report}
 
 
 @router.get("/runs")

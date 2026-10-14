@@ -17,9 +17,9 @@ import type { FactorQueryInput } from "./factor-report";
 import { query } from "./query";
 import type {
   BacktestRequest,
-  BacktestResponse,
   BacktestRunDetail,
   BacktestRunSummary,
+  BacktestSubmitted,
   BarsResponse,
   CrossSection,
   DataFreshness,
@@ -34,6 +34,8 @@ import type {
   StrategySaved,
   StrategySummary,
   StrategyTemplate,
+  TaskDetail,
+  TaskSummary,
   FactorReport,
   OptimizeRunDetail,
   OptimizeRunSummary,
@@ -170,9 +172,28 @@ export const api = {
   events: (symbol: string, params: { start?: string; end?: string } = {}) =>
     request<EventsResponse>(`/api/v1/events${query({ symbol, ...params })}`),
 
-  /** M1c 起返回信封 `{run_id, report}`，且需要登录（跑完会落库） */
-  backtest: (body: BacktestRequest) =>
-    request<BacktestResponse>("/api/v1/backtest", jsonInit("POST", body)),
+  /**
+   * **提交**一次回测（P3-E1a）：202 + `{task_id}`，不等引擎。
+   * 报告经 `api.run(run_id)` 取回——`useBacktestTask` 把「提交 → 轮询 → 取 run_id」串起来。
+   *
+   * 全部闸门仍在提交期判（401/404/422/503 照旧）；**跑起来才知道**的错误（沙箱配额、
+   * 用户代码运行期异常）落在任务 `error` 里。
+   */
+  submitBacktest: (body: BacktestRequest) =>
+    request<BacktestSubmitted>("/api/v1/backtest", jsonInit("POST", body)),
+
+  // ── 任务（P3-E1a）─────────────────────────────────────────────────────
+  tasks: (limit = 20) => request<TaskSummary[]>(`/api/v1/tasks${query({ limit })}`),
+
+  /** 轮询与回看都走它：`status` / `progress` / `result.run_id` / `error` */
+  task: (taskId: string) =>
+    request<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(taskId)}`),
+
+  /** 取消排队中的任务；已在跑或已结束是 409（后端如实拒绝，不假装能停） */
+  cancelTask: (taskId: string) =>
+    request<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+    }),
 
   // ── 我的回测（M1c）────────────────────────────────────────────────────
   runs: (limit = 20) =>

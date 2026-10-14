@@ -26,7 +26,7 @@ from app.agent.deep.budget import Budget
 from app.agent.deep.numbers import allowed_numbers, extract_numbers, untraceable_numbers
 from app.agent.deep.types import ROLE_LABELS, Brief, EvidenceRef, RoleResult
 from app.core.config import get_settings
-from app.core.llm import complete
+from app.core import llm
 
 #: 解读的统一硬要求：数字只能来自给定材料，不许算、不许编（claim 闸门在角色层的预演）
 INTERPRET_RULES = (
@@ -114,7 +114,7 @@ async def interpret(
 
     started = time.perf_counter()
     try:
-        result = await complete(
+        result = await llm.complete(
             interpret_prompt(role, material),
             model=ctx.fast_model,
             timeout=ctx.timeout,

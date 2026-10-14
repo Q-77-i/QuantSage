@@ -26,6 +26,11 @@ from psycopg_pool import AsyncConnectionPool
 #: 建表默认值与它同源（下面的 DDL 由它拼出），避免两处各写一份字面量而漂移。
 DEFAULT_GROUP = "默认分组"
 
+#: 任务行的对外列。`user_id` 留在行里**不出接口**（与既有约定一致：归属只作过滤条件）。
+_TASK_COLUMNS = (
+    "id, kind, status, request, progress, result, error, created_at, started_at, finished_at"
+)
+
 # 幂等建表：按依赖顺序，users 在前（其余表挂它的外键）
 SCHEMA = (
     """
@@ -224,6 +229,31 @@ SCHEMA = (
     "DEFAULT 'paper_account_report'",
     "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS subject JSONB",
     "ALTER TABLE research_reports ALTER COLUMN account_id DROP NOT NULL",
+    # ── P3-E1a：异步回测任务（SPEC §2.1）──
+    # **队列实体就是这张表**：worker 轮询取 `status='queued'` 的行，不另设 `asyncio.Queue`
+    # （它绑事件循环，而离线用例是模块级 TestClient、每请求一个 loop——SPEC §2.2）。
+    # `request` 同时是「用户可见入参」与「冻结的执行材料」（用户策略源码全文在内），
+    # 理由同 SPEC §2.1：异步化后出现了「提交后被改源码」的窗口。
+    """
+    CREATE TABLE IF NOT EXISTS tasks (
+        id          UUID PRIMARY KEY,
+        user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        kind        TEXT        NOT NULL,
+        status      TEXT        NOT NULL,
+        request     JSONB       NOT NULL,
+        progress    JSONB       NOT NULL DEFAULT '{}'::jsonb,
+        result      JSONB,
+        error       JSONB,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        started_at  TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS tasks_user_created_idx "
+    "ON tasks (user_id, created_at DESC)",
+    # worker 取件与启动扫尾都按 status 过滤，且任务表是**热表**（每次回测一行）
+    "CREATE INDEX IF NOT EXISTS tasks_status_created_idx ON tasks (status, created_at)",
 )
 
 
@@ -928,6 +958,115 @@ class Database:
             "shared_at, created_at FROM research_reports WHERE share_token = %s",
             (token,),
         )
+
+    # ── 异步任务（P3-E1a）────────────────────────────────────
+
+    async def create_task(
+        self,
+        task_id: str,
+        user_id: int,
+        kind: str,
+        request: dict[str, Any],
+        *,
+        total: int = 1,
+    ) -> dict[str, Any]:
+        """建一条 `queued` 任务。`total` 是格数——单次回测恒 1（E1b 的网格是展开后的格数）。"""
+        row = await self._one(
+            "INSERT INTO tasks (id, user_id, kind, status, request, progress) "
+            "VALUES (%s::uuid, %s, %s, 'queued', %s, %s) "
+            f"RETURNING {_TASK_COLUMNS}",
+            (task_id, user_id, kind, Jsonb(request), Jsonb({"done": 0, "total": total})),
+        )
+        assert row is not None  # INSERT ... RETURNING 必然有行
+        return row
+
+    async def get_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
+        """越权与不存在同为 None（调用方一律翻 404，与既有矩阵同姿态）。"""
+        return await self._one(
+            f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = %s::uuid AND user_id = %s",
+            (task_id, user_id),
+        )
+
+    async def list_tasks(self, user_id: int, limit: int) -> list[dict[str, Any]]:
+        """倒序摘要。**不带整份 `request`**（用户策略源码在里面），只抽列表要用的两列——
+        与 `list_backtest_runs` 同一个理由：列表不为每行拖几 KB 回来。"""
+        return await self._all(
+            "SELECT id, kind, status, progress, result, error, created_at, started_at, "
+            "finished_at, request->>'symbol' AS symbol, request->>'strategy' AS strategy "
+            "FROM tasks WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+            (user_id, limit),
+        )
+
+    async def claim_next_task(self) -> dict[str, Any] | None:
+        """取排队最久的一件并**原子地**置为 `running`。没有可取的返 None。
+
+        「选 + 占」写在**一条语句**里（子查询与更新同属一条语句），所以两个 worker 同时
+        取也只会有一个拿到行——本仓是单 worker，这条性质是白拿的保险，不是为了多 worker。
+        """
+        return await self._one(
+            "UPDATE tasks SET status = 'running', started_at = now(), updated_at = now() "
+            "WHERE id = (SELECT id FROM tasks WHERE status = 'queued' "
+            "            ORDER BY created_at, id LIMIT 1) "
+            # 取件**多带 `user_id`**：执行体要拿它落 `backtest_runs` 的归属。
+            # 对外列不含它是给端点的（归属只作过滤条件，不出接口）——两者的用途不同
+            f"RETURNING user_id, {_TASK_COLUMNS}",
+            (),
+        )
+
+    async def update_task_progress(self, task_id: str, *, done: int, total: int) -> None:
+        """进度。E1a 的单次回测只在收尾置 1/1（E1b 的网格逐格推）。"""
+        await self._exec(
+            "UPDATE tasks SET progress = %s, updated_at = now() "
+            "WHERE id = %s::uuid AND status = 'running'",
+            (Jsonb({"done": done, "total": total}), task_id),
+        )
+
+    async def finish_task(self, task_id: str, *, result: dict[str, Any]) -> None:
+        """标完成。`status = 'running'` 是条件：被扫尾标成 `failed` 的行不该被迟到的完成覆盖。"""
+        await self._exec(
+            "UPDATE tasks SET status = 'done', result = %s, finished_at = now(), "
+            "updated_at = now() WHERE id = %s::uuid AND status = 'running'",
+            (Jsonb(result), task_id),
+        )
+
+    async def fail_task(self, task_id: str, *, error: dict[str, Any]) -> None:
+        """标失败。**不落 `backtest_runs`**——与今天异常路径不留半条记录的语义一致。"""
+        await self._exec(
+            "UPDATE tasks SET status = 'failed', error = %s, finished_at = now(), "
+            "updated_at = now() WHERE id = %s::uuid AND status = 'running'",
+            (Jsonb(error), task_id),
+        )
+
+    async def cancel_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:
+        """取消：**只对 `queued` 生效**（条件更新），返回当前行。不存在/非本人返 None。
+
+        调用方据返回的 `status` 判 409：已在跑的单次回测中止不了（子线程 + 沙箱子进程），
+        如实拒绝而不是假装能停。与 worker 之间无需加锁：`cancel` 只改 `queued` 行、
+        `claim_next_task` 只选 `queued` 行，两条语句各自原子，谁先命中谁生效。
+        """
+        cancelled = await self._one(
+            "UPDATE tasks SET status = 'cancelled', finished_at = now(), updated_at = now() "
+            "WHERE id = %s::uuid AND user_id = %s AND status = 'queued' "
+            f"RETURNING {_TASK_COLUMNS}",
+            (task_id, user_id),
+        )
+        if cancelled is not None:
+            return cancelled
+        return await self.get_task(user_id, task_id)
+
+    async def sweep_interrupted_tasks(self) -> int:
+        """启动扫尾：上一条进程留下的 `running` 行标为 `failed / interrupted`，返回条数。
+
+        **不自动重跑**（SPEC §2.4）：静默重跑比明说失败更让人困惑；排队中的那些由 worker
+        自然接续（表即队列），所以这里只处理 `running`。
+        """
+        rows = await self._all(
+            "UPDATE tasks SET status = 'failed', error = %s, finished_at = now(), "
+            "updated_at = now() WHERE status = 'running' RETURNING id",
+            # `kind` 与执行失败的 `error_of` 同一套词汇（前端只写一份分档逻辑）
+            (Jsonb({"kind": "interrupted", "message": "服务重启中断"}),),
+        )
+        return len(rows)
 
     # ── 内部 ────────────────────────────────────────────────
 

@@ -8,6 +8,9 @@
   * 落库的 `request` 是**解析后的 config**，且**必须 JSON 可序列化**——`resolve_window`
     返回的是 `date`，漏掉 `mode="json"` 会在真库写 JSONB 时炸，这里用 `json.dumps` 提前拦；
   * 归属：列表只回本人的，按 id 取回越权一律 404。
+
+P3-E1a 起取数是三步（提交 → 跑队列 → 取报告），收在 `conftest.submit_and_run` 里；
+本文件的 `run_backtest()` 是它按本文件口径的包装。
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from fastapi.testclient import TestClient
 
 from app.data import duckdb_client
 from app.main import app
-from tests.conftest import make_backtest_dir, trading_days
+from tests.conftest import make_backtest_dir, submit_and_run, trading_days
 from tests.fakes import FakeDatabase
 
 client = TestClient(app)
@@ -47,11 +50,8 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def run_backtest(**overrides: Any) -> dict[str, Any]:
-    response = client.post(
-        "/api/v1/backtest", json={"strategy": "ma_cross", "symbol": SYMBOL, **overrides}
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+    """提交 + 跑队列 + 取回 `{run_id, report}`（P3-E1a：端点先回 202）。"""
+    return submit_and_run(client, {"strategy": "ma_cross", "symbol": SYMBOL, **overrides})
 
 
 # ── 鉴权门 ──────────────────────────────────────────────────────────────────

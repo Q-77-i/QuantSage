@@ -13,7 +13,8 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from app.core.llm import DEFAULT_MODEL, LLMNotConfigured, ask_once
+from app.core import llm
+from app.core.llm import DEFAULT_MODEL, LLMNotConfigured
 
 #: prompt 版本：改一个字就升一版（记忆里以它为身份，配合模型名判断「同一段反思」）
 REFLECTION_PROMPT_VERSION = "m7-reflection-1"
@@ -85,7 +86,7 @@ async def build_reflection(
 ) -> Reflection:
     """生成一句话教训；任何失败都降级为「缺席 + 原因」，不向上抛。"""
     try:
-        text = await ask_once(reflection_prompt(facts), model=model, timeout=timeout, chat=chat)
+        text = await llm.ask_once(reflection_prompt(facts), model=model, timeout=timeout, chat=chat)
     except LLMNotConfigured as exc:
         return Reflection(None, model, note=f"模型未配置：{exc}")
     except TimeoutError:

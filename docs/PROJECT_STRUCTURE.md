@@ -11,8 +11,8 @@ QuantSage/
 │   ├── app/
 │   │   ├── agent/                # 快路径：ReAct 图、工具白名单、prompt、历史回合合并
 │   │   │   └── deep/             # 深路径：路由 / 五角色取证 / 归并 / 辩论 / 综合 / 风控闸门 / 预算
-│   │   ├── api/                  # 13 个挂路由的模块：auth · chat · backtest · watchlist · market · events
-│   │   │                         #   strategies · optimize · factor · paper · reports · research · etl
+│   │   ├── api/                  # 14 个挂路由的模块：auth · chat · backtest · watchlist · market · events
+│   │   │                         #   strategies · optimize · factor · paper · reports · research · etl · tasks
 │   │   │                         #   （sse.py 是帧编码共用件，不挂路由）
 │   │   ├── backtest/             # 引擎、PIT 闸门、撮合、成本、指标、报告、A 股规则、批量、过拟合
 │   │   ├── strategy/             # 用户策略沙箱、前视静态检查（R0–R5）、模板库
@@ -22,6 +22,7 @@ QuantSage/
 │   │   ├── memory/               # 决策记忆：到期结算、教训、跨账户聚合（LangGraph Store）
 │   │   ├── rag/                  # 嵌入 / 检索 / PIT 硬过滤 / 重排
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新）
+│   │   ├── tasks/                # 异步任务：执行体（按 kind 派发）+ 单 worker 取件循环（队列 = tasks 表）
 │   │   ├── data/                 # DuckDB 客户端、交易日历、行情刷新、小石 CLI/MCP 装配
 │   │   └── core/                 # 配置、checkpointer、LLM 与 Langfuse 入口、日志脱敏
 │   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py）
@@ -36,8 +37,8 @@ QuantSage/
 │   │   │                         #   /r/[token] 公开分享页 · /print/[id] 打印页
 │   │   └── (app)/                # 受保护路由组（登录守卫与页头都挂在这一层）
 │   ├── components/               # agent-run · auth · backtest · chat · events · factor · home
-│   │                             #   optimize · paper · research · space · stocks · strategies · ui
-│   └── lib/                      # SSE、图表主题与手势、对话状态机、分页、格式化
+│   │                             #   optimize · paper · research · space · stocks · strategies · tasks · ui
+│   └── lib/                      # SSE、图表主题与手势、对话状态机、任务轮询、分页、格式化
 │                                 #   （纯函数 + 单测；组件本身不做单测，靠走查脚本）
 ├── docs/
 │   ├── PRD.md                    # 需求与验收

@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from tests.integration.conftest import purge_rows, sign_up
+from tests.integration.conftest import purge_rows, run_backtest, sign_up
 
 pytestmark = pytest.mark.integration
 
@@ -87,12 +87,10 @@ def test_backtest_run_round_trips_through_jsonb(real_stack: TestClient) -> None:
     email = fresh_emails("run", 1)[0]
     try:
         member = sign_up(email)
-        response = member.post(
-            "/api/v1/backtest",
-            json={"strategy": "ma_cross", "symbol": SYMBOL, "pit_mode": "both"},
+        # P3-E1a：提交 202 → 等任务 → 报告经 runs/{id} 取回
+        _task, created = run_backtest(
+            member, {"strategy": "ma_cross", "symbol": SYMBOL, "pit_mode": "both"}
         )
-        assert response.status_code == 200, response.text
-        created = response.json()
         run_id = created["run_id"]
 
         summary = member.get("/api/v1/backtest/runs").json()[0]
@@ -116,10 +114,7 @@ def test_runs_and_watchlist_are_invisible_across_accounts(real_stack: TestClient
     alice_email, bob_email = fresh_emails("iso", 2)
     try:
         alice, bob = sign_up(alice_email), sign_up(bob_email)
-        assert (
-            alice.post("/api/v1/backtest", json={"strategy": "ma_cross", "symbol": SYMBOL}).status_code
-            == 200
-        )
+        run_backtest(alice, {"strategy": "ma_cross", "symbol": SYMBOL})
         run_id = alice.get("/api/v1/backtest/runs").json()[0]["id"]
 
         assert bob.get("/api/v1/backtest/runs").json() == []
@@ -133,10 +128,7 @@ def test_deleting_the_account_cascades_to_owned_rows(real_stack: TestClient) -> 
     email = fresh_emails("cascade", 1)[0]
     member = sign_up(email)
     assert member.post("/api/v1/watchlist", json={"symbol": SYMBOL}).status_code == 201
-    assert (
-        member.post("/api/v1/backtest", json={"strategy": "ma_cross", "symbol": SYMBOL}).status_code
-        == 200
-    )
+    run_backtest(member, {"strategy": "ma_cross", "symbol": SYMBOL})
     assert owned_rows(email, "watchlist") == 1
     assert owned_rows(email, "backtest_runs") == 1
 

@@ -12,7 +12,7 @@ import { RunsList } from "@/components/optimize/runs-list";
 import { SharpeDistribution } from "@/components/optimize/sharpe-distribution";
 import { batchPicks, useDescriptors, useUserStrategies } from "@/components/optimize/use-catalog";
 import { useOptimize } from "@/components/optimize/use-optimize";
-import { api, describeError } from "@/lib/api";
+import { useBacktestTask } from "@/components/tasks/use-task";
 import { builtinDescriptors, parseAxisValues, parseSymbolList } from "@/lib/optimize-form";
 import type { BatchColumn } from "@/lib/optimize-matrix";
 import {
@@ -61,6 +61,8 @@ function OptimizeView() {
   const picks = useMemo(() => batchPicks(userStrategies), [userStrategies]);
 
   const { running, started, cells, done, error, runId, run, stop, loadRun } = useOptimize();
+  /** 「点一格重跑」提交的是**异步任务**（P3-E1a）：提交 + 轮询到终态再跳 */
+  const pickTask = useBacktestTask();
   const [picking, setPicking] = useState<number | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   const [reopened, setReopened] = useState<OptimizeSummary | null>(null);
@@ -126,6 +128,9 @@ function OptimizeView() {
    *
    * 不复用网格里的那份报告，是因为 `summary` 里**只有指标、没有净值曲线与逐笔**
    * （SPEC §6 M5b 定的：一百格 × 上千点净值曲线会把汇总撑成 MB 级）。单格 70–500ms，无感。
+   *
+   * P3-E1a 起端点只**提交**（202 + 任务号），跑完才跳——`useBacktestTask` 负责那段轮询，
+   * 失败原因（含用户策略的运行期错误）由它的返回值带出。
    */
   const pick = useCallback(
     (cellIndex: number) => {
@@ -134,17 +139,16 @@ function OptimizeView() {
       setPicking(cellIndex);
       setPickError(null);
       void (async () => {
-        try {
-          const { run_id } = await api.backtest(backtestBodyOf(cell));
-          router.push(`/backtest?run=${run_id}`);
-        } catch (cause) {
-          setPickError(describeError(cause, "重跑这一格失败：后端未启动或网络不通。"));
-        } finally {
-          setPicking(null);
+        const outcome = await pickTask.submit(backtestBodyOf(cell));
+        if (!outcome.ok) {
+          setPickError(outcome.failure.message);
+        } else {
+          router.push(`/backtest?run=${outcome.runId}`);
         }
+        setPicking(null);
       })();
     },
-    [cells, reopened, router],
+    [cells, pickTask, reopened, router],
   );
 
   const live = useMemo(

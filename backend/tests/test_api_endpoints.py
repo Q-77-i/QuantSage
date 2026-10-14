@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.data import duckdb_client
 from app.main import app
-from tests.conftest import make_backtest_dir, trading_days, ts, write_bars_parquet
+from tests.conftest import make_backtest_dir, submit_and_run, trading_days, ts, write_bars_parquet
 from tests.fakes import FakeDatabase
 
 client = TestClient(app)
@@ -255,17 +255,27 @@ def test_events_empty_window_is_not_404(data_dir: Path) -> None:
 
 
 def post_backtest(**overrides) -> object:
+    """**提交**一次回测（P3-E1a 起回 202 + `{task_id}`）。验状态码的用例用它。"""
     payload = {"strategy": "ma_cross", "symbol": SYMBOL, **overrides}
     return client.post("/api/v1/backtest", json=payload)
+
+
+def run_backtest(**overrides) -> dict:
+    """提交 + 跑队列 + 取回 `{run_id, report}`。要报告的用例用它。"""
+    return submit_and_run(client, {"strategy": "ma_cross", "symbol": SYMBOL, **overrides})
 
 
 def test_backtest_returns_envelope_around_spec_section5_shape(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    """信封是新增的一层，报告结构本身没动（P1 SPEC §6）。"""
-    response = post_backtest()
-    assert response.status_code == 200
-    body = response.json()
+    """信封还在，报告结构本身没动（P1 SPEC §6）；E1a 变的只是**取回它的路径**：
+    提交回 202 + `{task_id}`，报告的 `{run_id, report}` 信封改由
+    `GET /api/v1/backtest/runs/{id}` 给（`submit_and_run` 走的就是前端那条路）。"""
+    submitted = post_backtest()
+    assert submitted.status_code == 202
+    assert set(submitted.json()) == {"task_id", "status"}
+
+    body = run_backtest()
     assert set(body) == {"run_id", "report"}
 
     report = body["report"]
@@ -286,21 +296,21 @@ def test_backtest_default_window_uses_event_start_for_event_driven(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
     """缺省区间与 CLI 同口径：事件策略从事件窗口起跑，不从行情起点空转。"""
-    body = post_backtest(strategy="event_driven").json()["report"]
+    body = run_backtest(strategy="event_driven")["report"]
     assert body["meta"]["start"] == EVENT_START.isoformat()
 
 
 def test_backtest_default_window_uses_bar_start_for_ma_cross(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    body = post_backtest(strategy="ma_cross").json()["report"]
+    body = run_backtest(strategy="ma_cross")["report"]
     assert body["meta"]["start"] == START.isoformat()
 
 
 def test_backtest_both_modes_yields_comparison_for_event_driven(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    body = post_backtest(strategy="event_driven", pit_mode="both").json()["report"]
+    body = run_backtest(strategy="event_driven", pit_mode="both")["report"]
     comparison = body["pit_comparison"]
     assert comparison is not None
     assert set(comparison) == {"pit_metrics", "non_pit_metrics", "delta", "entry_dates"}
@@ -310,21 +320,21 @@ def test_backtest_both_modes_stays_null_for_ma_cross(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
     """ma_cross 不消费事件语料，两模式必然同结果——不做无意义的二次回测。"""
-    body = post_backtest(strategy="ma_cross", pit_mode="both").json()["report"]
+    body = run_backtest(strategy="ma_cross", pit_mode="both")["report"]
     assert body["pit_comparison"] is None
 
 
 def test_backtest_pit_mode_selects_cutoff_field(signed_in: FakeDatabase, data_dir: Path) -> None:
-    assert post_backtest(pit_mode="pit").json()["report"]["meta"]["cutoff_field"] == "available_at"
+    assert run_backtest(pit_mode="pit")["report"]["meta"]["cutoff_field"] == "available_at"
     assert (
-        post_backtest(pit_mode="non_pit").json()["report"]["meta"]["cutoff_field"]
+        run_backtest(pit_mode="non_pit")["report"]["meta"]["cutoff_field"]
         == "event_time"
     )
 
 
 def test_backtest_cost_switches_reach_the_engine(signed_in: FakeDatabase, data_dir: Path) -> None:
-    with_costs = post_backtest(costs={"fees": True, "slippage": True}).json()["report"]
-    without = post_backtest(costs={"fees": False, "slippage": False}).json()["report"]
+    with_costs = run_backtest(costs={"fees": True, "slippage": True})["report"]
+    without = run_backtest(costs={"fees": False, "slippage": False})["report"]
     assert with_costs["meta"]["costs"] != without["meta"]["costs"]
 
 
@@ -363,9 +373,13 @@ def test_backtest_param_values_are_422(
 def test_backtest_frontend_boundary_values_still_pass(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    """反面守卫：T6c 前端放行的边界值，后端必须同样放行（不能悄悄加限制）。"""
-    assert post_backtest(strategy="ma_cross", params={"fast": 1, "slow": 2}).status_code == 200
-    assert post_backtest(strategy="event_driven", params={"hold_days": 1}).status_code == 200
+    """反面守卫：T6c 前端放行的边界值，后端必须同样放行（不能悄悄加限制）。
+
+    E1a 起「放行」有两段：提交期 202（闸门不拦）+ 执行期 `done`（真能跑出报告）——
+    只断言 202 会漏掉「参数过了校验但引擎跑不动」那类回归。
+    """
+    assert run_backtest(strategy="ma_cross", params={"fast": 1, "slow": 2})["report"]
+    assert run_backtest(strategy="event_driven", params={"hold_days": 1})["report"]
 
 
 def test_backtest_reversed_window_is_422(signed_in: FakeDatabase, data_dir: Path) -> None:
@@ -390,9 +404,10 @@ def test_backtest_data_not_ready_is_503(
 def test_backtest_failure_leaves_no_run_record(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    """落库在 `build_report` 成功之后：异常路径不该留下半条记录。"""
+    """落库在执行成功之后：闸门拦下的请求（404）**连任务都不建**，异常路径不留半条记录。"""
     assert post_backtest(symbol="000001").status_code == 404
     assert signed_in.runs == {}
+    assert signed_in.tasks == {}
 
 
 # ── CORS ────────────────────────────────────────────────────────────────────

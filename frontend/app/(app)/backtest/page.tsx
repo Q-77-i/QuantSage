@@ -39,7 +39,7 @@ import type { BacktestRunDetail, RejectSummary, StoredBacktestRequest } from "@/
  */
 export default function BacktestPage() {
   const [form, setForm] = useState<FormState>(defaultForm);
-  const { loading, report, bars, events, error, runId, run, loadRun } = useBacktest();
+  const { loading, report, bars, events, error, runId, phase, run, loadRun } = useBacktest();
   const errors = validateForm(form);
   const router = useRouter();
 
@@ -131,7 +131,7 @@ export default function BacktestPage() {
           // 重跑时保留上一次的结果，只把「运行中」标在指标区的回显行上——
           // 把整页清空再填回去，观感上像是页面被重置了
           <div className="mt-6 space-y-6">
-            <MetricsSummary report={report} running={loading} />
+            <MetricsSummary report={report} running={loading} phase={phase} />
 
             <ChartFrame
               title="净值曲线"

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from app.core.config import get_settings
 from app.data import duckdb_client as dc
 from app.main import app
-from tests.integration.conftest import purge_rows, sign_up
+from tests.integration.conftest import purge_rows, run_backtest, sign_up
 
 pytestmark = pytest.mark.integration
 
@@ -71,12 +71,11 @@ def test_events_endpoint_keeps_source_annotations() -> None:
 
 def test_event_driven_backtest_quantifies_pit_gap(member_client: TestClient) -> None:
     """T6 回测页的核心展示项：两模式对比必须真的有数，不是空壳。"""
-    response = member_client.post(
-        "/api/v1/backtest",
-        json={"strategy": "event_driven", "symbol": "300750", "pit_mode": "both"},
+    # P3-E1a：提交 202 → 等任务 → 报告经 runs/{id} 取回（`run_backtest` 就是这条路径）
+    _task, envelope = run_backtest(
+        member_client, {"strategy": "event_driven", "symbol": "300750", "pit_mode": "both"}
     )
-    assert response.status_code == 200
-    body = response.json()["report"]  # M1c 起外套信封 {run_id, report}
+    body = envelope["report"]
 
     comparison = body["pit_comparison"]
     assert comparison is not None
@@ -114,11 +113,10 @@ def test_event_driven_start_before_coverage_is_rejected(member_client: TestClien
 
 
 def test_ma_cross_backtest_covers_full_history(member_client: TestClient) -> None:
-    response = member_client.post(
-        "/api/v1/backtest", json={"strategy": "ma_cross", "symbol": "600519"}
+    _task, envelope = run_backtest(
+        member_client, {"strategy": "ma_cross", "symbol": "600519"}
     )
-    assert response.status_code == 200
-    body = response.json()["report"]
+    body = envelope["report"]
 
     assert body["meta"]["bars"] == len(dc.bars("600519", data_dir=DATA_DIR))
     assert body["pit_comparison"] is None

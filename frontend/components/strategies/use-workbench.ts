@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useBacktestTask } from "@/components/tasks/use-task";
 import { api, ApiError, describeError } from "@/lib/api";
 import {
   buildRunRequest,
@@ -67,6 +68,8 @@ export function useWorkbench() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  /** 提交 → 轮询到终态（P3-E1a）：`submit` 自己管 running/phase，结果由返回值带出 */
+  const task = useBacktestTask();
   const [error, setError] = useState<string | null>(null);
   /** 保存/运行时后端给的结构化失败（422 的 findings、沙箱的 kind） */
   const [failure, setFailure] = useState<RunFailure | null>(null);
@@ -244,7 +247,12 @@ export function useWorkbench() {
     [current, loadList],
   );
 
-  /** 「保存并运行」：先落库，闸门（error=0）过了才提交回测，跑完跳报告页 */
+  /**
+   * 「保存并运行」：先落库，闸门（error=0）过了才**提交**回测，任务终态后跳报告页。
+   *
+   * P3-E1a 起提交只回任务号，跑起来才知道的失败（沙箱配额、代码运行期异常）由
+   * `useBacktestTask` 收进 `failure`——与提交期 4xx 同一份形状，所以下面两处都喂同一个面板。
+   */
   const saveAndRun = useCallback(async () => {
     if (!current) return;
     setError(null);
@@ -267,15 +275,21 @@ export function useWorkbench() {
       setSaving(false);
       setRunning(true);
       const meta = check?.meta ?? null;
-      const { run_id } = await api.backtest(
+      const outcome = await task.submit(
         buildRunRequest(
           { strategyId: saved.id, ...runForm },
           meta,
           paramsFromForm(meta, values),
         ),
       );
-      router.push(`/backtest?run=${run_id}`);
+      if (!outcome.ok) {
+        // 失败已在 hook 里分好类（提交期 4xx / 执行期任务 error），这里只管渲染
+        setFailure(outcome.failure);
+        return;
+      }
+      router.push(`/backtest?run=${outcome.runId}`);
     } catch (cause) {
+      // `save()` 的落库失败走这里（`task.submit` 自己吞掉了它的失败，不会抛）
       if (cause instanceof ApiError) {
         setFailure(readRunFailure(cause.payload, cause.message));
       } else {
@@ -285,7 +299,7 @@ export function useWorkbench() {
       setSaving(false);
       setRunning(false);
     }
-  }, [check, current, runForm, router, save, values]);
+  }, [check, current, runForm, router, save, task, values]);
 
   /** 标注与面板吃同一份 findings；运行时被拦的 findings 也并进来（同一份源码，两份来源） */
   const findings: Finding[] = useMemo(

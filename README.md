@@ -166,7 +166,8 @@ flowchart LR
 | GET | `/health` · `/health/ready` | 存活 / 就绪探针（就绪含 Postgres 检查），公开 |
 | POST | `/api/v1/auth/register` · `/login` · `/logout`，GET `/me` 🔒 | cookie 会话（httpOnly + SameSite=Lax） |
 | POST | `/api/v1/chat` 🔒 | SSE 流式问答（`token` / `tool_call` / `tool_result` / `done` / `error`） |
-| POST | `/api/v1/backtest` 🔒 | 返回信封 `{run_id, report}`；`strategy="user"` 时带 `strategy_id` 走沙箱 |
+| POST | `/api/v1/backtest` 🔒 | **提交回 202 + `{task_id}`**（异步执行）；报告经 `GET /api/v1/backtest/runs/{run_id}` 取回。`strategy="user"` 时带 `strategy_id` 走沙箱 |
+| GET · POST | `/api/v1/tasks` · `/api/v1/tasks/{id}` · `/api/v1/tasks/{id}/cancel` 🔒 | 任务列表 / 状态轮询 / 取消排队中的任务；`error` 带 `kind`（用户代码的运行期异常另带 `line`） |
 | GET | `/api/v1/market/{symbol}/probe` | 6 位代码体检。**「本地没有」是 200 + `has_data:false`，不是 404** |
 | GET · POST | `/api/v1/etl/status` · `/api/v1/etl/run` 🔒 | 语料覆盖 / 缺口 / 调度器状态；手动触发（后台执行，已在跑 409） |
 
@@ -187,6 +188,7 @@ flowchart LR
 - **回测引擎不含组合与实盘**：模拟盘是**单账户多标的等额配额**，不是组合优化；样本不足时年化与夏普会被放大，UI 常驻提示
 - **延迟与成本的诚实读数**：深路径首问慢在冷启动（本地检索模型首次加载约 18s），实测跨进程端到端 **40.5s 冷启动 / 约 23s 预热**、10 次 LLM 调用、**$0.0156**。检索（召回 + 融合）p95 在 500ms 内达标；**含精排的完整链路是秒级**（CPU / MPS 上的 cross-encoder），口径见 [PRD](docs/PRD.md)
 - **深研报的「解读」落在模型的知识截止之内**：数字全部由代码取、并过一道**可追溯闸门**（对不上材料即拒收），但**那道闸门只管数字、不管叙述**——若分析窗口正好在模型训练数据里，它可能给出「听起来有据」却并非从材料推出来的解读。**目前没有对策**，如实记在这里
+- **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例假设**：同一库上起第二个进程时，后起者的启动扫尾会把前者正在跑的任务标成 `failed/interrupted`；被重启打断的任务不自动重跑，如实标失败
 - **Redis 至今未被后端调用**，仍是 compose 里就位的服务（缓存留 P3；限流/熔断已定稿走进程内，不依赖 Redis）
 - **前端只对纯函数做单测**，未引组件测试框架；界面靠 Playwright 走查脚本人工核对
 

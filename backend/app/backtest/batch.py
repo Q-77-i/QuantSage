@@ -70,12 +70,22 @@ CELL_ERROR_KINDS: dict[str, str] = {
 }
 
 
-def _error_of(exc: BaseException) -> dict[str, str]:
-    """把单格的异常翻成 `{kind, message}`。**不吞异常细节**——消息原样给出去。"""
+def error_of(exc: BaseException) -> dict[str, Any]:
+    """把异常翻成 `{kind, message}`（用户代码的问题另带 `line`）。**不吞异常细节**——消息原样给出去。
+
+    单格（本模块）与异步任务（P3-E1a 的 `tasks/worker.py`）共用这一份：同一批异常在两处
+    翻出两套 `kind` 词汇，前端就得写两份分档逻辑。异常类都在本模块可导入的范围内
+    （backtest / data / strategy 三层），故它留在这里而不是新起一个模块。
+    """
     if isinstance(exc, SandboxError):
         return {"kind": exc.kind, "message": str(exc)}
     if isinstance(exc, StrategyRejected):
-        return {"kind": "rejected", "message": str(exc)}
+        error: dict[str, Any] = {"kind": "rejected", "message": str(exc)}
+        if exc.line:
+            # 行号必须带出来（P3-E1a）：异步之前它走 422 响应体的 `line`（int），
+            # 现在走任务的 `error.line`——形状与那个响应体逐字一致，前端不用写第二套
+            error["line"] = exc.line
+        return error
     if isinstance(exc, NoDataError):
         return {"kind": "no_data", "message": str(exc)}
     if isinstance(exc, DataNotReady):
@@ -271,7 +281,7 @@ async def _execute_cell(spec: CellSpec, options: RunOptions, windows: _WindowCac
         )
     except Exception as exc:  # noqa: BLE001 —— **单格隔离**：任何异常都只影响这一格
         log.warning("批处理单格失败 %s/%s %s：%r", spec.symbol, spec.strategy, spec.params, exc)
-        cell.update(ok=False, error=_error_of(exc))
+        cell.update(ok=False, error=error_of(exc))
     cell["duration_ms"] = round((time.perf_counter() - started) * 1000, 1)
     return cell
 

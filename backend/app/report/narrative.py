@@ -18,7 +18,8 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from app.core.llm import DEFAULT_MODEL, LLMNotConfigured, ask_once
+from app.core import llm
+from app.core.llm import DEFAULT_MODEL, LLMNotConfigured
 
 #: prompt 版本：改一个字就升一版（报告里的综述以它为身份，与模型名一起构成缓存键）
 PROMPT_VERSION = "m7-narrative-1"
@@ -106,7 +107,7 @@ async def build_narrative(
 ) -> Narrative:
     """生成综述；任何失败都降级为「缺席 + 原因」，不向上抛。"""
     try:
-        text = await ask_once(narrative_prompt(facts), model=model, timeout=timeout, chat=chat)
+        text = await llm.ask_once(narrative_prompt(facts), model=model, timeout=timeout, chat=chat)
     except LLMNotConfigured as exc:
         return Narrative(None, model, note=f"模型未配置：{exc}")
     except TimeoutError:

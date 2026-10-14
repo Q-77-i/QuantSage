@@ -21,6 +21,7 @@ os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 from app.core.auth import require_user  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
@@ -249,3 +250,38 @@ def signed_in(jwt_secret: Any) -> Any:
     yield db
     app.dependency_overrides.clear()
     app.state.db = None
+
+
+def drive_tasks(db: Any) -> int:
+    """把排队中的任务跑光，返回跑了几件（P3-E1a）。
+
+    **离线用例不起常驻 worker**（SPEC §10 E1）：模块级 `TestClient` 每请求一个事件循环，
+    后台常驻协程在那种用法下活不过一次请求。`run_once` 就是 worker 常驻循环里的取件单元，
+    手动驱动它测的是同一条路径——不需要 sleep，也没有轮询竞态。
+    """
+    import asyncio
+
+    from app.tasks.worker import run_once
+
+    count = 0
+    while asyncio.run(run_once(db)):
+        count += 1
+    return count
+
+
+def submit_and_run(client: TestClient, body: Mapping[str, Any]) -> dict[str, Any]:
+    """提交 → 跑光队列 → 取回报告信封 `{run_id, report}`（P3-E1a 的公共取数路径）。
+
+    E1a 起报告不再内联在提交响应里，这三步是每个「要报告」的用例都要走的——
+    收在一处，改契约时只改这里。终态断言 `done`：调用方要的是报告，不是「排上了队」；
+    要验失败路径的用例自己打 `/api/v1/tasks/{id}` 看 `error`。
+    """
+    response = client.post("/api/v1/backtest", json=dict(body))
+    assert response.status_code == 202, response.text
+    drive_tasks(app.state.db)
+    task = client.get(f"/api/v1/tasks/{response.json()['task_id']}").json()
+    assert task["status"] == "done", task
+    detail = client.get(f"/api/v1/backtest/runs/{task['result']['run_id']}").json()
+    return {"run_id": detail["id"], "report": detail["report"]}
+
+

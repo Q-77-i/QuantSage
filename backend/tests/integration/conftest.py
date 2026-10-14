@@ -44,6 +44,35 @@ def real_stack(jwt_env: None) -> Iterator[TestClient]:
         yield client
 
 
+def wait_for_task(client: TestClient, task_id: str, *, timeout: float = 60.0) -> dict:
+    """等任务到终态（P3-E1a）。集成栈跑的是**真 lifespan**——worker 真的在跑。
+
+    所以这里**轮询真路径**而不是手动驱动：单次回测 0.3–2s + 取件间隔 200ms，
+    `timeout=60` 只是防挂；顺带把「提交 → worker 取件 → 落库」整条链路验在这一处。
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while True:
+        task = client.get(f"/api/v1/tasks/{task_id}").json()
+        if task["status"] in {"done", "failed", "cancelled"}:
+            return task
+        if time.monotonic() > deadline:
+            raise AssertionError(f"任务 {task_id} 超过 {timeout:.0f}s 仍未结束：{task}")
+        time.sleep(0.1)
+
+
+def run_backtest(client: TestClient, body: dict) -> tuple[dict, dict]:
+    """提交一次回测并等它跑完，返回 `(任务, 报告信封)`。失败时断言先炸在调用方那里。"""
+    response = client.post("/api/v1/backtest", json=body)
+    assert response.status_code == 202, response.text
+    task = wait_for_task(client, response.json()["task_id"])
+    if task["status"] != "done":
+        return task, {}
+    detail = client.get(f"/api/v1/backtest/runs/{task['result']['run_id']}").json()
+    return task, {"run_id": detail["id"], "report": detail["report"]}
+
+
 def sign_up(email: str) -> TestClient:
     """注册一个账号，返回带会话 cookie 的客户端（注册即登录态，与端点同口径）。"""
     client = TestClient(app)

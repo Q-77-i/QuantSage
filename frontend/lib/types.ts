@@ -263,9 +263,48 @@ export interface CostOptions {
 // ── 我的回测（M1c）─────────────────────────────────────────────────────────
 
 /** `POST /api/v1/backtest` 的响应信封：报告外面多一层归属标识（M1c 起） */
-export interface BacktestResponse {
-  run_id: string;
-  report: BacktestReport;
+/** P3-E1a：提交回 202 + 任务号；报告改由 `GET /backtest/runs/{run_id}` 取回 */
+export interface BacktestSubmitted {
+  task_id: string;
+  status: "queued";
+}
+
+/** 后端任务状态机的取值（`tasks` 表，SPEC §2.1） */
+export type TaskStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** 任务失败的原因。`line` 只有用户代码的运行期异常才有（与旧 422 响应体同形） */
+export interface TaskError {
+  kind: string;
+  message: string;
+  line?: number;
+}
+
+export interface TaskProgress {
+  done: number;
+  total: number;
+}
+
+interface TaskBase {
+  id: string;
+  kind: string;
+  status: TaskStatus;
+  progress: TaskProgress;
+  /** 完成时 `{run_id}`——报告本体不在这里，去 `/backtest/runs/{id}` 取 */
+  result: { run_id: string } | null;
+  error: TaskError | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** 列表项：不含整份 `request`（用户策略源码在里面），另抽两列供列表显示 */
+export interface TaskSummary extends TaskBase {
+  symbol: string | null;
+  strategy: string | null;
+}
+
+export interface TaskDetail extends TaskBase {
+  request: StoredBacktestRequest;
 }
 
 /** 落库的 `request` = **解析后的 config**（区间已填充，不是原始请求体） */

@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.strategy.templates import template_source
-from tests.integration.conftest import purge_rows, sign_up
+from tests.integration.conftest import purge_rows, run_backtest, sign_up
 
 pytestmark = pytest.mark.integration
 
@@ -108,16 +108,16 @@ def test_save_check_run_persist_reopen(real_stack: TestClient) -> None:
         assert checked["findings"] == []
         assert set(checked["meta"]["params"]) == {"fast", "slow"}
 
-        run = member.post(
-            "/api/v1/backtest",
-            json={"strategy": "user", "strategy_id": strategy_id, "symbol": SYMBOL},
+        # P3-E1a：提交 202 → 等任务（集成栈里 worker 真在跑）→ 报告经 runs/{id} 取回
+        task, envelope = run_backtest(
+            member, {"strategy": "user", "strategy_id": strategy_id, "symbol": SYMBOL}
         )
-        assert run.status_code == 200, run.text
-        report = run.json()["report"]
+        assert task["status"] == "done", task
+        report = envelope["report"]
         assert report["meta"]["strategy_kind"] == "user"
         assert report["meta"]["strategy_name"] == "端到端"
 
-        detail = member.get(f"/api/v1/backtest/runs/{run.json()['run_id']}").json()
+        detail = member.get(f"/api/v1/backtest/runs/{envelope['run_id']}").json()
         assert detail["strategy_id"] == strategy_id
         assert detail["code_sha256"] == saved.json()["code_sha256"]
         assert detail["report"]["metrics"] == report["metrics"]
@@ -139,10 +139,10 @@ def test_deleting_strategy_keeps_runs_and_account_cascade(real_stack: TestClient
         strategy_id = member.post(
             "/api/v1/strategies", json={"name": "要删的", "code": MA_CROSS}
         ).json()["id"]
-        run_id = member.post(
-            "/api/v1/backtest",
-            json={"strategy": "user", "strategy_id": strategy_id, "symbol": SYMBOL},
-        ).json()["run_id"]
+        _task, envelope = run_backtest(
+            member, {"strategy": "user", "strategy_id": strategy_id, "symbol": SYMBOL}
+        )
+        run_id = envelope["run_id"]
 
         assert member.delete(f"/api/v1/strategies/{strategy_id}").status_code == 200
         # 记录还在，报告自足（`strategy_id` 悬空）
