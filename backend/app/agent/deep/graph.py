@@ -138,7 +138,12 @@ def build_deep_graph(
     """构建并编译深路径图。`ctx` 按运行注入（含 Budget 与可选假模型）。"""
     from app.core.config import get_settings
 
-    rounds = min(max_rounds or get_settings().research_debate_rounds, MAX_ROUNDS_HARD)
+    settings = get_settings()
+    rounds = min(max_rounds or settings.research_debate_rounds, MAX_ROUNDS_HARD)
+    # 墙钟兜底（E4 L2）：每个节点一道，防「未知的挂点」。**它不是降级路径**——实测
+    # LangGraph 的节点超时在节点内接不住（捕获 CancelledError 后整图照样抛
+    # NodeTimeoutError），命中即整跑失败，由 runner 如实转成 failed。
+    node_timeout = settings.research_node_timeout_seconds
 
     async def merge_node(state: DeepState) -> dict[str, Any]:
         merged = _merged_evidence(state)
@@ -260,14 +265,14 @@ def build_deep_graph(
 
     builder = StateGraph(DeepState)
     for role in ROLES:
-        builder.add_node(role, _role_node(role, ctx))
+        builder.add_node(role, _role_node(role, ctx), timeout=node_timeout)
         builder.add_edge(START, role)
         builder.add_edge(role, MERGE_NODE)
-    builder.add_node(MERGE_NODE, merge_node)
-    builder.add_node(BULL_NODE, bull_node)
-    builder.add_node(BEAR_NODE, bear_node)
-    builder.add_node(SYNTH_NODE, synthesize_node)
-    builder.add_node(GATE_NODE, gate_node)
+    builder.add_node(MERGE_NODE, merge_node, timeout=node_timeout)
+    builder.add_node(BULL_NODE, bull_node, timeout=node_timeout)
+    builder.add_node(BEAR_NODE, bear_node, timeout=node_timeout)
+    builder.add_node(SYNTH_NODE, synthesize_node, timeout=node_timeout)
+    builder.add_node(GATE_NODE, gate_node, timeout=node_timeout)
     builder.add_edge(MERGE_NODE, BULL_NODE)
     builder.add_edge(BULL_NODE, BEAR_NODE)
     builder.add_conditional_edges(BEAR_NODE, debate_router, [BULL_NODE, SYNTH_NODE])

@@ -15,11 +15,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from langgraph.errors import NodeTimeoutError
 from langgraph.types import Command
 
 from app.agent.deep.budget import Budget
@@ -32,6 +34,8 @@ from app.agent.deep.synthesize import Draft
 from app.agent.deep.types import Brief, RoleResult
 from app.report.deep import assemble_deep_report, build_deep_body, run_facts_of
 from app.report.snapshot import data_snapshot, plain_json, report_hash, snapshot_hash
+
+log = logging.getLogger(__name__)
 
 #: 运行状态（与 `research_runs.status` 同一套字面量）
 STATUS_RUNNING = "running"
@@ -181,6 +185,20 @@ async def astream_deep_run(
             elif kind == "on_chain_end":
                 if str(node) in trace._open:
                     yield "node_end", trace.node_end(str(node))
+    except NodeTimeoutError as exc:
+        # 节点级墙钟兜底（E4 L2）：节点**挂住**了，不是「可预期的降级」。命中即整跑失败，
+        # 文案点名是哪个节点——通用那句 `NodeTimeoutError: Node 'x' exceeded…` 太像内部堆栈。
+        trace.close_open_nodes(status="failed")
+        node, seconds = exc.node, exc.timeout or 0.0
+        log.warning("深路径节点超时：%s（>%.0fs，已跑 %.1fs）", node, seconds, exc.elapsed)
+        yield "error", {"message": f"节点「{node}」超时（>{seconds:.0f}s）——本次运行已中止"}
+        yield "done", {
+            "run_id": run_id,
+            "status": STATUS_FAILED,
+            "events": trace.to_payload(),
+            "budget": ctx.budget.to_payload(),
+        }
+        return
     except Exception as exc:  # noqa: BLE001 —— 图整个炸了：如实报，不吞
         trace.close_open_nodes(status="failed")
         yield "error", {"message": f"{type(exc).__name__}: {exc}"}

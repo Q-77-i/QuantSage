@@ -9,11 +9,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from langchain_litellm import ChatLiteLLM
 
+from app.core import reliability
 from app.core.config import get_settings
+
+log = logging.getLogger(__name__)
 
 # provider 前缀是 LiteLLM 的路由依据（deepseek/ → api.deepseek.com/beta），换供应商只改这里
 DEFAULT_MODEL = "deepseek/deepseek-flash"
@@ -31,10 +36,125 @@ class LLMNotConfigured(RuntimeError):
     """DEEPSEEK_API_KEY 未在 .env 配置。"""
 
 
+#: chat 主链路的请求超时。**此前这条路径完全没有超时**——上游挂死就是 SSE 挂死
+#: （`complete()` 那条有 `asyncio.wait_for` 兜着，chat 走的是图，没人兜）。
+CHAT_TIMEOUT = 60.0
+
+#: 降级链：**单向**（SPEC §5.2）。反向升档不做——那是把故障掩盖成「更贵的成功」，
+#: 且会污染预算口径。
+FALLBACK_MODEL: dict[str, str] = {DEEP_MODEL: DEFAULT_MODEL}
+
+
+def dep_name(model: str) -> str:
+    """熔断依赖键。**按档位分**：降级链要能绕过已经熔断的那一档（SPEC §5.3）。"""
+    return f"llm:{model.rsplit('/', 1)[-1]}"
+
+
+def _with_fallback(model: str, exc: BaseException) -> str | None:
+    """失败之后该不该换档？返回要换到的模型，或 None（不换）。
+
+    这里问的问题与重试层不同：**「换个档还能不能成」**。所以熔断打开（`CircuitOpen`）
+    恰恰是必须换档的情形——那一档此刻已知不可用（SPEC §5.3）；而 `permanent`
+    （400 这类）换档也是同样的错，不浪费调用。
+    """
+    if not isinstance(exc, reliability.CircuitOpen) and reliability.classify(exc) == "permanent":
+        return None
+    fallback = FALLBACK_MODEL.get(model)
+    if fallback is None:
+        return None  # flash 已经是兜底档
+    log.warning("「%s」不可用（%s：%s），降级到「%s」", model, type(exc).__name__, exc, fallback)
+    return fallback
+
+
+class PolicyChatModel(ChatLiteLLM):
+    """把失败语义收口成一条策略的 `ChatLiteLLM`（E4a，SPEC §5.2）。
+
+    **为什么只重写这两个方法就够**：实测四条执行路径——`_generate` / `_stream` /
+    `_astream` / `_agenerate`——**全部经由** `completion_with_retry` /
+    `acompletion_with_retry`。于是 chat 流式、工具调用、深路径一并受管，
+    包括 `create_agent` 那条我们够不着节点的路。
+
+    换档**改的是 `kwargs["model"]`，不碰实例状态**：chat 的模型实例在 lifespan 建一次、
+    跨请求共享，改 `self.model` 会并发污染。
+
+    ⚠ 重写的是**包内方法**（非 LangChain 接口契约）。包版本已精确 pin
+    （`langchain-litellm==0.11.0`），**升级该包时必须复核这两个方法仍在**（SPEC §5.8）。
+    """
+
+    #: 库自带那层 tenacity 显式关掉：它的 `stop_after_attempt(max_retries)` 默认 1
+    #: ⇒ 1 次尝试 = 压根不重试，且等待固定 4–10s、不读 `Retry-After`。
+    #: 策略归我们一处，别让它半开半闭地叠在下面（双重重试 + 重试不进预算）。
+    max_retries: int = 0
+
+    #: 见 `CHAT_TIMEOUT`——chat 主链路唯一的超时兜底
+    request_timeout: float | tuple[float, float] | None = CHAT_TIMEOUT
+
+    #: 「这次**实际**用的是哪个模型」。降级链换过档时它不等于请求的那个——
+    #: 用回调而不是实例属性：chat 的模型实例在 lifespan 建一次、跨请求共享，
+    #: 写实例状态会串（`complete()` 是自己现造实例，所以回调也够精确）。
+    on_model_used: Callable[[str], None] | None = None
+
+    def _report_used(self, model: str) -> None:
+        if self.on_model_used is not None:
+            self.on_model_used(model)
+
+    async def acompletion_with_retry(self, run_manager: Any = None, **kwargs: Any) -> Any:
+        parent = super()
+        model = str(kwargs.get("model") or self.model)
+
+        async def attempt(which: str) -> Any:
+            return await reliability.guard(
+                dep_name(which),
+                lambda: parent.acompletion_with_retry(
+                    run_manager=run_manager, **{**kwargs, "model": which}
+                ),
+            )
+
+        used = model
+        try:
+            result = await attempt(model)
+        except Exception as exc:  # CancelledError 是 BaseException，不会落进来
+            fallback = _with_fallback(model, exc)
+            if fallback is None:
+                raise
+            used = fallback
+            result = await attempt(fallback)
+        self._report_used(used)
+        return result
+
+    def completion_with_retry(self, run_manager: Any = None, **kwargs: Any) -> Any:
+        parent = super()
+        model = str(kwargs.get("model") or self.model)
+
+        def attempt(which: str) -> Any:
+            return reliability.guard_sync(
+                dep_name(which),
+                lambda: parent.completion_with_retry(
+                    run_manager=run_manager, **{**kwargs, "model": which}
+                ),
+            )
+
+        used = model
+        try:
+            result = attempt(model)
+        except Exception as exc:
+            fallback = _with_fallback(model, exc)
+            if fallback is None:
+                raise
+            used = fallback
+            result = attempt(fallback)
+        self._report_used(used)
+        return result
+
+
 def build_chat_model(
-    model: str = DEFAULT_MODEL, *, temperature: float = 0.0, thinking: bool = True
+    model: str = DEFAULT_MODEL,
+    *,
+    temperature: float = 0.0,
+    thinking: bool = True,
+    on_model_used: Callable[[str], None] | None = None,
 ) -> ChatLiteLLM:
-    """构造对话模型。
+    """构造对话模型（E4a 起返回 `PolicyChatModel`：重试 / 熔断 / 降级链随行）。
 
     temperature 默认 0：投研问答要的是事实稳定而非措辞多样，低温也能减少工具参数漂移。
 
@@ -45,7 +165,13 @@ def build_chat_model(
     if not api_key:
         raise LLMNotConfigured("DEEPSEEK_API_KEY 未在 .env 配置")
     kwargs: dict = {} if thinking else {"model_kwargs": dict(THINKING_OFF)}
-    return ChatLiteLLM(model=model, api_key=api_key, temperature=temperature, **kwargs)
+    return PolicyChatModel(
+        model=model,
+        api_key=api_key,
+        temperature=temperature,
+        on_model_used=on_model_used,
+        **kwargs,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,15 +218,27 @@ async def complete(
     **超时即抛 `TimeoutError`，其余异常原样抛**——降级由调用方决定，这里只负责「不无限等」。
     `chat` 供离线测试注入假模型（不传则按 `thinking` 现造一个真模型）；超时走
     `asyncio.wait_for`，底层 HTTP 请求随之取消，不会留一个跑飞的调用。
+
+    **`Completion.model` 是实际用的那个模型**（不是 `model` 参数）——降级链换过档时两者不同，
+    报告里那句「哪个模型产出的」据此才不是假话（SPEC §5.2）。回调而非 contextvar：
+    `wait_for` 会把调用放进子任务，contextvar 的写入传不回父上下文（实测过的坑）。
     """
     import asyncio
 
-    client = chat if chat is not None else build_chat_model(model, thinking=thinking)
+    used: list[str] = []
+    if chat is None:
+        client = build_chat_model(model, thinking=thinking, on_model_used=used.append)
+    else:
+        client = chat
+        if isinstance(client, PolicyChatModel):
+            # 注入进来的**真**模型（用例）也把实际模型报回来。注入物归调用方所有，
+            # 且这条分支在生产路径上不会走到（`chat` 只为离线测试而存在）。
+            client.on_model_used = used.append
     response = await asyncio.wait_for(client.ainvoke(prompt), timeout=timeout)
     usage = getattr(response, "usage_metadata", None)
     return Completion(
         text=text_of(response),
-        model=model,
+        model=used[0] if used else model,
         usage=dict(usage) if isinstance(usage, dict) else {},
     )
 

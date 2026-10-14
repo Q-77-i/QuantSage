@@ -227,7 +227,8 @@ async def run_turn(
             error=f"发言不可用（{type(exc).__name__}）",
         )
 
-    ctx.budget.record_llm(settings_model, result.usage, seconds=time.perf_counter() - started)
+    # 都记「实际用的那个模型」：降级链换过档时按请求的模型计价是虚高（SPEC §5.2）
+    ctx.budget.record_llm(result.model, result.usage, seconds=time.perf_counter() - started)
     parsed = parse_turn(result.text, allowed_keys=allowed_keys)
     return TurnResult(
         DebateTurn(

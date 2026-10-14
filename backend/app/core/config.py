@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # pro 开 107.03s/10,783 tok vs 关 1.48s/73 tok，且四条正文信息一致（单样本，SPEC §9）。
     research_thinking: bool = False
     research_role_timeout: float = 60.0
+    # 节点级墙钟兜底（E4 L2）：**命中即整跑失败**，不是降级路径（LangGraph 的节点超时
+    # 节点内接不住，实测）。取值须大于「Retry.max_total_seconds + 取数时长」的最坏值，
+    # 否则它会在重试中途开火、把整跑打死。
+    research_node_timeout_seconds: float = 120.0
     # 预算四计数器的硬上限：到限在**节点边界**停，不在 LLM 调用中途（M8 SPEC §9「预算」）
     research_max_llm_calls: int = 40
     research_max_tokens: int = 200_000

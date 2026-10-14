@@ -105,6 +105,8 @@ async def interpret(
     allowed = allowed_for(
         material=material, numbers=numbers, evidence=evidence, symbols=ctx.symbols
     )
+    # `model` 先填「请求的」——失败路径没有实际模型可言；成功路径下面换成 `result.model`
+    # （降级链换过档时两者不同，报告里那句「谁产的」必须写实际的那个，SPEC §5.2）
     base = {
         "role": role,
         "numbers": numbers,
@@ -129,7 +131,9 @@ async def interpret(
         return RoleResult(**base, errors=(f"解读不可用（{type(exc).__name__}）",))
 
     seconds = time.perf_counter() - started
-    ctx.budget.record_llm(ctx.fast_model, result.usage, seconds=seconds)
+    # 记账也用它：降级到 flash 顶上时按 pro 的价目算成本是虚高（预算口径要如实）
+    ctx.budget.record_llm(result.model, result.usage, seconds=seconds)
+    base["model"] = result.model
 
     kept: list[str] = []
     dropped: list[str] = []
@@ -144,6 +148,8 @@ async def interpret(
             kept.append(clean)
 
     notes: list[str] = []
+    if result.model != ctx.fast_model:
+        notes.append(f"模型降级：{ctx.fast_model} 不可用，本段由 {result.model} 顶上")
     if dropped:
         notes.append(f"{len(dropped)} 条要点因数字无出处被剔除：" + "；".join(dropped))
     if not kept:

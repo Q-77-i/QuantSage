@@ -299,3 +299,67 @@ def test_run_state_is_json_only() -> None:
     json.dumps(state, ensure_ascii=False)  # 不抛即达标
     assert isinstance(state["role_results"][0], dict)
     assert isinstance(state["budget"], dict) and "llm_calls" in state["budget"]
+
+
+# ── E4 L2：节点级墙钟兜底（命中即整跑失败，不是降级路径）────────────────
+
+
+class _Hanging(DeepFake):
+    """永远不回话的模型——用来触发节点超时。"""
+
+    async def _agenerate(self, *args: Any, **kwargs: Any) -> ChatResult:
+        await asyncio.sleep(5)
+        raise AssertionError("节点超时该在它之前开火")
+
+
+@pytest.fixture
+def tiny_node_timeout(monkeypatch: pytest.MonkeyPatch) -> float:
+    """把节点墙钟压到 0.2s（默认 120s 是给真跑留的余量）。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "research_node_timeout_seconds", 0.2)
+    return 0.2
+
+
+def test_node_timeout_raises_and_names_the_node(tiny_node_timeout: float) -> None:
+    """**兜底不是降级**：LangGraph 的节点超时节点内接不住（实测——捕获 `CancelledError`
+    后整图照样抛 `NodeTimeoutError`），所以它只能当「防未知挂点」的最后一道闸。"""
+    from langgraph.errors import NodeTimeoutError
+
+    from app.agent.deep.types import ROLES
+
+    ctx = make_ctx(chat=_Hanging())
+    graph = build_deep_graph(ctx=ctx, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t1"}}
+
+    with pytest.raises(NodeTimeoutError) as info:
+        asyncio.run(
+            graph.ainvoke({"run_id": "t1", "brief": brief().to_payload()}, config)
+        )
+
+    assert info.value.node in ROLES
+    assert info.value.timeout == pytest.approx(tiny_node_timeout)
+
+
+def test_runner_reports_a_node_timeout_as_a_failed_run(tiny_node_timeout: float) -> None:
+    """runner 把 `NodeTimeoutError` 转成**点名节点的**失败文案——通用那句
+    `NodeTimeoutError: Node 'x' exceeded…` 太像内部堆栈，用户看不懂。"""
+    from app.agent.deep.runner import STATUS_FAILED, astream_deep_run
+
+    async def collect() -> list[Any]:
+        return [
+            frame
+            async for frame in astream_deep_run(
+                ctx=make_ctx(chat=_Hanging()),
+                checkpointer=InMemorySaver(),
+                run_id="t2",
+                brief=brief(),
+            )
+        ]
+
+    frames = asyncio.run(collect())
+    errors = [payload["message"] for kind, payload in frames if kind == "error"]
+    done = [payload for kind, payload in frames if kind == "done"]
+
+    assert errors and "超时" in errors[0] and "节点" in errors[0]
+    assert done and done[-1]["status"] == STATUS_FAILED

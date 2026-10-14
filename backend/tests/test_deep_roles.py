@@ -214,6 +214,55 @@ def test_interpret_records_usage_into_budget() -> None:
     assert ctx_.budget.llm_calls == 1
 
 
+def test_role_records_the_model_that_actually_served() -> None:
+    """E4a：降级链换过档时，角色的「模型」一栏与预算都要记**实际**那个。
+
+    fast 档配成 pro 时（settings 允许）pro 挂了会降到 flash——此时若还写 pro，
+    报告里那句「谁产的」就是假话，成本按 pro 的价目算也是虚高。
+    """
+    from app.core.llm import DEFAULT_MODEL, DEEP_MODEL, PolicyChatModel
+
+    class _Scripted:
+        def __init__(self, *script: Any) -> None:
+            self.script = list(script)
+
+        async def acompletion(self, **kwargs: Any) -> Any:
+            item = self.script.pop(0) if self.script else "ok"
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    chat = PolicyChatModel(model=DEEP_MODEL, api_key="k")
+    chat.client = _Scripted(  # type: ignore[assignment]
+        *[TimeoutError("pro 挂了")] * 3,
+        {
+            "id": "1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "deepseek-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "- 降级档给的要点"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    )
+    ctx_ = RoleContext(
+        brief=brief("600519"), budget=Budget(), chat=chat, thinking=False, fast_model=DEEP_MODEL
+    )
+
+    result = asyncio.run(interpret("market", ctx_, material="m"))
+
+    assert result.model == DEFAULT_MODEL
+    assert any("模型降级" in note for note in result.notes)
+    # 预算记的是**成功那一次**（失败的尝试没有用量可记），但要按**实际模型**的价目算：
+    # 1 in + 1 out 走 flash 是 0.3e-6 + 1.2e-6；若错按 pro 记则是 1.32e-6 + 3.96e-6
+    assert ctx_.budget.cost_usd == pytest.approx(1.5e-06)
+
+
 # ── 降级矩阵：五个角色各注入一次取数失败 ──
 
 

@@ -207,6 +207,12 @@ async def build_draft(
         ctx.budget.record_wait(time.perf_counter() - started)
         return code_fallback(merged=merged, turns=turns, note=f"综合不可用（{type(exc).__name__}）")
 
-    ctx.budget.record_llm(ctx.deep_model, result.usage, seconds=time.perf_counter() - started)
-    draft = parse_draft(result.text, allowed_keys=allowed_keys, model=ctx.deep_model)
+    # 都记「实际用的那个模型」：降级链换过档时按请求的模型计价是虚高（SPEC §5.2）
+    ctx.budget.record_llm(result.model, result.usage, seconds=time.perf_counter() - started)
+    draft = parse_draft(result.text, allowed_keys=allowed_keys, model=result.model)
+    if result.model != ctx.deep_model:
+        # 结论是降级档产出的——**必须说出来**（`note` 非空即整跑标 degraded，是如实的）
+        draft = replace(
+            draft, note=f"模型降级：{ctx.deep_model} 不可用，本段结论由 {result.model} 顶上"
+        )
     return replace(draft, usage=dict(result.usage or {}))
