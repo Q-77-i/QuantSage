@@ -421,7 +421,9 @@ def test_backfill_only_requests_missing_days(tmp_path: Path, monkeypatch: pytest
     )
     monkeypatch.setattr(runner, "run", lambda scope, **kwargs: seen.append(kwargs["days"]) or runner.RunReport(scope=scope, started_at=""))
 
-    runner.backfill(tmp_path, days=10)
+    # 「今天」显式注入（2026-10-15 修）：不给的话窗口起点是 `真·今天 - 10 天`，
+    # 写到 10-10 就追过了 mock 的 `last_day`（2026-09-29）、窗口变空，用例无端变红。
+    runner.backfill(tmp_path, days=10, today=date(2026, 10, 5))
 
     assert seen and date(2026, 9, 28) not in seen[0]
     assert date(2026, 9, 29) in seen[0]

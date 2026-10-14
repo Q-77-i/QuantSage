@@ -268,16 +268,28 @@ def is_running() -> bool:
     return _LOCK.locked()
 
 
-def backfill(data_dir: Path | None = None, *, days: int = BACKFILL_DAYS, refresh: bool = False) -> RunReport:
+def backfill(
+    data_dir: Path | None = None,
+    *,
+    days: int = BACKFILL_DAYS,
+    refresh: bool = False,
+    today: date | None = None,
+) -> RunReport:
     """一次性回填归档保留期内的最近 `days` 天（默认 92 天 ≈ 3 个月窗口）。
 
     **只补缺**：已有本地日分区的日子不再重下。实测连续申请约 50 次会被平台 429
     （`retry_after` 约 44 分钟），重复申请既浪费也会推迟窗口——而「最近 N 天会不会
     被平台修订」由日增量的回落窗口负责，回填不必重复检查历史日。
+
+    `today` 是**「今天」的注入口**（与 `bars.refresh(today=…)` 同法，不给就是真·今天）。
+    它管的是窗口起点 `today - days`，也就是「哪些日子还算在保留期内」。**用例必须给**：
+    写死的日期撞上真日期会**过期成红灯**——`test_backfill_only_requests_missing_days`
+    在 2026-10-10 那天起就是这么红的，代码本身没有任何问题。
     """
     paths_ = paths(data_dir)
     cover = archive.coverage(paths_.data_dir)
-    window = plan_days(cover.last_day, since=date.today() - timedelta(days=days))
+    anchor = today or date.today()
+    window = plan_days(cover.last_day, since=anchor - timedelta(days=days))
     todo = [
         day
         for day in window
