@@ -207,7 +207,11 @@ export function OptimizeForm({
                         className="num w-24"
                         inputMode="decimal"
                         value={grid.baseParams[field.key] ?? ""}
-                        placeholder={field.fallback === null ? "" : String(field.fallback)}
+                        // 只有数字参数给占位符：M4c-3 起 `fallback` 也可能是布尔
+                        // （用户策略的 `bool` 参数），`String(true)` 落进数字框是噪音
+                        placeholder={
+                          typeof field.fallback === "number" ? String(field.fallback) : ""
+                        }
                         onChange={(event) =>
                           patchGrid({
                             baseParams: { ...grid.baseParams, [field.key]: event.target.value },

@@ -71,7 +71,9 @@ class PaperAccountRequest(BaseModel):
     symbols: list[str] = Field(min_length=1, max_length=MAX_SYMBOLS)
     strategy: str
     strategy_id: str | None = None
-    params: dict[str, float] = Field(default_factory=dict)
+    # 同 `backtest.BacktestRequest.params`：`bool` 必须在联合里，否则用户策略的开关参数
+    # 会被 pydantic 收成 0.0（M4c-3 在回测端点逮到，模拟盘这条路径同一根因）
+    params: dict[str, float | bool] = Field(default_factory=dict)
     start: date
     #: 缺省取**池子最后一根 bar 的交易日**（数据到哪模拟到哪）；给了但晚于该日 → 422，不静默截断
     end: date | None = None

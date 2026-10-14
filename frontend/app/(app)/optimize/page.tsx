@@ -10,7 +10,8 @@ import { GridHeatmap, GridLine, hasAnySharpe } from "@/components/optimize/grid-
 import { OptimizeForm } from "@/components/optimize/optimize-form";
 import { RunsList } from "@/components/optimize/runs-list";
 import { SharpeDistribution } from "@/components/optimize/sharpe-distribution";
-import { batchPicks, useDescriptors, useUserStrategies } from "@/components/optimize/use-catalog";
+import { batchPicks } from "@/components/optimize/use-catalog";
+import { useDescriptors, useUserStrategies } from "@/components/strategies/use-catalog";
 import { useOptimize } from "@/components/optimize/use-optimize";
 import { useBacktestTask } from "@/components/tasks/use-task";
 import { builtinDescriptors, parseAxisValues, parseSymbolList } from "@/lib/optimize-form";

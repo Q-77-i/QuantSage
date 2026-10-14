@@ -237,6 +237,34 @@ def test_gate_validates_params_against_source_schema(
     assert "慢线" in crossed["error"]["message"]
 
 
+def test_bool_param_survives_the_request_model(
+    signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
+) -> None:
+    """用户策略的 `bool` 参数要真的能跑（M4c-3 走查逮到的回归）。
+
+    症状曾是 422「参数 xxx 需要 true / false（当前 0.0）」——病根不在校验器，而在
+    `BacktestRequest.params: dict[str, float]`：pydantic 把 JSON 的 `false` 收成了 `0.0`，
+    于是开关参数一路走到 `strategy.params.coerce` 才炸。**现象离病根隔了三层**，
+    所以这条用例从端点打到落库，把整条链钉住。
+    """
+    created = make_strategy(
+        'PARAMS = {"window": {"type": "int", "default": 5, "min": 1, "max": 60, "label": "窗口"},\n'
+        '          "keep_flat": {"type": "bool", "default": True, "label": "只空仓观察"}}\n'
+        "USES_EVENTS = False\n\n\n"
+        "def on_bar(ctx, p):\n"
+        "    return []\n",
+        name="带开关",
+    )
+
+    payload = run_user_report(created["id"], params={"window": 5, "keep_flat": False})
+    metrics = payload["report"]["metrics"]
+    assert metrics["trade_count"] == 0  # 空仓观察 → 一笔都不成
+
+    detail = client.get(f"/api/v1/backtest/runs/{payload['run_id']}").json()
+    # 落库的是**布尔**（不是 0.0）：JSONB 里 `false` 与 `0` 是两种东西，前端据此回填开关
+    assert detail["request"]["params"]["keep_flat"] is False
+
+
 def test_runtime_error_lands_in_task_with_line(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:

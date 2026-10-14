@@ -316,7 +316,8 @@ export interface StoredBacktestRequest {
   adjust: Adjust;
   pit_mode: PitMode;
   costs: CostOptions;
-  params: Record<string, number>;
+  /** 用户策略可以有 `bool` 参数（M4c-3）；内置策略的参数都是数字 */
+  params: Record<string, number | boolean>;
 }
 
 /** 摘要列表项：**只有 metrics，没有曲线与明细**（列表不该把整份报告拉回来） */

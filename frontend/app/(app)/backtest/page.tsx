@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { BacktestForm } from "@/components/backtest/backtest-form";
 import { CandlestickChart } from "@/components/backtest/candlestick-chart";
@@ -13,10 +13,21 @@ import { MetricsSummary } from "@/components/backtest/metrics-summary";
 import { PitComparisonSection } from "@/components/backtest/pit-comparison";
 import { TradesTable } from "@/components/backtest/trades-table";
 import { useBacktest } from "@/components/backtest/use-backtest";
+import { useDescriptors, useUserStrategies } from "@/components/strategies/use-catalog";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { buildRequest, defaultForm, formFromRequest, hasErrors, validateForm } from "@/lib/backtest-form";
+import {
+  buildRequest,
+  defaultForm,
+  defaultParams,
+  formFromRequest,
+  hasErrors,
+  paramsMatch,
+  strategyOptions,
+  validateForm,
+} from "@/lib/backtest-form";
 import type { FormState } from "@/lib/backtest-form";
+import { builtinDescriptors } from "@/lib/strategy-params";
 import { validateSymbol } from "@/lib/watchlist";
 import type { ChartHandle } from "@/lib/chart-handle";
 import type { BacktestRunDetail, RejectSummary, StoredBacktestRequest } from "@/lib/types";
@@ -34,13 +45,15 @@ import type { BacktestRunDetail, RejectSummary, StoredBacktestRequest } from "@/
  * 重开（M1c）：地址栏带 `?run=<id>` 时载入那次存下来的报告并把表单回填成当时的配置；
  * 跑完一次也把地址换成 `?run=`，刷新或把链接发给别人看到的是同一份报告。
  *
- * 用户策略（M4c）：本页**只跑内置策略**，但可能重开到用户策略那次运行——报告照常渲染、
- * 表单只回填与策略无关的几项，另出一条提示条（策略名 / 代码是否已改 / 去工作台重跑）。
+ * 用户策略（M4c-3）：策略下拉是「内置 + 我的策略」两组。跑用户策略**仍守「先保存才能跑」**
+ * ——跑的是库里那条源码（请求带 `strategy_id`），本页不提供内联源码试跑（那是工作台）。
+ * 静态检查被拦时仍是提交期 422 + findings，这里把 findings 列在错误区下方（本页没有编辑器，
+ * 不做行号标注）。重开一条用户策略的旧回测：能取到那条策略就回填策略位与参数，已删则退化
+ * 成 M4c 的行为（只回填标的 / 区间 / 费用 + 提示条「去工作台重跑」）。
  */
 export default function BacktestPage() {
   const [form, setForm] = useState<FormState>(defaultForm);
-  const { loading, report, bars, events, error, runId, phase, run, loadRun } = useBacktest();
-  const errors = validateForm(form);
+  const { loading, report, bars, events, error, failure, runId, phase, run, loadRun } = useBacktest();
   const router = useRouter();
 
   const equityRef = useRef<ChartHandle>(null);
@@ -48,6 +61,37 @@ export default function BacktestPage() {
   const [zoomed, setZoomed] = useState({ equity: false, kline: false });
   /** 重开的是用户策略那次时的提示条（M4c）；内置策略为 null */
   const [userNotice, setUserNotice] = useState<UserRunNotice | null>(null);
+
+  // 策略目录与参数 schema（M4c-3）：下拉的分组、参数区的渲染、值域校验都吃这两样。
+  // 用户策略的 schema 是**一次请求**（`GET /strategies/{id}` → `POST /strategies/check`），
+  // 加载中 `descriptors` 是空表——**空表期间不拿它判错**（见 use-catalog 的注释）。
+  const { items: userStrategies } = useUserStrategies();
+  const { loading: schemaLoading, descriptors, error: schemaError } = useDescriptors(
+    form.strategy,
+    form.strategyId,
+  );
+  const groups = useMemo(() => strategyOptions(userStrategies), [userStrategies]);
+  const errors = schemaLoading ? {} : validateForm(form, descriptors);
+
+  /**
+   * schema 到位后补齐参数（换策略 / 重开用户策略记录两条路都走它）。
+   *
+   * 判据是 `paramsMatch`——键集一致就一个都不动：重开时参数来自**当次请求**，
+   * 覆盖成默认值等于「按默认参数重跑」，那不是「重开」的语义。
+   */
+  const pendingFill = useRef<StoredBacktestRequest | null>(null);
+  useEffect(() => {
+    if (schemaLoading || descriptors.length === 0) return;
+    setForm((prev) => {
+      if (pendingFill.current) {
+        const request = pendingFill.current;
+        pendingFill.current = null;
+        return formFromRequest(request, prev, descriptors, prev.strategyId);
+      }
+      if (paramsMatch(prev, descriptors)) return prev;
+      return { ...prev, params: defaultParams(descriptors) };
+    });
+  }, [schemaLoading, descriptors]);
 
   // 地址栏跟着当前这份报告走。`replace` 而不是 `push`：连跑几次不该在历史里堆一串。
   // ⚠ **`?symbol=` 要一起带上**：M10c 的个股页用 `/backtest?symbol=600519` 把标的带过来，
@@ -61,24 +105,44 @@ export default function BacktestPage() {
 
   function handleRun() {
     if (hasErrors(errors)) return;
-    setUserNotice(null); // 新跑的是内置策略，上一次的用户策略提示到此为止
-    run(buildRequest(form));
+    run(buildRequest(form, descriptors));
   }
 
   /**
-   * 重开一条历史回测：回填表单；若是**用户策略**那次，另出一条提示条（M4c）。
+   * 重开一条历史回测：回填表单。
    *
-   * 回测页只跑内置策略（SPEC §5 M4c 已拍板），所以用户策略的记录不回填策略位——
-   * 提示条给出三件事就够了：当次用的哪条策略、代码是否已改（两个 hash 比对）、去哪重跑。
+   * 内置策略：descriptor 是同步可得的，当场回填完。
+   * 用户策略（M4c-3）：先把**策略位**与当次区间填上，参数等 schema 到位后由上面的
+   * effect 从 `pendingFill` 补齐（`formFromRequest` 的用户策略分支）；策略已删（404）
+   * 则清掉策略位，退化成 M4c 的行为——只回填标的 / 区间 / 费用 + 提示条。
    */
   function handleLoaded(request: StoredBacktestRequest, detail: BacktestRunDetail) {
-    setForm(formFromRequest(request, form));
     if (request.strategy !== "user") {
+      // 收窄要先落到局部常量：`request.strategy` 在 `setForm` 的闭包里会退回联合类型
+      const builtin = request.strategy;
       setUserNotice(null);
+      setForm((prev) => formFromRequest(request, prev, builtinDescriptors(builtin), null));
       return;
     }
+    pendingFill.current = request;
+    setForm((prev) => ({
+      ...prev,
+      strategy: "user",
+      strategyId: detail.strategy_id,
+      symbol: request.symbol,
+      start: request.start,
+      end: request.end,
+      fees: request.costs.fees,
+      slippage: request.costs.slippage,
+      slippageBps: String(request.costs.slippage_bps),
+      pitMode: request.pit_mode,
+      params: {},
+    }));
     setUserNotice({ name: detail.report.meta.strategy_name, codeChanged: null, gone: false });
-    if (!detail.strategy_id) return;
+    if (!detail.strategy_id) {
+      pendingFill.current = null; // 记录里就没有策略 id（M4c 之前的老记录）：退化
+      return;
+    }
     api
       .strategy(detail.strategy_id)
       .then((strategy) =>
@@ -86,8 +150,12 @@ export default function BacktestPage() {
           prev ? { ...prev, codeChanged: strategy.code_sha256 !== detail.code_sha256 } : prev,
         ),
       )
-      // 404 = 策略已被删除：不是错误，如实说「已删除」即可
-      .catch(() => setUserNotice((prev) => (prev ? { ...prev, gone: true } : prev)));
+      // 404 = 策略已被删除：不是错误，如实说「已删除」，并让表单退化成「只回填通用项」
+      .catch(() => {
+        pendingFill.current = null;
+        setForm((prev) => ({ ...prev, strategyId: null, params: {} }));
+        setUserNotice((prev) => (prev ? { ...prev, gone: true } : prev));
+      });
   }
 
   return (
@@ -107,19 +175,38 @@ export default function BacktestPage() {
             value={form}
             errors={errors}
             running={loading}
+            groups={groups}
+            descriptors={descriptors}
             onChange={setForm}
             onSubmit={handleRun}
           />
         </div>
 
         {error && (
-          <p
+          <div
             role="alert"
             className="mt-4 rounded-[var(--radius)] border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           >
-            {error}
-          </p>
+            <p>{error}</p>
+            {/* 静态检查被拦（提交期 422）时把逐条问题列出来：本页没有编辑器，不做行号标注，
+                但「哪一行、哪条规则、说什么」照给——只说一句「没通过检查」等于让人回工作台猜 */}
+            {failure?.findings.length ? (
+              <ul className="mt-1.5 space-y-0.5 text-xs">
+                {failure.findings.map((finding, index) => (
+                  <li key={`${finding.rule}-${finding.line}-${index}`}>
+                    <span className="num text-ink-3">第 {finding.line} 行</span>
+                    <span className="mx-1.5 rounded-[var(--radius)] bg-muted px-1 py-0.5 text-ink-2">
+                      {finding.rule}
+                    </span>
+                    {finding.message}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
         )}
+
+        {schemaError ? <p className="mt-2 text-xs text-destructive">{schemaError}</p> : null}
 
         {report === null ? (
           loading ? (

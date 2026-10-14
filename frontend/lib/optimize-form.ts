@@ -19,15 +19,14 @@
  * 与自选股的判重同一姿态（那里也是前端提示、后端 409 裁决）。
  */
 
+import type { ParamDescriptor } from "./strategy-params";
 import type {
   BatchRequest,
-  BuiltinStrategy,
   GridRequest,
   OptimizeAxis,
   Strategy,
   StoredOptimizeRequest,
 } from "./types";
-import { PARAMS, type ParamField } from "./backtest-form";
 import { validateSymbol } from "./watchlist";
 
 /** 与后端 `batch.MAX_*` 同值——改一处必须改两处，故都写在这一个文件里 */
@@ -63,37 +62,14 @@ export interface BatchFormState {
   end: string;
 }
 
-/** 策略参数的展示与值域信息，内置与用户策略在这里统一（用户策略由 `PARAMS` schema 转来） */
-export interface ParamDescriptor {
-  key: string;
-  label: string;
-  min: number | null;
-  max: number | null;
-  fallback: number | null;
-}
+// `ParamDescriptor` 与两个转换件（`builtinDescriptors` / `userDescriptors`）M4c-3 起
+// 搬去了 `lib/strategy-params.ts`——回测页也要在同一张表上渲染参数，两页各留一份必然漂移。
+// 本模块与既有消费方改为从那里 import（`lib/optimize-form.test.ts` 同步改导入路径）。
 
-export function builtinDescriptors(strategy: BuiltinStrategy): ParamDescriptor[] {
-  return PARAMS[strategy].map((field: ParamField) => ({
-    key: field.key,
-    label: field.label,
-    min: field.min,
-    max: field.max ?? null,
-    fallback: field.fallback,
-  }));
-}
-
-/** 用户策略的 schema（`StrategyMeta.params`）→ 同一形状 */
-export function userDescriptors(
-  params: Record<string, { type: string; default: number | boolean; min: number | null; max: number | null; label: string }>,
-): ParamDescriptor[] {
-  return Object.entries(params).map(([key, spec]) => ({
-    key,
-    label: spec.label || key,
-    min: spec.min,
-    max: spec.max,
-    fallback: typeof spec.default === "number" ? spec.default : null,
-  }));
-}
+// 既有消费方（优化页与它的表单、`lib/optimize-form.test.ts`）此前从本模块取这三个名字——
+// 保留再导出，改导入路径与不改的都不炸。
+export { builtinDescriptors, userDescriptors } from "./strategy-params";
+export type { ParamDescriptor } from "./strategy-params";
 
 // ── 取值解析 ────────────────────────────────────────────────
 

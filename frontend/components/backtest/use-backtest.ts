@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 
 import { useBacktestTask } from "@/components/tasks/use-task";
 import { api, describeError } from "@/lib/api";
+import type { RunFailure } from "@/lib/strategy-form";
 import type {
   BacktestReport,
   BacktestRequest,
@@ -36,6 +37,8 @@ export function useBacktest() {
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  /** 失败的结构化信息（M4c-3）：静态检查被拦时页面要把 `findings` 逐条列出来 */
+  const [failure, setFailure] = useState<RunFailure | null>(null);
   const seqRef = useRef(0);
   const task = useBacktestTask();
 
@@ -58,6 +61,7 @@ export function useBacktest() {
       const seq = ++seqRef.current;
       setLoading(true);
       setError(null);
+      setFailure(null);
 
       void (async () => {
         // 提交 → 轮询到终态 → 取 run_id（失败原因由返回值带出，含运行期错误）
@@ -65,6 +69,7 @@ export function useBacktest() {
         if (seq !== seqRef.current) return;
         if (!outcome.ok) {
           setError(outcome.failure.message);
+          setFailure(outcome.failure);
           setLoading(false);
           return;
         }
@@ -114,5 +119,16 @@ export function useBacktest() {
   );
 
   /** `phase` 是「排队中 / 执行中」——提交不再等于跑完，界面要能说出此刻在哪一步 */
-  return { loading, report, bars, events, error, runId, phase: task.phase, run, loadRun };
+  return {
+    loading,
+    report,
+    bars,
+    events,
+    error,
+    failure,
+    runId,
+    phase: task.phase,
+    run,
+    loadRun,
+  };
 }

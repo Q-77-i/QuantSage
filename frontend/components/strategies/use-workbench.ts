@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useBacktestTask } from "@/components/tasks/use-task";
+import { clearDescriptorCache } from "@/components/strategies/use-catalog";
 import { api, ApiError, describeError } from "@/lib/api";
 import {
   buildRunRequest,
@@ -221,6 +222,9 @@ export function useWorkbench() {
         ? await api.updateStrategy(current.id, body)
         : await api.createStrategy(body);
 
+    // 源码改了 ⇒ 别处缓存的参数 schema 作废（回测页/优化页按 id 缓存 descriptor，
+    // 不清的话切回去还是旧 schema——这次改的若是 `PARAMS` 声明就会对不上）
+    clearDescriptorCache();
     savedParams.current = saved.params;
     setCurrent({ kind: "strategy", id: saved.id, name: saved.name, updatedAt: saved.updated_at });
     setDirty(false);
@@ -234,6 +238,7 @@ export function useWorkbench() {
     async (id: string) => {
       try {
         await api.deleteStrategy(id);
+        clearDescriptorCache(); // 删了也要清：缓存里留着它的 schema 没有意义
         if (current?.kind === "strategy" && current.id === id) {
           setCurrent(null);
           setCode("");

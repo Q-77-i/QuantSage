@@ -3,14 +3,14 @@
 import { Button } from "@/components/ui/button";
 import { Check, Field, Input, Select } from "@/components/ui/form-controls";
 import {
-  PARAMS,
   PIT_MODES,
   SAMPLE_SYMBOLS,
-  STRATEGIES,
   hasErrors,
-  switchStrategy,
+  parseUserOption,
+  strategySelection,
 } from "@/lib/backtest-form";
-import type { FormState } from "@/lib/backtest-form";
+import type { FormState, StrategyOption } from "@/lib/backtest-form";
+import type { ParamDescriptor } from "@/lib/strategy-params";
 import type { BuiltinStrategy, PitMode } from "@/lib/types";
 
 /**
@@ -19,21 +19,34 @@ import type { BuiltinStrategy, PitMode } from "@/lib/types";
  * 控件一律用**原生**元素 + token 样式：不引新的 shadcn 组件（省掉 CLI 联网与 Base UI
  * 弹层同本项目的圆角/配色对抗），原生控件在可访问性上还少一类焦点陷阱。
  * 代价是 `<select>` 的弹层由系统绘制、不吃主题 token——这是有意的取舍。
+ *
+ * **参数区由 descriptor 渲染**（M4c-3）：内置策略的描述符来自前端常量、用户策略的来自
+ * 源码 schema，两者在 `lib/strategy-params.ts` 已统一——所以这里既不需要知道选的是哪一种，
+ * 也不需要为 `bool` 参数另写一套控件（用户策略可以有开关，内置的全是数字）。
  */
 export function BacktestForm({
   value,
   errors,
   running,
+  groups,
+  descriptors,
   onChange,
   onSubmit,
 }: {
   value: FormState;
   errors: Record<string, string>;
   running: boolean;
+  /** 策略下拉的分组：内置两条 + 我的策略（无用户策略时只有一组） */
+  groups: { label: string; items: StrategyOption[] }[];
+  /** 当前选中策略的参数表（加载中可能是空表，此时不要拿它判错） */
+  descriptors: ParamDescriptor[];
   onChange: (next: FormState) => void;
   onSubmit: () => void;
 }) {
   const patch = (part: Partial<FormState>) => onChange({ ...value, ...part });
+
+  /** 下拉里选中的是 `user:<id>` 还是内置策略名 */
+  const selected = value.strategy === "user" ? `user:${value.strategyId ?? ""}` : value.strategy;
 
   return (
     <form
@@ -47,16 +60,24 @@ export function BacktestForm({
         <Field label="策略" htmlFor="bt-strategy">
           <Select
             id="bt-strategy"
-            className="w-32"
-            value={value.strategy}
-            onChange={(event) =>
-              onChange(switchStrategy(value, event.target.value as BuiltinStrategy))
-            }
+            className="w-40"
+            value={selected}
+            onChange={(event) => {
+              const raw = event.target.value;
+              const userId = parseUserOption(raw);
+              onChange(
+                strategySelection(value, userId === null ? (raw as BuiltinStrategy) : "user", userId),
+              );
+            }}
           >
-            {STRATEGIES.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
+            {groups.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.items.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </Select>
         </Field>
@@ -158,30 +179,45 @@ export function BacktestForm({
           />
         </Field>
 
-        {PARAMS[value.strategy].map((field) => (
-          <Field
-            key={field.key}
-            label={field.label}
-            htmlFor={`bt-${field.key}`}
-            error={errors[field.key]}
-          >
-            <Input
-              id={`bt-${field.key}`}
-              type="number"
-              inputMode="decimal"
-              className="num w-24"
-              min={field.min}
-              max={field.max}
-              step={field.step}
-              value={value.params[field.key] ?? ""}
-              aria-invalid={Boolean(errors[field.key])}
-              aria-describedby={errors[field.key] ? `bt-${field.key}-error` : undefined}
-              onChange={(event) =>
-                patch({ params: { ...value.params, [field.key]: event.target.value } })
-              }
-            />
-          </Field>
-        ))}
+        {descriptors.map((field) =>
+          field.type === "bool" ? (
+            <fieldset key={field.key} className="flex flex-col gap-1">
+              <legend className="mb-1 text-xs text-ink-3">{field.label}</legend>
+              <div className="flex h-8 items-center">
+                <Check
+                  id={`bt-${field.key}`}
+                  label={field.label}
+                  checked={Boolean(value.params[field.key])}
+                  onChange={(checked) =>
+                    patch({ params: { ...value.params, [field.key]: checked } })
+                  }
+                />
+              </div>
+            </fieldset>
+          ) : (
+            <Field
+              key={field.key}
+              label={field.label}
+              htmlFor={`bt-${field.key}`}
+              error={errors[field.key]}
+            >
+              <Input
+                id={`bt-${field.key}`}
+                type="number"
+                inputMode="decimal"
+                className="num w-24"
+                min={field.min ?? undefined}
+                max={field.max ?? undefined}
+                value={String(value.params[field.key] ?? "")}
+                aria-invalid={Boolean(errors[field.key])}
+                aria-describedby={errors[field.key] ? `bt-${field.key}-error` : undefined}
+                onChange={(event) =>
+                  patch({ params: { ...value.params, [field.key]: event.target.value } })
+                }
+              />
+            </Field>
+          ),
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-border pt-3">

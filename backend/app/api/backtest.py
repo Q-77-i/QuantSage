@@ -74,7 +74,12 @@ class BacktestRequest(BaseModel):
     end: date | None = None
     costs: CostOptions = Field(default_factory=CostOptions)
     pit_mode: Literal["pit", "non_pit", "both"] = "pit"
-    params: dict[str, float] = Field(default_factory=dict)
+    # **`bool` 必须在联合里**（M4c-3 逮到的）：pydantic 会把 JSON 的 `false` 按 float 收成
+    # `0.0`，于是用户策略的开关参数一路走到 `strategy.params.coerce` 才炸成
+    # 「参数 xxx 需要 true / false（当前 0.0）」——现象离病根隔了三层。
+    # 内置策略的参数全是数字（由 `backtest.strategies.validate_params` 把关），
+    # 布尔只可能出现在用户策略那一支。
+    params: dict[str, float | bool] = Field(default_factory=dict)
 
     @field_validator("strategy")
     @classmethod
