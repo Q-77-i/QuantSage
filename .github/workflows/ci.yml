@@ -64,8 +64,12 @@ jobs:
         run: uv sync --frozen --no-install-package torch --no-install-package FlagEmbedding
       - name: lint
         run: uv run ruff check .
+      # 覆盖率门槛：89 是**实测基线 90.22% 取整下浮**（本机 1487 项离线全量的读数，
+      # 见 SPEC §7.3）。门槛贴着基线设会天天响；这里的余量约 130 条语句，够一次正常
+      # 重构，但拦得住「整个模块没测试」。口径细节（模板 omit、两个子进程 worker 的
+      # 结构性 0%）在 SPEC §7.3——**改这个数字等于改闸门宽度**，要在 SPEC 留痕。
       - name: 测试
-        run: uv run pytest -q
+        run: uv run pytest -q --cov=app --cov-fail-under=89
 
   frontend:
     name: 前端 · lint + typecheck + test + build

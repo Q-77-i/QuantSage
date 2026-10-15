@@ -50,6 +50,9 @@ dev = [
     "exchange-calendars>=4.13.2",
     "pytest~=9.1.1",
     "pytest-asyncio~=1.4.0",
+    # E7b：覆盖率（CI 里是闸门，`--cov-fail-under`）。与 ruff 同理精确 pin——
+    # 新版本可能改变统计口径，等于悄悄挪动闸门。
+    "pytest-cov==7.0.0",
     # E7：lint。**精确 pin**——新版本会引入新规则，等于悄悄放宽或收紧 CI 闸门
     #（放宽则漏检，收紧则突然变红），升级必须是显式动作。
     "ruff==0.17.0",
@@ -98,3 +101,13 @@ extend-ignore = [
     # 全仓写法一致、无例外价值，故整条规则关掉而非逐处 noqa（宽集下 72 条）。
     "B008",
 ]
+
+# ── E7b：覆盖率（CI 里是闸门，`--cov=app --cov-fail-under`）──────────────────
+# 读数与门槛的实测记录见 SPEC §7.3。**默认不加进 `addopts`**：本地跑测试不必每次
+# 付插桩的代价，要看覆盖率显式传 `--cov=app`。
+[tool.coverage.run]
+# 被测范围由命令行 `--cov=app` 指定（CI 与本地用同一条），配置里不再重复声明 source。
+# 「模板是数据不是模块」（同上面 ruff 的 exclude）：`templates/` 下五份源码文本由沙箱
+# 子进程执行、靠运行时注入 `Signal`/`Side`，主进程从不 import 它们——算进来就是六个
+# 恒 0% 的文件（244 条语句），结构性拉低读数，不是覆盖率缺口。
+omit = ["*/templates/*"]
