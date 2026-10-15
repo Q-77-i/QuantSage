@@ -69,14 +69,14 @@ cd ../frontend && pnpm install && pnpm dev                             # 5. 前�
 ```bash
 cd backend && uv run ruff check .                              # lint
 cd backend && uv run pytest                                    # 离线
-cd backend && uv run pytest --cov=app --cov-fail-under=89      # 离线 + 覆盖率门槛（CI 口径）
+cd backend && uv run pytest --cov=app --cov-fail-under=88      # 离线 + 覆盖率门槛（CI 口径）
 cd backend && uv run pytest -m integration                     # 集成（需容器与真实密钥）
 cd frontend && pnpm test && pnpm typecheck && pnpm lint
 ```
 
 CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + 两端的依赖审计**。集成那一行不在 CI 里——
 它要真容器、真密钥与真实行情语料（`data/` 不入库），所以**徽章变绿不等于全部测试通过**。
-覆盖率门槛是 **89%**（实测基线 90.22%，分层与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
+覆盖率门槛是 **88%**（CI 实测基线 89.36%、本机 90.22%——门槛按前者定标；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
 
 命令行跑一次回测、复现教程里的数字，命令见[示例策略教程](docs/tutorials/ma_cross.md#3-复现)。
 
