@@ -5,16 +5,21 @@
 不把这一步落成可重放的脚本，那两条自定义模型就只是**某台机器上的手工状态**（重装 Langfuse
 即丢），与「基础设施改动要能查证」的口径冲突。
 
-**价目来源**：DeepSeek 官方价目页（2026-09-10 调价后），单位是**每百万 token 的人民币**，
-本脚本按 `USD_PER_CNY = 1/6.67` 折成 Langfuse 要的**每 token 美元**——**这个换算会引入误差**
-（页面的 `$` 价就是这个汇率折出来的，实测与官方美元页一致：谷时输入 $0.15/M ↔ 1 元/M）。
+**价目来源**：DeepSeek 官方**英文**价目页——**官方直接给美元价**（如谷时 flash in $0.15/M、
+out $0.60/M），**没有任何换算**，故不存在汇率误差。⚠ **别用中文页的人民币价**：实测它已滞后
+（pro 中文页仍写 4.5/13.5 元，英文页现价 $0.66/$1.98 折回约 6.8 汇率才对得上）；也**别用
+LiteLLM 的 `model_prices_and_context_window` 表**（停在调价前旧价，flash/pro 都高一倍）。
 
 **峰谷两档（官方：谷时 = 峰时的一半）**：Langfuse 的分层条件只吃「用量阈值」与「静态属性相等」
 （读的是 `pricing-tiers/matcher.js`，**没有时间维度**），时段又是服务端按请求时刻自动判的——
-**两档在 Langfuse 里没法并存**，只能取一档。`PEAK = False` 取**谷时**：本项目实测 375 次调用
-**100% 落在谷时**（开发/使用都在北京时间夜间与周末；定时 ETL 也在 21:40 之后），
-且谷时与我们的真实使用形态一致。**若哪天改到工作日 9–12 / 14–18 跑，把 `PEAK = True`
-重跑本脚本即可**；两档之间是精确的 ×2，没有别的差别。
+**两档在 Langfuse 里没法并存**，只能取一档，**档位由使用者按自己跑批的时间段选**：
+
+  * `PEAK = False`（默认）＝**谷时**：适合夜间/周末跑（本项目实测 375 次调用 100% 在谷时，
+    定时 ETL 也在 21:40 之后）；
+  * `PEAK = True` ＝**峰时**：若任务实际跑在工作日 9–12 / 14–18（北京时间），
+    按当前谷值价 **×2** 换档即可 —— 改这一行常量重跑本脚本。
+
+两档之间是精确 ×2，没有第三种取值。
 
 **两处口径（别改成想当然的样子）**：
   * `match_pattern` 要覆盖上报名（`deepseek/deepseek-flash`）——匹配不剥前缀；
@@ -44,40 +49,31 @@ from app.core.config import get_settings  # noqa: E402
 #: 取峰时还是谷时（见模块 docstring 的取舍说明）。改这一行重跑脚本即换档。
 PEAK = False
 
-#: 官方口径的**每百万 token 人民币**（2026-09-10 调价后）：峰时；谷时是它的精确一半。
-#: 页面：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ —— 高峰 = 北京时间
-#: 周一至周五（不含法定节假日）9:00–12:00 与 14:00–18:00，其余（含周末/节假日）为谷时。
-CNY_PER_MTOK = {
+#: 官方口径的**每百万 token 美元**（峰时；谷时是精确一半）。
+#: 页面：https://api-docs.deepseek.com/quick_start/pricing/ —— 高峰 = 周一至周五（不含中国
+#: 法定节假日）**UTC 01:00–04:00 与 06:00–10:00**（北京时间 9:00–12:00 与 14:00–18:00），
+#: 其余（含周末/节假日）为谷时。
+USD_PER_MTOK = {
     r"(?i)^deepseek/deepseek-flash$": {
         "label": "deepseek-flash（知策快档）",
-        "peak": {"input": 2.0, "output": 8.0, "cache_read": 0.04},
+        "peak": {"input": 0.3, "output": 1.2, "cache_read": 0.006},
     },
     r"(?i)^deepseek/deepseek-v4-pro$": {
         "label": "deepseek-v4-pro（知策深度档）",
-        "peak": {"input": 9.0, "output": 27.0, "cache_read": 0.30},
+        "peak": {"input": 1.32, "output": 3.96, "cache_read": 0.044},
     },
 }
-
-#: 人民币 → 美元的换算率。**这是误差来源，认下来**：官方美元页（英文站）给的 `$` 价
-#: 与此汇率折出来的数一致（$0.15/M ↔ 1 元/M），所以是官方同源的近似，不是我们拍的。
-USD_PER_CNY = 1 / 6.67
-
-
-def _to_usd_per_token(cny_per_mtok: float) -> float:
-    """元/百万 → 每 token 美元（Langfuse 的定价单位）。"""
-    return cny_per_mtok / 1e6 * USD_PER_CNY
-
 
 #: 实际写入用的价目（每 token 美元）。`PEAK` 选档后展开，避免调用方自己乘。
 MODELS: list[dict] = [
     {
         "label": spec["label"],
         "match_pattern": pattern,
-        "input": _to_usd_per_token(spec["peak"]["input"] * (1.0 if PEAK else 0.5)),
-        "output": _to_usd_per_token(spec["peak"]["output"] * (1.0 if PEAK else 0.5)),
-        "cache_read": _to_usd_per_token(spec["peak"]["cache_read"] * (1.0 if PEAK else 0.5)),
+        "input": spec["peak"]["input"] * (1.0 if PEAK else 0.5) / 1e6,
+        "output": spec["peak"]["output"] * (1.0 if PEAK else 0.5) / 1e6,
+        "cache_read": spec["peak"]["cache_read"] * (1.0 if PEAK else 0.5) / 1e6,
     }
-    for pattern, spec in CNY_PER_MTOK.items()
+    for pattern, spec in USD_PER_MTOK.items()
 ]
 
 #: cache 档补写用（公开 API 不收这一档）。容器名与本仓 compose 一致；库名固定 `langfuse`。
