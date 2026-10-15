@@ -135,8 +135,13 @@ def run_graph(ctx: RoleContext, *, thread: str = "t1", max_rounds: int | None = 
 
 
 # ── 跑通 ──
+#
+# ⚠ 下面这条标 `integration`：它**跑的是真实行情与真实语料**（五个角色都要查数），
+# 没有 `data/` 的环境里五角色全降级 ⇒ 断言（`done`、闸门通过）必红。
+# 同文件其余 12 条验的是子系统，用假模型与合成目录，都留在离线轨。
 
 
+@pytest.mark.integration
 def test_full_run_produces_draft_and_passes_gate() -> None:
     ctx = make_ctx()
     _, _, state = run_graph(ctx)

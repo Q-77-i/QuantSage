@@ -370,6 +370,9 @@ def test_user_strategy_with_a_static_error_is_422_with_findings(
     assert any(item["severity"] == "error" for item in response.json()["findings"])
 
 
+# ⚠ 标 `integration`：这条走**真跑一遍网格**（真实行情），没有 `data/` 的环境里必红。
+# 同文件其余各条用合成目录或把执行打桩，留在离线轨。
+@pytest.mark.integration
 def test_user_strategy_grid_runs_and_carries_its_name(signed_in: Any, data_dir: Path) -> None:
     strategy_id = asyncio_run(make_user_strategy(signed_in, GOOD_USER_SOURCE))
     _, events = run_optimize(

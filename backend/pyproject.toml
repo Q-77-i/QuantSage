@@ -70,7 +70,11 @@ asyncio_default_fixture_loop_scope = "function"
 # 默认只跑离线单测；`pytest -m integration` 触发需要容器/网络/密钥的用例
 addopts = '-m "not integration" --strict-markers'
 markers = [
-    "integration: 需要容器 / 真实网络 / 真实密钥，默认不跑",
+    # **真实数据**也是一维（2026-10-15 E7a 补）：`data/` 不进 Git，CI 上没有它——
+    # 凡是要读真实行情/语料才成立的用例都归这一档，别让它们赖在离线轨里。
+    # ⚠ `-m "not integration"` 只是**不选中**，pytest **仍会 import 模块**：
+    # 模块级读数据的代码必须在 import 期就避开（否则整个收集阶段崩，exit 2）。
+    "integration: 需要容器 / 真实数据 / 真实网络 / 真实密钥，默认不跑",
 ]
 
 # ── E7：lint（`uv run ruff check .`，CI 里是闸门）────────────────────────────

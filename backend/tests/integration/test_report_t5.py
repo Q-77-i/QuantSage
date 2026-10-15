@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from functools import lru_cache
 
 import pytest
 
@@ -31,16 +32,27 @@ pytestmark = pytest.mark.integration
 
 DATA_DIR = get_settings().data_dir
 SYMBOLS = ("600519", "300750", "600036")
-EVENT_START = min(
-    dc.events(symbol, data_dir=DATA_DIR)[0]["event_time"].date()
-    for symbol in SYMBOLS
-    if dc.events(symbol, data_dir=DATA_DIR)
-)
+
+
+@lru_cache(maxsize=1)
+def event_start() -> date:
+    """事件语料的起点（三个标的里最早的那天）。
+
+    ⚠ **必须惰性求值，不能写在模块级**：`-m "not integration"` 只是**不选中**这些测试，
+    pytest 仍然会 **import 整个模块**——模块级一调 `dc.events()`，在没有 `data/` 的环境
+    （CI runner）就在 import 期抛 `DataNotReady`，**收集阶段直接崩**（exit 2，离线那套
+    一条都跑不了）。本机一直有数据，所以这个缺陷只在 CI 首跑才现形。
+    """
+    return min(
+        dc.events(symbol, data_dir=DATA_DIR)[0]["event_time"].date()
+        for symbol in SYMBOLS
+        if dc.events(symbol, data_dir=DATA_DIR)
+    )
 
 
 def event_config(symbol: str, **overrides) -> BacktestConfig:
     """事件窗口内的回测配置——事件语料仅约 3 个月，以此为起点才有意义。"""
-    rows = dc.bars(symbol, start=EVENT_START.isoformat(), data_dir=DATA_DIR)
+    rows = dc.bars(symbol, start=event_start().isoformat(), data_dir=DATA_DIR)
     return BacktestConfig(
         symbol=symbol,
         strategy="event_driven",
@@ -77,7 +89,7 @@ def test_equity_curve_aligns_with_benchmark_and_bars(symbol: str) -> None:
     report = build_report(event_config(symbol))
 
     curve = report["equity_curve"]
-    bars = dc.bars(symbol, start=EVENT_START.isoformat(), data_dir=DATA_DIR)
+    bars = dc.bars(symbol, start=event_start().isoformat(), data_dir=DATA_DIR)
     assert len(curve) == len(bars)
     assert [point["date"] for point in curve] == [bar["trade_date"].isoformat() for bar in bars]
     assert report["metrics"]["final_equity"] == pytest.approx(curve[-1]["equity"])
@@ -89,7 +101,7 @@ def test_benchmark_matches_buy_and_hold_on_real_data() -> None:
     config = event_config(symbol)
     report = build_report(config)
 
-    bars = dc.bars(symbol, start=EVENT_START.isoformat(), data_dir=DATA_DIR)
+    bars = dc.bars(symbol, start=event_start().isoformat(), data_dir=DATA_DIR)
     expected = benchmark_curve([Bar.from_row(row) for row in bars], config.initial_cash, config.costs)
     assert [point["benchmark"] for point in report["equity_curve"]] == pytest.approx(list(expected))
     # 基准买入价含一次成本，故首点略低于初始资金
@@ -148,4 +160,4 @@ def test_mode_is_recorded_in_meta() -> None:
 def test_event_window_start_is_after_bars_start() -> None:
     """确认起点取自事件窗口而非行情窗口（否则事件策略前半段无事件可消费）。"""
     report = build_report(event_config("600519"))
-    assert date.fromisoformat(str(report["meta"]["start"])) >= EVENT_START
+    assert date.fromisoformat(str(report["meta"]["start"])) >= event_start()

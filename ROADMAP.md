@@ -8,7 +8,7 @@
 
 **阶段**：P2-Mn 的 M1–M10 已全部交付并验收（里程碑 `m-p2`，2026-10-13）。P1-Tn 与 P2-Mn 的浏览器内闭环均可走完。
 
-**最近交付**：**P3-E7a**（2026-10-15，SPEC §7 v2.14）——工程化基建落地：**ruff 接入**（中等规则集 + `line-length=120`，存量 **152 条清零**，其中逮到 1 个**真缺陷**：`etl/archive.py` 用了 `subprocess.CompletedProcess[str]` 却从未 import，靠 `from __future__ import annotations` 侥幸不炸）· **GitHub Actions CI**（三 job：后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）· **供应链审计持续化**（`uv export --no-hashes` + `pip-audit -r` 审**清单**，修好了 E8a 记的 hash 校验失败，且覆盖被跳装的 torch）。
+**最近交付**：**P3-E7a**（2026-10-15，SPEC §7 v2.16）——工程化基建落地：**ruff 接入**（中等规则集 + `line-length=120`，存量 **152 条清零**，其中逮到 1 个**真缺陷**：`etl/archive.py` 用了 `subprocess.CompletedProcess[str]` 却从未 import，靠 `from __future__ import annotations` 侥幸不炸）· **GitHub Actions CI**（三 job：后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）· **供应链审计持续化**（`uv export --no-hashes` + `pip-audit -r` 审**清单**，修好了 E8a 记的 hash 校验失败，且覆盖被跳装的 torch）。**首跑又逮到四个问题并已处置**（两个工作流错：审计 job 没装 pnpm、`uv run` 会重复同步把 torch 装回来；两个测试隔离的真缺陷：「离线套件」此前隐含依赖真实 `data/`，且 `-m "not integration"` 挡不住 import 期副作用）——**口径订正：离线 1491 → 1487、集成 110 → 114**（不是测试少了，是归类错了；依据 SPEC §7.10）。
 
 **下一个动作**：E7 余下三段按序 **E7b**（覆盖率门槛：先测基线再定 `fail_under`；eval gate 口径订正）→ **E7c**（Langfuse 字段规范化：补四个空字段 + 深路径/报告调用补挂 handler）→ **E7d**（实验可复现：`backtest_runs.data_digest`）→ 然后 E2 多用户治理（配额必做、RBAC 从简）→ E3 数据工程（Redis 缓存 / 体检定时化 / 快照）→ E5 风控（挂模拟盘）→ E9 企业级文档。
 

@@ -123,8 +123,13 @@ def test_resume_on_a_run_without_pending_approval_is_409(env: dict[str, Any]) ->
 
 
 # ── 全流程 ──
+#
+# ⚠ 下面两条标 `integration`：它们走的是**真跑一遍深路径**（真实行情 + 真实语料），
+# 没有 `data/` 的环境里角色全降级 ⇒ 「跑完落库」这类断言不成立。
+# 同文件其余各条把 runner 打桩，验的是端点契约，留在离线轨。
 
 
+@pytest.mark.integration
 def test_full_run_streams_events_and_persists_report(env: dict[str, Any]) -> None:
     with client.stream("POST", "/api/v1/research/runs", json={
         "question": "分析一下 600519 值不值得买", "mode": "deep",
@@ -192,6 +197,7 @@ class _WordingFake(DeepFake):
         return super()._answer(messages)
 
 
+@pytest.mark.integration
 def test_interrupt_then_resume_completes_the_run(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     def wording_context(*, brief: Any, budget_payload: Any = None) -> RoleContext:
         return RoleContext(brief=brief, budget=research_api.Budget(limits=research_api._limits()),

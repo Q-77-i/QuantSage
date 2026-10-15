@@ -10,13 +10,17 @@
 
 from __future__ import annotations
 
+from datetime import date
+from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.idempotency import HEADER_ALIAS, KEY_MAX
+from app.data import duckdb_client
 from app.main import app
-from tests.conftest import FakeDatabase
+from tests.conftest import FakeDatabase, make_backtest_dir, trading_days
 
 client = TestClient(app)
 
@@ -26,6 +30,30 @@ MA = {
     "start": "2026-07-01",
     "end": "2026-09-30",
 }
+
+
+@pytest.fixture(autouse=True)
+def synthetic_market(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """把数据目录指到**合成的**行情上。
+
+    本文件验的是**幂等键**（SPEC §5.5），不是数据——但提交要过 `resolve_window` 那道闸，
+    而它读的是真实 `data/`。不铺这一层的话，在没有 `data/` 的环境（CI runner）里
+    每个提交都回 503，**整文件 11 条一起红**。合成行只需覆盖 `MA` 的区间。
+    """
+    days = [day for day in trading_days(date(2026, 7, 1), 100) if day <= date(2026, 9, 30)]
+    bars = [
+        {
+            "trade_date": day,
+            "open": 10.0 + index * 0.1,
+            "close": 10.0 + index * 0.1,
+            "high": 10.5 + index * 0.1,
+            "low": 9.5 + index * 0.1,
+            "change_pct": 1.0,
+        }
+        for index, day in enumerate(days)
+    ]
+    root = make_backtest_dir(tmp_path, bars, symbol="600519")
+    monkeypatch.setattr(duckdb_client, "resolve_data_dir", lambda _=None: root)
 USER_STRATEGY_BODY = {**MA, "strategy": "user", "strategy_id": "00000000-0000-0000-0000-0000000000aa"}
 
 

@@ -20,6 +20,10 @@ env:
   # 仓库的 uv 默认索引钉在**清华镜像**（为国内开发机）。GitHub runner 在境外，
   # 不覆盖的话装依赖会慢到不可用。**只改 CI，不动本机配置**（SPEC §7.1）。
   UV_DEFAULT_INDEX: https://pypi.org/simple
+  # `uv run` **默认会同步环境**——那样会把上面 `uv sync` 明确排除掉的 torch / FlagEmbedding
+  # 重新装回来（约 2GB，实测首跑让后端 job 跑了 15 分钟）。同步已经在上一步做过了，
+  # 这里一律不再同步。
+  UV_NO_SYNC: "1"
 
 jobs:
   backend:
@@ -71,6 +75,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      # 前端那一步要跑 `pnpm audit`——**runner 上没有 pnpm**，不装就是 exit 127
+      # （首跑就是这么红的）。这里不跑前端构建，所以不需要 setup-node 的缓存。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       # 审**清单**而不是本地已装的包：CI 跳装了 torch，`--path` 会让它成为审计盲区。
       # `--no-hashes` 是必需的——带 hash 的清单与 pip 解析结果比对会失败（E8a 踩过，SPEC §7.4）。
       - name: 后端依赖审计
