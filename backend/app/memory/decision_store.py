@@ -21,10 +21,10 @@ from typing import Any
 
 from langgraph.store.base import BaseStore
 
-log = logging.getLogger(__name__)
-
 from app.memory.reflection import Reflection
 from app.memory.settle import SettledTrip
+
+log = logging.getLogger(__name__)
 
 #: namespace 根段（跨用户聚合时以 `("decisions", user_id)` 作前缀）
 NAMESPACE_ROOT = "decisions"

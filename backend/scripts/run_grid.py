@@ -146,7 +146,9 @@ async def main() -> int:
             f"并发 {len(summary['cells'])} 格 / 串行 {len(serial_summary['cells'])} 格",
         )
     )
-    checks.append(Check(f"25 格全部成功（串行峰值 {serial_peak}）", summary["cells_ok"] == 25, f"{summary['cells_ok']}/25"))
+    checks.append(
+        Check(f"25 格全部成功（串行峰值 {serial_peak}）", summary["cells_ok"] == 25, f"{summary['cells_ok']}/25")
+    )
 
     windows = {
         (cell["window"]["start"], cell["window"]["end"]) for cell in summary["cells"]
@@ -359,7 +361,8 @@ def _write_deflated(overfit, summary, reference) -> None:
         f"| γ₄ 峰度 | {overfit['kurt']!r} | **原始**峰度（正态 = 3），不是超额峰度 |",
         f"| T 观测数 | {overfit['observations']} | |",
         f"| **DSR** | **{overfit['dsr']!r}** | |",
-        f"| 独立实现（scipy） | {reference!r} | 差 {abs(overfit['dsr'] - reference) if overfit['dsr'] is not None and reference is not None else None} |",
+        f"| 独立实现（scipy） | {reference!r} | 差 "
+        f"{abs(overfit['dsr'] - reference) if overfit['dsr'] is not None and reference is not None else None} |",
         "",
         "## 三条正交验算",
         "",

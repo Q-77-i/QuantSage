@@ -35,6 +35,8 @@
 不是未来函数。
 """
 
+# ruff: noqa: E501 —— 上面 docstring 里的**规则表是 markdown 表格**，R1/R4 两行的单元格
+# 折行会直接把表格拆坏（noqa 写在字符串里也不生效）；本文件其余行都合规。
 from __future__ import annotations
 
 import ast
@@ -102,7 +104,7 @@ class Rule:
     severity: str
     node_types: tuple[type[ast.AST], ...]
     message: str
-    match: Callable[[Any, "_Walker"], str | None]
+    match: Callable[[Any, _Walker], str | None]
 
 
 @dataclass(frozen=True, slots=True)

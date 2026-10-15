@@ -16,10 +16,9 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
-from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.agent.graph import astream_chat, build_agent, budget_message
+from app.agent.graph import astream_chat, budget_message, build_agent
 from app.api.chat import failure_frame
 from app.core import reliability
 from app.core.config import get_settings
@@ -152,10 +151,11 @@ def test_open_circuit_degrades_a_role_with_a_readable_reason() -> None:
 
     判据落在 `RoleResult.errors` 的文案上——它一路流到报告的 gaps 块。
     """
+    from datetime import datetime
+
     from app.agent.deep.budget import Budget
     from app.agent.deep.roles.base import RoleContext, interpret
     from app.agent.deep.types import Brief
-    from datetime import datetime
 
     ctx = RoleContext(
         brief=Brief(

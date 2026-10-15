@@ -325,11 +325,35 @@ def test_every_reason_code_travels_with_its_display_text() -> None:
     而那正是「前端自己能拼一句」的开始。
     """
     cases = [
-        (dict(sharpes=[annualized(0.08), None], best_index=0, best_skew=-0.5, best_kurt=4.0, observations=101), "insufficient_trials"),
-        (dict(sharpes=[None, None], best_index=None, best_skew=None, best_kurt=None, observations=None), "best_sharpe_undefined"),
-        (dict(sharpes=[annualized(0.05), annualized(0.08)], best_index=1, best_skew=None, best_kurt=None, observations=101), "moments_undefined"),
-        (dict(sharpes=[annualized(0.05), annualized(0.08)], best_index=1, best_skew=-0.5, best_kurt=4.0, observations=1), "insufficient_observations"),
-        (dict(sharpes=[annualized(0.5), annualized(0.6)], best_index=0, best_skew=10.0, best_kurt=1.0, observations=101), "degenerate_denominator"),
+        (
+            dict(sharpes=[annualized(0.08), None], best_index=0, best_skew=-0.5, best_kurt=4.0, observations=101),
+            "insufficient_trials",
+        ),
+        (
+            dict(sharpes=[None, None], best_index=None, best_skew=None, best_kurt=None, observations=None),
+            "best_sharpe_undefined",
+        ),
+        (
+            dict(
+                sharpes=[annualized(0.05), annualized(0.08)], best_index=1,
+                best_skew=None, best_kurt=None, observations=101,
+            ),
+            "moments_undefined",
+        ),
+        (
+            dict(
+                sharpes=[annualized(0.05), annualized(0.08)], best_index=1,
+                best_skew=-0.5, best_kurt=4.0, observations=1,
+            ),
+            "insufficient_observations",
+        ),
+        (
+            dict(
+                sharpes=[annualized(0.5), annualized(0.6)], best_index=0,
+                best_skew=10.0, best_kurt=1.0, observations=101,
+            ),
+            "degenerate_denominator",
+        ),
     ]
     for kwargs, code in cases:
         out = grid_overfit(**kwargs)

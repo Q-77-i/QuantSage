@@ -85,10 +85,13 @@ async def cancel_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     if row["status"] == "cancelled":
         return row
-    if row["status"] == "running" and row["kind"] in COOPERATIVE_KINDS:
-        # 投递中止信号：已派发的格跑完，不再派发新的（`run_cells(stop=)`）；worker 收尾成 cancelled
-        if task_worker.request_stop(normalized):
-            return {**row, "cancelling": True}
+    # 投递中止信号：已派发的格跑完，不再派发新的（`run_cells(stop=)`）；worker 收尾成 cancelled
+    if (
+        row["status"] == "running"
+        and row["kind"] in COOPERATIVE_KINDS
+        and task_worker.request_stop(normalized)
+    ):
+        return {**row, "cancelling": True}
     raise HTTPException(status_code=409, detail=_why_not(row["status"], row["kind"]))
 
 

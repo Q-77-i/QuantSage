@@ -6,7 +6,14 @@ allowBuilds:
 #   * postcss：next 钉死在 8.4.31，而 8.4.31 吃了四条公告（两条高危、两条中危）。
 #     顶到 8.5.28 —— 树里本来就有这个版本（@tailwindcss/postcss 在用），属同大版本内替换。
 #   * dompurify：monaco 带进来的两条低危，3.4.16 已修。
-# 剩一条无补丁可升（braces，`patched: None`），如实记在 SPEC §8.1。
+# 剩一条无补丁可升（braces，`patched: None`），如实记在 SPEC §8.4。
+#
+# E7a 起改由**本文件承担例外清单**（`pnpm audit --ignore <GHSA>` 会写到这里）：
+# 例外入库、跟着代码评审走，CI 与本地跑的是同一份口径。**上游出补丁即删掉这条。**
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm
+
 overrides:
   postcss: ^8.5.28
   dompurify: ^3.4.16

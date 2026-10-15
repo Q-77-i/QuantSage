@@ -44,7 +44,7 @@ from app.report.builder import (
 from app.report.evidence import resolve_evidence
 from app.report.markdown import render_markdown
 from app.report.narrative import build_narrative
-from app.report.pdf import PdfRenderError, issue_export_token, render_report_pdf, verify_export_token
+from app.report.pdf import PdfRenderError, render_report_pdf, verify_export_token
 from app.report.snapshot import (
     config_digest,
     data_snapshot,

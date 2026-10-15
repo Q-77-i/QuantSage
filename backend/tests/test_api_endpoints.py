@@ -58,7 +58,10 @@ SAMPLE_EVENTS: list[dict[str, object]] = [
         "direction": "利多",
         "confidence": 0.8,
         "person": '["张三"]',
-        "stocks": '[{"code": "600519", "name": "贵州茅台", "reason": "中标主体"}, {"code": "000016", "name": "*ST康佳A", "reason": null}]',
+        "stocks": (
+            '[{"code": "600519", "name": "贵州茅台", "reason": "中标主体"}, '
+            '{"code": "000016", "name": "*ST康佳A", "reason": null}]'
+        ),
         "source_url": "https://example.invalid/a.pdf",
         "quality_status": "stable",
         "source_time_quality": "exact",

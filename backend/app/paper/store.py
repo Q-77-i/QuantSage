@@ -28,7 +28,6 @@ from app.paper.types import (
     ReplayResult,
 )
 
-
 # ── 配置 ────────────────────────────────────────────────────
 
 

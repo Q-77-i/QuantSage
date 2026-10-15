@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.backtest.report import resolve_window  # noqa: E402
 from app.backtest.engine import BacktestConfig  # noqa: E402
+from app.backtest.report import resolve_window  # noqa: E402
 from app.backtest.types import BacktestError, Mode  # noqa: E402
 from app.strategy import SandboxError, StrategyRejected  # noqa: E402
 from app.strategy.api import parse_meta  # noqa: E402

@@ -28,7 +28,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ PROBE_QUERY = "央行 降准 政策 银行"
 
 EVIDENCE: dict[str, Any] = {
     "schema": "quantsage.mcp_verification/v1",
-    "started_utc": datetime.now(timezone.utc).isoformat(),
+    "started_utc": datetime.now(UTC).isoformat(),
     "steps": [],
 }
 
@@ -91,7 +91,8 @@ async def main() -> int:
     errlog = None if args.show_server_stderr else open("/dev/null", "w")  # noqa: SIM115
     try:
         async with asyncio.timeout(args.timeout):
-            async with stdio_client(server_params(), errlog=errlog) as (read, write):
+            # 三层嵌套是 MCP SDK 的用法本身；合并成括号形式要整体重排 75 行，不值得
+            async with stdio_client(server_params(), errlog=errlog) as (read, write):  # noqa: SIM117
                 async with ClientSession(read, write) as session:
                     started = time.perf_counter()
                     init = await session.initialize()
@@ -189,7 +190,7 @@ async def main() -> int:
             errlog.close()
 
     EVIDENCE["verdict"] = "pass"
-    EVIDENCE["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    EVIDENCE["finished_utc"] = datetime.now(UTC).isoformat()
 
     blob = json.dumps(EVIDENCE, ensure_ascii=False)
     secrets = {

@@ -28,9 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.rag import RagNotReady  # noqa: E402
+from app.rag import (
+    RagNotReady,  # noqa: E402
+    embed,  # noqa: E402
+)
 from app.rag import collection as col  # noqa: E402
-from app.rag import embed  # noqa: E402
 from app.rag.encoder import configure_hf_env  # noqa: E402
 
 

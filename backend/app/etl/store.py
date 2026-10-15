@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import duckdb
 
@@ -207,7 +207,7 @@ def materialize_day(
         rows=rows,
         symbols=distinct_symbols,
         sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
-        materialized_at=datetime.now(timezone.utc).isoformat(),
+        materialized_at=datetime.now(UTC).isoformat(),
         shards=tuple(
             {
                 "event_type": shard.event_type,
@@ -272,7 +272,7 @@ def write_manifest(meta_dir: Path, entries: Iterable[DayEntry], *, coverage_last
     ).hexdigest()
     payload = {
         "schema": SCHEMA,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "source": {
             "channel": "archive-cli",
             "dataset": "event-timeline",

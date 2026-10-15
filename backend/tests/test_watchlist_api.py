@@ -35,7 +35,7 @@ def sample_bars() -> list[dict[str, Any]]:
     return [
         {"trade_date": day, "open": close, "close": close, "high": close, "low": close}
         for day, close in zip(
-            (date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 3)), (10.0, 11.0, LAST_CLOSE)
+            (date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 3)), (10.0, 11.0, LAST_CLOSE), strict=True
         )
     ]
 

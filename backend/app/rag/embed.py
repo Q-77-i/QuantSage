@@ -22,7 +22,7 @@ import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.core.config import get_settings
@@ -109,7 +109,7 @@ def save_state(payload: Mapping, data_dir: Path | None = None, *, merge: bool = 
         )
         if same_target:
             body["days"] = {**(current.get("days") or {}), **(body.get("days") or {})}
-    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    body["updated_at"] = datetime.now(UTC).isoformat()
     path.write_text(json.dumps(body, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     return path
 
@@ -286,7 +286,7 @@ def sync(
             "sha256": task.sha256,
             "points": count,
             "action": task.action,
-            "embedded_at": datetime.now(timezone.utc).isoformat(),
+            "embedded_at": datetime.now(UTC).isoformat(),
         }
         state["days"] = days_state
         state["schema"] = STATE_SCHEMA

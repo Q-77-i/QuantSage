@@ -49,7 +49,10 @@ def test_clean_text_passes() -> None:
 def test_unit_added_by_the_model_is_not_a_fabrication() -> None:
     """真数据实测：语料表格里单位在表头（`主力资金流量（万元）`）、值是 `67969.50`，
     模型复述时补上单位写成 `67969.50万元`——它没编造任何东西，判它违规是假阳性。"""
-    assert untraceable_numbers("主力资金流量 67969.50万元", allowed_numbers({}, ["主力资金流量（万元） 67969.50"])) == []
+    assert (
+        untraceable_numbers("主力资金流量 67969.50万元", allowed_numbers({}, ["主力资金流量（万元） 67969.50"]))
+        == []
+    )
     # 反向也成立：证据写全、模型只写数值
     assert untraceable_numbers("净流入 67969.50", allowed_numbers({}, ["净流入 67969.50 万元"])) == []
 

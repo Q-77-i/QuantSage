@@ -191,7 +191,10 @@ def test_decide_prefers_the_cheapest_gate_first() -> None:
         == "up_to_date"
     )
     assert (
-        bars.decide(local_last=date(2026, 10, 9), expected=date(2026, 10, 9), synced_manifest="a", current_manifest="a", force=True)
+        bars.decide(
+            local_last=date(2026, 10, 9), expected=date(2026, 10, 9),
+            synced_manifest="a", current_manifest="a", force=True,
+        )
         == "refresh"
     )
 

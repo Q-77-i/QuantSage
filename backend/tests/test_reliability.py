@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -44,17 +45,26 @@ def make_dep(**kwargs: Any) -> tuple[Dependency, FakeClock]:
     return dep, clock
 
 
-def http_error(status: int, *, retry_after: float | None = None) -> Exception:
+class FakeHTTPError(Exception):
+    """替身异常（模拟 litellm 抛出的那种）：`status_code` 是分类依据，429 另带 `response.headers`。
+
+    **用具名类而非裸 `Exception`**：断言要能收窄到「guard **原样抛出的是它**」——
+    裸 `Exception` 连 guard 换抛了别的错都会通过（B017 指的就是这件事）。
+    """
+
+    def __init__(self, status: int, *, retry_after: float | None = None) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status_code = status
+        self.response: Any = (
+            SimpleNamespace(headers={"retry-after": str(retry_after)})
+            if retry_after is not None
+            else None
+        )
+
+
+def http_error(status: int, *, retry_after: float | None = None) -> FakeHTTPError:
     """造一个「像 litellm 那样」的异常：有 `status_code`，429 另带 `response.headers`。"""
-
-    class Response:
-        def __init__(self) -> None:
-            self.headers = {"retry-after": str(retry_after)} if retry_after is not None else {}
-
-    exc = Exception(f"HTTP {status}")
-    exc.status_code = status  # type: ignore[attr-defined]
-    exc.response = Response() if retry_after is not None else None  # type: ignore[attr-defined]
-    return exc
+    return FakeHTTPError(status, retry_after=retry_after)
 
 
 class Boom(Exception):
@@ -155,7 +165,7 @@ def test_permanent_failure_is_not_retried() -> None:
         calls.append(1)
         raise http_error(400)
 
-    with pytest.raises(Exception):
+    with pytest.raises(FakeHTTPError):
         asyncio.run(reliability.guard("test:dep", fn))
     assert len(calls) == 1
 
@@ -331,7 +341,7 @@ def test_permanent_failure_does_not_trip_the_circuit() -> None:
         raise http_error(400)
 
     for _ in range(5):
-        with pytest.raises(Exception):
+        with pytest.raises(FakeHTTPError):
             asyncio.run(reliability.guard("test:dep", fn))
     assert dep.state == "closed"
 

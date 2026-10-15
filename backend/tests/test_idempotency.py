@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.api.idempotency import HEADER_ALIAS, KEY_MAX
@@ -76,7 +75,6 @@ def test_without_key_every_submit_creates_a_task(signed_in: FakeDatabase) -> Non
 
 def test_key_is_scoped_per_user(signed_in: FakeDatabase) -> None:
     from app.core.auth import require_user
-
     from tests.conftest import TEST_USER
 
     submit(MA, key="act-4")

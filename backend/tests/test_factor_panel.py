@@ -13,7 +13,7 @@ import pytest
 
 from app.backtest.events import EventFeed
 from app.backtest.types import Bar, EventView, Mode
-from app.factor.panel import build_event_panel, build_price_panel, bucket_day
+from app.factor.panel import bucket_day, build_event_panel, build_price_panel
 from tests.conftest import ts
 
 #: 一个交易周（周一~周五）+ 下周一，供「周末顺延」用例

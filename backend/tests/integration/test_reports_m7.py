@@ -30,7 +30,10 @@ from app.core.db import init_schema, open_pool
 from app.data import duckdb_client as dc
 from app.main import app
 from app.report.narrative import Narrative
-from tests.integration.conftest import purge_rows, real_stack, sign_up  # noqa: F401
+
+# `real_stack` 不在此列：它是 conftest 的 **fixture**，pytest 自动发现；显式导入反而
+# 会在测试函数把它写成参数时构成「重定义」（F811）——`sign_up` / `purge_rows` 是普通函数，必须导入。
+from tests.integration.conftest import purge_rows, sign_up
 
 pytestmark = pytest.mark.integration
 

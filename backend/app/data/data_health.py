@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 import duckdb
 
@@ -273,7 +274,7 @@ def check_b5_steps(con, data_dir) -> Check:
     for adjust in adjusts:
         row = _one(
             con,
-            f"""
+            """
             WITH step AS (
                 SELECT close, change_pct,
                        lag(close) OVER (PARTITION BY symbol ORDER BY trade_date) AS prev_close

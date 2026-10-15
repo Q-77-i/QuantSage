@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -58,7 +58,7 @@ def payload(**overrides: object) -> str:
         "is_corrected": False,
         "correction_count": 0,
         "person": [],
-        "observed_at": f"2026-09-29T10:00:00+08:00",
+        "observed_at": "2026-09-29T10:00:00+08:00",
     }
     base.update(overrides)
     return json.dumps(base, ensure_ascii=False)
@@ -75,7 +75,7 @@ def write_shard(
     values = []
     for row in rows:
         event_id = row.get("event_id", "news:1")
-        event_time = row.get("event_time", f"2026-09-29T10:00:00+08:00")
+        event_time = row.get("event_time", "2026-09-29T10:00:00+08:00")
         available_at = row.get("available_at", event_time)
         body = row.get("payload", payload(event_id=event_id))
         values.append(
@@ -417,9 +417,14 @@ def test_backfill_only_requests_missing_days(tmp_path: Path, monkeypatch: pytest
 
     monkeypatch.setattr(
         archive, "coverage",
-        lambda data_dir=None: archive.ArchiveCoverage(last_day=date(2026, 9, 29), files=1, rows=1, manifest_version="x"),
+        lambda data_dir=None: archive.ArchiveCoverage(
+            last_day=date(2026, 9, 29), files=1, rows=1, manifest_version="x"
+        ),
     )
-    monkeypatch.setattr(runner, "run", lambda scope, **kwargs: seen.append(kwargs["days"]) or runner.RunReport(scope=scope, started_at=""))
+    monkeypatch.setattr(
+        runner, "run",
+        lambda scope, **kwargs: seen.append(kwargs["days"]) or runner.RunReport(scope=scope, started_at=""),
+    )
 
     # 「今天」显式注入（2026-10-15 修）：不给的话窗口起点是 `真·今天 - 10 天`，
     # 写到 10-10 就追过了 mock 的 `last_day`（2026-09-29）、窗口变空，用例无端变红。

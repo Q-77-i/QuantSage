@@ -8,10 +8,10 @@ portfolio / broker / strategies / engine 共享。`BarContext` 同时被策略�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Mapping
 from zoneinfo import ZoneInfo
 
 CN_TZ = ZoneInfo("Asia/Shanghai")

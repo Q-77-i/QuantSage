@@ -130,7 +130,9 @@ def build_matrix(args: argparse.Namespace, full: tuple[date, date], event_start:
             ("成本全关", CostModel.disabled(), Mode.PIT),
         )
         for label, costs, mode in plans:
-            rows.append(run_one(args.symbol, "ma_cross", f"ma_cross/{label}", costs, mode, *ma_window, args.cash, params))
+            rows.append(
+                run_one(args.symbol, "ma_cross", f"ma_cross/{label}", costs, mode, *ma_window, args.cash, params)
+            )
 
     # ── event_driven：只跑事件窗口，两种模式必须同区间才可比 ──
     if args.strategy in ("all", "event_driven"):
@@ -138,7 +140,9 @@ def build_matrix(args: argparse.Namespace, full: tuple[date, date], event_start:
         modes = (Mode.PIT, Mode.NON_PIT) if args.pit_mode == "both" else (Mode(args.pit_mode),)
         for mode in modes:
             rows.append(
-                run_one(args.symbol, "event_driven", f"event_driven/{mode.value}", base, mode, *ev_window, args.cash, params)
+                run_one(
+                    args.symbol, "event_driven", f"event_driven/{mode.value}", base, mode, *ev_window, args.cash, params
+                )
             )
         # 成本开关对照（PIT 模式）
         rows.append(
@@ -191,7 +195,12 @@ def judge(rows: list[Row]) -> list[tuple[bool, str]]:
 
 
 def print_report(symbol: str, rows: list[Row], verdicts: list[tuple[bool, str]], args: argparse.Namespace) -> None:
-    header = f"{'#':<3}{'策略/情形':<26}{'模式':<9}{'费用':<5}{'滑点':<7}{'bar':>5}{'成交':>5}{'平仓':>5}{'费用合计':>13}{'滑点成本':>12}{'期末权益':>15}{'收益率':>10}"
+    header = (
+        f"{'#':<3}{'策略/情形':<26}{'模式':<9}"
+        f"{'费用':<5}{'滑点':<7}"
+        f"{'bar':>5}{'成交':>5}{'平仓':>5}"
+        f"{'费用合计':>13}{'滑点成本':>12}{'期末权益':>15}{'收益率':>10}"
+    )
     print(f"QuantSage T4 最小回测 · 验收矩阵（{symbol}）")
     print(f"初始资金 {args.cash:,.2f} 元 · 整手 100 股 · {CostModel(slippage_bps=args.slippage_bps).describe()}")
     print()
@@ -220,7 +229,11 @@ def print_report(symbol: str, rows: list[Row], verdicts: list[tuple[bool, str]],
 def print_detail(symbol: str, args: argparse.Namespace, full: tuple[date, date], event_start: date) -> None:
     """--detail：打印某一策略的逐笔成交与平仓。"""
     strategy = args.strategy if args.strategy != "all" else "ma_cross"
-    window = (args.start or full[0], args.end or full[1]) if strategy == "ma_cross" else (args.start or event_start, args.end or full[1])
+    window = (
+        (args.start or full[0], args.end or full[1])
+        if strategy == "ma_cross"
+        else (args.start or event_start, args.end or full[1])
+    )
     costs = CostModel.disabled() if args.no_costs else CostModel(slippage_bps=args.slippage_bps)
     if args.no_fees:
         costs = costs.without_fees()

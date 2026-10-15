@@ -19,8 +19,8 @@ from typing import Any
 import pytest
 
 from app.core import reliability
-from app.data import xiaoshi_cli
 from app.core.reliability import CircuitOpen
+from app.data import xiaoshi_cli
 
 
 @pytest.fixture(autouse=True)

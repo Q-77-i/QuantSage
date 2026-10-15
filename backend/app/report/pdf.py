@@ -46,7 +46,7 @@ def _secret() -> bytes:
 
 
 def _digest(report_id: str, expires_at: int) -> str:
-    return hmac.new(_secret(), f"{report_id}|{expires_at}".encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(_secret(), f"{report_id}|{expires_at}".encode(), hashlib.sha256).hexdigest()
 
 
 def issue_export_token(report_id: str, *, ttl: int = EXPORT_TTL_SECONDS, now: float | None = None) -> str:

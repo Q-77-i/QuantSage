@@ -34,12 +34,11 @@ import json
 import sys
 import time
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.backtest.types import CN_TZ  # noqa: E402
 from app.rag import RagNotReady  # noqa: E402
 from app.rag.evaluate import (  # noqa: E402
     JudgedQuery,
@@ -197,7 +196,7 @@ def payload_of(queries: list[dict], rows: Sequence[dict]) -> dict:
     """评测集的外壳（版本 / 窗口 / 标注口径）。生成与中途落盘共用同一份。"""
     return {
         "version": "v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "corpus_window": [min(r["day"] for r in rows), max(r["day"] for r in rows)],
         "categories": list(CATEGORIES),
         "annotation": {

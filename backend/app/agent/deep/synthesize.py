@@ -17,10 +17,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from app.agent.deep.debate import DebateTurn, SIDE_LABELS, citation_index
+from app.agent.deep.debate import SIDE_LABELS, DebateTurn, citation_index
 from app.agent.deep.merge import MergedEvidence
 from app.agent.deep.roles.base import RoleContext
-from app.agent.deep.types import Brief, ROLE_LABELS
+from app.agent.deep.types import ROLE_LABELS, Brief
 from app.core import llm
 from app.core.reliability import CircuitOpen
 from app.core.untrusted import wrap_untrusted

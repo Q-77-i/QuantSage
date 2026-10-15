@@ -14,7 +14,7 @@ import pytest
 from app.backtest import engine as engine_module
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, run_backtest
-from app.backtest.types import BarContext, BacktestError, Mode, Side, Signal
+from app.backtest.types import BacktestError, BarContext, Mode, Side, Signal
 from tests.conftest import make_backtest_dir, trading_days
 
 START = date(2026, 8, 3)

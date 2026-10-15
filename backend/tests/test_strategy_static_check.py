@@ -20,8 +20,8 @@ from datetime import date
 import pytest
 
 from app.backtest.types import Bar, BarContext, Position
-from app.strategy import api as strategy_api
 from app.strategy import StrategyRejected
+from app.strategy import api as strategy_api
 from app.strategy.api import _SAFE_BUILTINS, load_strategy
 from app.strategy.static_check import (
     ALL_RULE_IDS,
@@ -57,8 +57,14 @@ POSITIVES: dict[str, list[Case]] = {
     ],
     "R1": [
         ('import duckdb\n\ndef on_bar(ctx):\n    return []\n', "import duckdb", "不允许 import duckdb", "error"),
-        ("import pandas as pd\n\ndef on_bar(ctx):\n    return []\n", "import pandas as pd", "不允许 import pandas", "error"),
-        ("from os import path\n\ndef on_bar(ctx):\n    return []\n", "from os import path", "不允许 import os", "error"),
+        (
+            "import pandas as pd\n\ndef on_bar(ctx):\n    return []\n",
+            "import pandas as pd", "不允许 import pandas", "error",
+        ),
+        (
+            "from os import path\n\ndef on_bar(ctx):\n    return []\n",
+            "from os import path", "不允许 import os", "error",
+        ),
         # 同一行两个越界模块：一条 finding 里列全，不拆成两条
         ("import os, sys\n\ndef on_bar(ctx):\n    return []\n", "import os, sys", "os、sys", "error"),
         ("from . import helper\n\ndef on_bar(ctx):\n    return []\n", None, "相对导入", "error"),
@@ -70,7 +76,10 @@ POSITIVES: dict[str, list[Case]] = {
         (good(module="x = __builtins__"), "x = __builtins__", "__builtins__", "error"),
     ],
     "R2": [
-        (good("closes = [b.close for b in ctx.history]\ns = closes.shift(-1)\nreturn s"), ".shift(-1)", ".shift(-1)", "error"),
+        (
+            good("closes = [b.close for b in ctx.history]\ns = closes.shift(-1)\nreturn s"),
+            ".shift(-1)", ".shift(-1)", "error",
+        ),
         (good("s = closes.shift(periods=-2)\nreturn s"), "periods=-2", "未来 2 根", "error"),
         (good("filled = closes.bfill()\nreturn filled"), ".bfill()", "bfill", "error"),
         (good("filled = closes.backfill()\nreturn filled"), ".backfill()", "backfill", "error"),

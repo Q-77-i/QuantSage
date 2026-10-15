@@ -33,13 +33,19 @@ EVIDENCE = (
 )
 TURNS = (
     DebateTurn(round=1, side="bull", stance="偏多", arguments=("估值回落",), citations=("news:1|2026-08-15",)),
-    DebateTurn(round=1, side="bear", stance="偏空", arguments=("减持压制",), citations=("news:1|2026-08-15", "announcement:9|2026-08-20")),
+    DebateTurn(
+        round=1, side="bear", stance="偏空", arguments=("减持压制",),
+        citations=("news:1|2026-08-15", "announcement:9|2026-08-20"),
+    ),
 )
 
 
 def merged_fixture() -> object:
     return merge([
-        RoleResult("market", findings=("区间收益 -11.75%",), numbers={"区间收益": "-11.75%"}, model="deepseek/deepseek-flash"),
+        RoleResult(
+            "market", findings=("区间收益 -11.75%",), numbers={"区间收益": "-11.75%"},
+            model="deepseek/deepseek-flash",
+        ),
         RoleResult("news", evidence=EVIDENCE, findings=("中报净利下滑",), model="deepseek/deepseek-flash"),
         RoleResult("policy", errors=("该时点之前没有可见的政策事件",)),
     ])
@@ -57,7 +63,10 @@ def build(*, draft: Draft | None = None, turns=TURNS, merged=None, rounds: int =
         draft=draft or Draft(conclusion="多空分歧集中在需求端。", model="deepseek/deepseek-v4-pro"),
         gate=GateResult(GateDecision.PASS),
     )
-    return assemble_deep_report(body, merged=merged, turns=turns, draft=draft or Draft(conclusion="多空分歧集中在需求端。", model="deepseek/deepseek-v4-pro"))
+    return assemble_deep_report(
+        body, merged=merged, turns=turns,
+        draft=draft or Draft(conclusion="多空分歧集中在需求端。", model="deepseek/deepseek-v4-pro"),
+    )
 
 
 def test_report_passes_the_same_claim_gate_as_m7() -> None:

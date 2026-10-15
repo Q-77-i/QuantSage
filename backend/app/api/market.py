@@ -16,9 +16,8 @@ from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.backtest import benchmark
 from app.backtest.a_share_rules import count_limit_hits
-from app.data import bars
+from app.data import bars, naming
 from app.data import duckdb_client as dc
-from app.data import naming
 
 router = APIRouter(prefix="/api/v1/market", tags=["market"])
 

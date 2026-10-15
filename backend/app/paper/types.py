@@ -8,10 +8,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Mapping
 
 from app.backtest.costs import CostModel
 from app.backtest.types import Fill, Position, Side

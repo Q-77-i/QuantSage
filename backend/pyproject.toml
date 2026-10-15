@@ -50,6 +50,9 @@ dev = [
     "exchange-calendars>=4.13.2",
     "pytest~=9.1.1",
     "pytest-asyncio~=1.4.0",
+    # E7：lint。**精确 pin**——新版本会引入新规则，等于悄悄放宽或收紧 CI 闸门
+    #（放宽则漏检，收紧则突然变红），升级必须是显式动作。
+    "ruff==0.17.0",
 ]
 
 [tool.uv]
@@ -68,4 +71,26 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = '-m "not integration" --strict-markers'
 markers = [
     "integration: 需要容器 / 真实网络 / 真实密钥，默认不跑",
+]
+
+# ── E7：lint（`uv run ruff check .`，CI 里是闸门）────────────────────────────
+# 三条口径都是**实测定的**，改它们等于改闸门宽度（SPEC §7.2）：
+[tool.ruff]
+target-version = "py312"
+# 默认 88 字符在本仓出 2654 条 E501（中英混排的长注释/docstring 多）；
+# 实测 100→457、120→32、140→9。取 120：是个站得住的通用标准，存量也修得完。
+line-length = 120
+# **模板是数据不是模块**：`templates/` 下五份源码文本由沙箱执行，`Signal`/`Side`
+# 靠运行时注入——lint 它们必然报 F821（实测 21 条 F821 里 20 条出在这里）。
+exclude = ["app/strategy/templates"]
+
+[tool.ruff.lint]
+# 中等集：正确性（E/F）+ 导入序（I）+ 现代化（UP）+ 易错模式（B/SIM）。
+# **刻意不吃默认**——ruff 0.17 的默认集在本仓出 467 条，其中 164 条 RUF100、
+# 72 条 B008，噪声大于信号。
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+extend-ignore = [
+    # FastAPI 的 `Depends()`/`Query()` 就该写在默认参数里，这是框架惯用法不是缺陷。
+    # 全仓写法一致、无例外价值，故整条规则关掉而非逐处 noqa（宽集下 72 条）。
+    "B008",
 ]

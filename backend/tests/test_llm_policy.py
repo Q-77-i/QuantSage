@@ -12,7 +12,7 @@ import asyncio
 import pytest
 
 from app.core import llm, reliability
-from app.core.llm import CHAT_TIMEOUT, DEFAULT_MODEL, DEEP_MODEL, PolicyChatModel
+from app.core.llm import CHAT_TIMEOUT, DEEP_MODEL, DEFAULT_MODEL, PolicyChatModel
 from app.core.reliability import Circuit, CircuitOpen, Dependency, Retry
 
 

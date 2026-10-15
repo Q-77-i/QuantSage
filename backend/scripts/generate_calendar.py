@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import exchange_calendars  # type: ignore[import-untyped]
@@ -45,7 +45,7 @@ def build(start: str, end: str) -> dict:
         "calendar": CALENDAR,
         "generator": f"exchange_calendars=={exchange_calendars.__version__}",
         "source": SOURCE,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "requested_range": {"start": start, "end": end},
         "range": {"start": effective_start, "end": effective_end},
         "count": len(sessions),

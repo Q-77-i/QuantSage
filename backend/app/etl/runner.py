@@ -19,13 +19,12 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from app.core.config import REPO_ROOT, get_settings
 from app.data import calendar as cal
-from app.data import ledger
-from app.data import naming
+from app.data import ledger, naming
 from app.data.data_lock import LOCK as _LOCK
 from app.etl import archive, store
 
@@ -163,7 +162,7 @@ def run(
     if not _LOCK.acquire(blocking=False):
         raise EtlBusy("已有一次 ETL 在执行")
     paths_ = paths(data_dir)
-    report = RunReport(scope=scope, started_at=datetime.now(timezone.utc).isoformat())
+    report = RunReport(scope=scope, started_at=datetime.now(UTC).isoformat())
     try:
         cover = archive.coverage(paths_.data_dir)
         report.archive_last = cover.last_day.isoformat()
@@ -182,7 +181,7 @@ def run(
         else:
             report.result = "failed" if any(d.status == "failed" for d in report.days) else "ok"
     finally:
-        report.finished_at = datetime.now(timezone.utc).isoformat()
+        report.finished_at = datetime.now(UTC).isoformat()
         _LOCK.release()
     # 语料落定之后重建两个**派生物**（名称字典 / 向量索引）；状态写进台账
     # （`_append_ledger` 读的就是 report）。两件都吞异常——见各自 docstring。
@@ -243,7 +242,7 @@ def refresh_index(paths_: Paths, report: RunReport) -> str:
     started = time.monotonic()
     try:
         with log_path.open("a", encoding="utf-8") as sink:
-            sink.write(f"\n=== {datetime.now(timezone.utc).isoformat()} 由 ETL {report.scope} 触发 ===\n")
+            sink.write(f"\n=== {datetime.now(UTC).isoformat()} 由 ETL {report.scope} 触发 ===\n")
             sink.flush()
             proc = subprocess.run(
                 [sys.executable, str(script), "--data-dir", str(paths_.data_dir)],
@@ -308,7 +307,7 @@ def rematerialize(data_dir: Path | None = None) -> RunReport:
     if not _LOCK.acquire(blocking=False):
         raise EtlBusy("已有一次 ETL 在执行")
     paths_ = paths(data_dir)
-    report = RunReport(scope="rematerialize", started_at=datetime.now(timezone.utc).isoformat())
+    report = RunReport(scope="rematerialize", started_at=datetime.now(UTC).isoformat())
     try:
         for entry in store.read_day_entries(paths_.events_dir, paths_.raw_dir):
             day = date.fromisoformat(entry.date)
@@ -332,7 +331,7 @@ def rematerialize(data_dir: Path | None = None) -> RunReport:
                 )
         report.result = "failed" if any(d.status == "failed" for d in report.days) else "ok"
     finally:
-        report.finished_at = datetime.now(timezone.utc).isoformat()
+        report.finished_at = datetime.now(UTC).isoformat()
         _LOCK.release()
     # 重物化会改语料内容（口径变更），字典必须跟着重建，否则展示层停在旧名上
     report.names = refresh_names(paths_)

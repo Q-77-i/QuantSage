@@ -41,7 +41,9 @@ def test_rejects_title_fragment() -> None:
 
 
 def test_accepts_clean_query() -> None:
-    assert builder.leak_check("哪家钨业公司披露了半年度业绩预告？", "广东翔鹭钨业股份有限公司2026年半年度业绩预告", "事实型") is None
+    assert builder.leak_check(
+        "哪家钨业公司披露了半年度业绩预告？", "广东翔鹭钨业股份有限公司2026年半年度业绩预告", "事实型"
+    ) is None
 
 
 def test_ignores_whitespace_when_matching_title() -> None:

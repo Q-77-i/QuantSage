@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -36,6 +37,8 @@ from app.backtest.types import Mode
 from app.core.config import get_settings
 from app.paper.store import (
     config_to_payload as paper_config_to_payload,
+)
+from app.paper.store import (
     decision_to_payload,
     result_from_payload,
 )
@@ -107,15 +110,11 @@ def config_from_payload(data: dict[str, Any]) -> BacktestConfig:
 
 def _kill(proc: asyncio.subprocess.Process) -> None:
     """杀整个进程组：子进程自己也可能 fork（`start_new_session=True` 让它自成一组）。"""
-    try:
+    with contextlib.suppress(ProcessLookupError, PermissionError):  # pragma: no cover - 已退出即无事可做
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):  # pragma: no cover - 已退出即无事可做
-        pass
     if proc.returncode is None:  # pragma: no cover - getpgid 失败时的兜底
-        try:
+        with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        except ProcessLookupError:
-            pass
 
 
 async def _pump(

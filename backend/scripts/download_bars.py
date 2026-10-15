@@ -28,7 +28,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.data import bars  # noqa: E402
-from app.data.data_lock import Busy  # noqa: E402
 
 #: 集成用例（`tests/integration/test_data_t2.py`）按这个名字从这里取分片契约，
 #: 搬到 `app.data.bars` 之后必须继续可从本脚本导入——**迁移期别删这五个名字**。
@@ -39,6 +38,7 @@ from app.data.bars import (  # noqa: F401  (re-export)
     PARTITIONS,
     YEARS,
 )
+from app.data.data_lock import Busy  # noqa: E402
 
 
 def _print_status() -> int:

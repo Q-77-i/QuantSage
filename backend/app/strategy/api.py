@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
 
-from app.backtest.types import BarContext, Signal, Side
+from app.backtest.types import BarContext, Side, Signal
 from app.strategy import USER_STRATEGY, StrategyRejected
 from app.strategy.params import ParamSpec, parse_param_schema
 

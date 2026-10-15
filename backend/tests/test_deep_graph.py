@@ -157,7 +157,6 @@ def test_full_run_produces_draft_and_passes_gate() -> None:
 def test_role_failure_does_not_break_siblings(monkeypatch: pytest.MonkeyPatch) -> None:
     """一个角色的取数炸掉 → 图照常跑完，errors 与 gaps 里如实有它（其余角色不受影响）。"""
     import app.agent.deep.roles.market as market_mod
-    import app.data.duckdb_client as dc
 
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("行情源拔掉了")
@@ -178,7 +177,6 @@ def test_role_failure_does_not_break_siblings(monkeypatch: pytest.MonkeyPatch) -
 
 def test_debate_stops_at_hard_cap_even_if_never_converging() -> None:
     """每轮都给全新论据的模型也截得住：**恰好 3 轮**（PRD 的硬上限）。"""
-    payload = {"stance": "s", "arguments": [], "citations": []}
 
     class NeverConverge(DeepFake):
         def _answer(self, messages: list[Any]) -> AIMessage:

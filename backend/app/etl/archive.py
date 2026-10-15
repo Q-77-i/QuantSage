@@ -14,12 +14,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from app.data import xiaoshi_cli
 from app.core.config import get_settings
+from app.data import xiaoshi_cli
 
 DATASET = "event-timeline"
 #: CLI 的内容寻址对象库与状态文件都落在这个目录（与 M2a 的行情下载共用一个 store）

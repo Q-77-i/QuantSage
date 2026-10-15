@@ -9,7 +9,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.backtest.types import Bar, BarContext, Position, Side, Signal
+from app.backtest.types import Bar, BarContext, Position, Side
 from app.strategy import StrategyRejected
 from app.strategy.api import ALLOWED_MODULES, build_namespace, load_strategy, parse_meta
 

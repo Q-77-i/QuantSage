@@ -40,6 +40,7 @@ def task_count(emails: list[str]) -> int:
     事件循环上，测试线程碰不得。
     """
     import psycopg
+
     from app.core.config import get_settings
 
     with psycopg.connect(get_settings().postgres_dsn) as conn:

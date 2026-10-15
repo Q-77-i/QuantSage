@@ -66,8 +66,9 @@ def test_strict_msgpack_is_enforced() -> None:
     checkpoint 会退回「任何 Python 可调用对象都能在加载时执行」，而**没有任何测试会因此变红**
     （CLAUDE.md §五 曾把这条误记为「Platform 专属、不适用」，实为库级开关，SPEC §8.1 已订正）。
     """
-    import app  # noqa: PLC0415 —— 就是要「先 import app」
     from langgraph.checkpoint.serde import _msgpack  # noqa: PLC0415 —— 该开关只在私有模块暴露
+
+    import app  # noqa: PLC0415 —— 就是要「先 import app」
 
     assert app.STRICT_MSGPACK_ENFORCED is True
     assert _msgpack.STRICT_MSGPACK_ENABLED is True

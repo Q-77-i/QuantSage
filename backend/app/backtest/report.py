@@ -12,15 +12,13 @@ PIT 对比是 T5 的核心产出——`compare_pit=True` 时同一区间跑两�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from collections.abc import Callable
-
 from app.backtest.benchmark import market_benchmark
-from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from app.backtest.metrics import SHORT_WINDOW_BARS, Metrics, benchmark_curve, compute_metrics
 from app.backtest.strategies import EventDriven, Strategy

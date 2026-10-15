@@ -12,9 +12,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -27,7 +26,10 @@ from app.agent.deep.roles.base import RoleContext
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
 from app.main import app
-from tests.integration.conftest import purge_rows, real_stack, sign_up  # noqa: F401
+
+# `real_stack` 不在此列：它是 conftest 的 **fixture**，pytest 自动发现；显式导入反而
+# 会在测试函数把它写成参数时构成「重定义」（F811）——`sign_up` 是普通函数，必须导入。
+from tests.integration.conftest import sign_up
 from tests.test_deep_graph import DeepFake
 
 AS_OF = "2026-09-30"

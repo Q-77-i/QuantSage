@@ -21,8 +21,8 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.graph import TOOL_RESULT_PREVIEW, astream_chat, build_agent, preview_text
-from app.api.chat import _RUN_LOCKS, _run_lock
 from app.agent.history import messages_to_history
+from app.api.chat import _RUN_LOCKS
 from app.main import app
 from tests.conftest import TEST_USER
 from tests.fakes import ToolCallingFakeModel

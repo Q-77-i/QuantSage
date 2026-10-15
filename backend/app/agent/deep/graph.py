@@ -31,7 +31,6 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from app.agent.deep.budget import Budget
 from app.agent.deep.debate import (
     MAX_ROUNDS_HARD,
     SIDE_BEAR,

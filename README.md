@@ -2,6 +2,7 @@
 
 **前视偏差为零的 AI 投研 Agent。** Point-in-time research agent for A-share markets.
 
+[![CI](https://github.com/Q-77-i/QuantSage/actions/workflows/ci.yml/badge.svg)](https://github.com/Q-77-i/QuantSage/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-3b82f6?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.12-3776ab?style=flat-square)
 ![Next.js](https://img.shields.io/badge/Next.js-15-000000?style=flat-square)
@@ -66,10 +67,14 @@ cd ../frontend && pnpm install && pnpm dev                             # 5. 前�
 ### 测试
 
 ```bash
+cd backend && uv run ruff check .           # lint
 cd backend && uv run pytest                 # 离线
 cd backend && uv run pytest -m integration  # 集成（需容器与真实密钥）
 cd frontend && pnpm test && pnpm typecheck && pnpm lint
 ```
+
+CI（GitHub Actions，见徽章）跑的是**上面前四条 + 前端四条 + 两端的依赖审计**。集成那一行不在 CI 里——
+它要真容器、真密钥与真实行情语料（`data/` 不入库），所以**徽章变绿不等于全部测试通过**。
 
 命令行跑一次回测、复现教程里的数字，命令见[示例策略教程](docs/tutorials/ma_cross.md#3-复现)。
 

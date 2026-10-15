@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.report.markdown import render_markdown
-from tests.test_report_builder import BENCHMARK, _inputs
 from app.report.builder import assemble_report, build_facts
+from app.report.markdown import render_markdown
 from app.report.narrative import Narrative
+from tests.test_report_builder import BENCHMARK, _inputs
 
 
 def _body() -> dict[str, Any]:

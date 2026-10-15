@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agent.deep.budget import Budget
-from app.agent.deep.debate import DebateTurn, SIDE_LABELS, citation_index
+from app.agent.deep.debate import SIDE_LABELS, DebateTurn, citation_index
 from app.agent.deep.merge import MergedEvidence
 from app.agent.deep.risk_gate import GateResult
 from app.agent.deep.synthesize import Draft
@@ -250,7 +250,8 @@ def assemble_deep_report(
             "运行摘要",
             text=(
                 f"模型：取证/路由 {body['run']['models'].get('fast', '')}，"
-                f"辩论/综合 {body['run']['models'].get('deep', '')}（思考：{'开' if body['run']['thinking'] else '关'}）"
+                f"辩论/综合 {body['run']['models'].get('deep', '')}"
+                f"（思考：{'开' if body['run']['thinking'] else '关'}）"
             ),
             numbers={
                 "run.llm_calls": body["run"]["llm_calls"],

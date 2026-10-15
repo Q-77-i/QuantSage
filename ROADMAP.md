@@ -8,9 +8,9 @@
 
 **阶段**：P2-Mn 的 M1–M10 已全部交付并验收（里程碑 `m-p2`，2026-10-13）。P1-Tn 与 P2-Mn 的浏览器内闭环均可走完。
 
-**最近交付**：**P3-E8 全节收口**（2026-10-15，SPEC §8 v2.13；落地记录 `docs/private/Pn-n/P3-En/P3-E8{a,b,c}.md`）——DoD 的另一根支柱落地：**E8a** 服务侧加固（安全响应头 / 会话滑动续期与登出撤销 / 加固清单逐项核验 / 一次性依赖审计）· **E8b 对外 MCP Server**（FastMCP stdio 暴露 PIT 检索，**平台成了 AI 的数据源**，冷启动 8.8s / 热调用 0.2s，PIT 双断言 0 违规，Claude Code 真实调用成功）· **E8c 注入边界标记**（语料进 prompt 一律包不可信块、分隔标签转义；铺满 5 个面，端到端用例反向验过有牙）。
+**最近交付**：**P3-E7a**（2026-10-15，SPEC §7 v2.14）——工程化基建落地：**ruff 接入**（中等规则集 + `line-length=120`，存量 **152 条清零**，其中逮到 1 个**真缺陷**：`etl/archive.py` 用了 `subprocess.CompletedProcess[str]` 却从未 import，靠 `from __future__ import annotations` 侥幸不炸）· **GitHub Actions CI**（三 job：后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）· **供应链审计持续化**（`uv export --no-hashes` + `pip-audit -r` 审**清单**，修好了 E8a 记的 hash 校验失败，且覆盖被跳装的 torch）。
 
-**下一个动作**：P3 余下按序 **E7 工程化**（CI/CD + 覆盖率门槛 + 后端 ruff + Langfuse 字段规范化 + 供应链审计进 CI）→ E2 多用户治理（配额必做、RBAC 从简）→ E3 数据工程（Redis 缓存 / 体检定时化 / 快照）→ E5 风控（挂模拟盘）→ E9 企业级文档。
+**下一个动作**：E7 余下三段按序 **E7b**（覆盖率门槛：先测基线再定 `fail_under`；eval gate 口径订正）→ **E7c**（Langfuse 字段规范化：补四个空字段 + 深路径/报告调用补挂 handler）→ **E7d**（实验可复现：`backtest_runs.data_digest`）→ 然后 E2 多用户治理（配额必做、RBAC 从简）→ E3 数据工程（Redis 缓存 / 体检定时化 / 快照）→ E5 风控（挂模拟盘）→ E9 企业级文档。
 
 **待决事项**
 
@@ -58,7 +58,7 @@
 | E4 可靠性 L0–L7 | ✅ E4a（policy + LLM 侧）· E4b（限流 / 数据源熔断 / 幂等键）· E4c（chat 护栏 + 告知面 + 演练脚本）——三段均于 2026-10-14/15 交付 |
 | E5 风控 | ⬜ |
 | E6 组合 | ✂️ 已砍（后置） |
-| E7 工程化 | ⬜ |
+| E7 工程化 | 🚧 E7a CI 骨架 + ruff + 供应链审计（2026-10-15）· E7b 覆盖率门槛 + eval gate 口径 ⬜ · E7c Langfuse 字段规范化 ⬜ · E7d 实验可复现 ⬜ |
 | E8 安全 + 对外 MCP | ✅ E8a 服务侧加固 · E8b **对外 MCP Server** · E8c 注入边界标记（三段均于 2026-10-15 交付） |
 | E9 企业级文档 | ⬜ |
 

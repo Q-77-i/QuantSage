@@ -220,7 +220,7 @@ def test_role_records_the_model_that_actually_served() -> None:
     fast 档配成 pro 时（settings 允许）pro 挂了会降到 flash——此时若还写 pro，
     报告里那句「谁产的」就是假话，成本按 pro 的价目算也是虚高。
     """
-    from app.core.llm import DEFAULT_MODEL, DEEP_MODEL, PolicyChatModel
+    from app.core.llm import DEEP_MODEL, DEFAULT_MODEL, PolicyChatModel
 
     class _Scripted:
         def __init__(self, *script: Any) -> None:

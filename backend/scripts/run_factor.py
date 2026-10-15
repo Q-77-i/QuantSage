@@ -22,10 +22,10 @@ import argparse
 import json
 import sys
 import time
-from statistics import fmean
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from statistics import fmean
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -34,7 +34,7 @@ from app.backtest.events import EventFeed, event_from_row  # noqa: E402
 from app.backtest.types import Bar, Mode  # noqa: E402
 from app.data import duckdb_client as dc  # noqa: E402
 from app.factor import analysis  # noqa: E402
-from app.factor.panel import build_event_panel, build_price_panel, bucket_day  # noqa: E402
+from app.factor.panel import bucket_day, build_event_panel, build_price_panel  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[2] / "logs" / "m5c"
 
@@ -188,7 +188,8 @@ def write_markdown(
         "| 读数 | 值 |",
         "|---|---|",
         f"| 有效信号日 | **{event_read['signal_days']}** |",
-        f"| 池子（日均 / 最小 / 最大） | {event_read['pool_avg']} / {event_read['pool_min']} / {event_read['pool_max']} |",
+        f"| 池子（日均 / 最小 / 最大） | {event_read['pool_avg']} / "
+        f"{event_read['pool_min']} / {event_read['pool_max']} |",
         f"| 缺价剔除 | {event_read['dropped_no_price']} |",
         f"| 不可交易剔除（\\|收益\\|>30%） | {event_read['dropped_untradeable']} |",
         f"| **RankIC 均值** | **{_f4(event_read['ic_mean'])}**（标准差 {_f4(event_read['ic_std'])}） |",
@@ -196,25 +197,32 @@ def write_markdown(
         f"| IC > 0 的天数 | {event_read['ic_positive_days']} / {event_read['signal_days']} |",
         f"| 分层年化（毛，Q1→Q5） | {' · '.join(_pct(v) for v in event_read['group_annual_gross'])} |",
         f"| 分层年化（净，Q1→Q5） | {' · '.join(_pct(v) for v in event_read['group_annual_net'])} |",
-        f"| 多空年化（毛 / 净） | {_pct(event_read['long_short_annual_gross'])} / {_pct(event_read['long_short_annual_net'])} |",
+        f"| 多空年化（毛 / 净） | {_pct(event_read['long_short_annual_gross'])} / "
+        f"{_pct(event_read['long_short_annual_net'])} |",
         f"| 多空 t | {_f4(event_read['long_short_t'])}（**不可交易**：{event_read['tradable']}） |",
-        f"| 日均换手 / 费用拖累 | {event_read['turnover_avg']:.3f} / {event_read['cost_per_day_bps']:.2f} bps·日（年化 {event_read['cost_per_year_pct']:.1f}%） |",
+        f"| 日均换手 / 费用拖累 | {event_read['turnover_avg']:.3f} / "
+        f"{event_read['cost_per_day_bps']:.2f} bps·日"
+        f"（年化 {event_read['cost_per_year_pct']:.1f}%） |",
         "",
         "## 三、价格反转因子（`source=price&direction=reversal`，全市场池）",
         "",
         "| 读数 | 值 |",
         "|---|---|",
         f"| 有效信号日 | **{price_read['signal_days']}** |",
-        f"| 池子（日均 / 最小 / 最大） | {price_read['pool_avg']} / {price_read['pool_min']} / {price_read['pool_max']} |",
+        f"| 池子（日均 / 最小 / 最大） | {price_read['pool_avg']} / "
+        f"{price_read['pool_min']} / {price_read['pool_max']} |",
         f"| 缺价剔除 | {price_read['dropped_no_price']} |",
         f"| **RankIC 均值** | **{_f4(price_read['ic_mean'])}**（标准差 {_f4(price_read['ic_std'])}） |",
         f"| ICIR / t | {_f4(price_read['icir'])} / {_f4(price_read['ic_t'])} |",
         f"| IC > 0 的天数 | {price_read['ic_positive_days']} / {price_read['signal_days']} |",
         f"| 分层年化（毛，Q1→Q5） | {' · '.join(_pct(v) for v in price_read['group_annual_gross'])} |",
         f"| 分层年化（净，Q1→Q5） | {' · '.join(_pct(v) for v in price_read['group_annual_net'])} |",
-        f"| 多空年化（毛 / 净） | {_pct(price_read['long_short_annual_gross'])} / {_pct(price_read['long_short_annual_net'])} |",
+        f"| 多空年化（毛 / 净） | {_pct(price_read['long_short_annual_gross'])} / "
+        f"{_pct(price_read['long_short_annual_net'])} |",
         f"| 多空 t | {_f4(price_read['long_short_t'])}（**不可交易**：{price_read['tradable']}） |",
-        f"| 日均换手 / 费用拖累 | {price_read['turnover_avg']:.3f} / {price_read['cost_per_day_bps']:.2f} bps·日（年化 {price_read['cost_per_year_pct']:.1f}%） |",
+        f"| 日均换手 / 费用拖累 | {price_read['turnover_avg']:.3f} / "
+        f"{price_read['cost_per_day_bps']:.2f} bps·日"
+        f"（年化 {price_read['cost_per_year_pct']:.1f}%） |",
         "",
         "## 四、报告自带的 notes（如实标注清单）",
         "",

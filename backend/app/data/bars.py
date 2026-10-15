@@ -40,7 +40,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -400,7 +400,7 @@ def changed_shards(raw_dir: Path, meta_dir: Path) -> list[str]:
         return sorted(BARS_NAME.format(adjust=a, year=y) for y, a in PARTITIONS)
     changed: list[str] = []
     current: dict[str, str] = {}
-    for adjust, _market, year, object_key, _path, value in receipt_entries(raw_dir):
+    for _adjust, _market, _year, object_key, _path, value in receipt_entries(raw_dir):
         current[object_key] = str(value.get("sha256") or "")
     for object_key, sha in recorded.items():
         if current.get(object_key) != sha:
@@ -510,7 +510,7 @@ def write_meta(raw_dir: Path, meta_dir: Path, receipt: dict, verdict: dict, outp
     meta_dir.mkdir(parents=True, exist_ok=True)
     meta = {
         "schema": "quantsage.bars_meta/v2",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "dataset": "cn-daily",
         "layout": "data/bars/cn-daily_CN_{adjust}_{year}.parquet（整片物化；查询层 *.parquet glob 不变）",
         # 数据版本指纹：价量口径不动，把「同一快照重放结论一致」建立在这里。
@@ -639,7 +639,7 @@ def refresh(
     settings = get_settings()
     budget = settings.bars_refresh_budget_seconds if budget_seconds is None else budget_seconds
     started_monotonic = time.monotonic()
-    report = BarsReport(status="failed", started_at=datetime.now(timezone.utc).isoformat())
+    report = BarsReport(status="failed", started_at=datetime.now(UTC).isoformat())
     state = read_sync_state(paths_.meta_dir)
     try:
         today = today or date.today()
@@ -738,7 +738,7 @@ def _finish(
     write_ledger_line: bool,
 ) -> BarsReport:
     """收尾：算耗时、写门禁记忆、记台账。**一切收尾都不该把一轮的结论改掉**。"""
-    report.finished_at = datetime.now(timezone.utc).isoformat()
+    report.finished_at = datetime.now(UTC).isoformat()
     report.elapsed_seconds = round(time.monotonic() - started_monotonic, 1)
     if runway := cal.runway_note():
         report.note = f"{report.note}；{runway}" if report.note else runway

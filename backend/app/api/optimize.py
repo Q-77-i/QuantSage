@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
 from datetime import date
 from typing import Any, Literal, Self
 
@@ -33,9 +32,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api import idempotency
+from app.api.backtest import CostOptions, normalize_run_id
 from app.api.idempotency import body_fingerprint, idempotency_key
 from app.api.limits import limit
-from app.api.backtest import CostOptions, normalize_run_id
 from app.api.strategies import normalize_strategy_id
 from app.backtest.batch import (
     MAX_CELLS,

@@ -21,7 +21,7 @@ import hashlib
 import json
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,7 +39,7 @@ WORKFLOW_TOOL = "get_agent_workflow"
 
 EVIDENCE: dict = {
     "schema": "quantsage.mcp_verification/v1",
-    "started_utc": datetime.now(timezone.utc).isoformat(),
+    "started_utc": datetime.now(UTC).isoformat(),
     "steps": [],
 }
 
@@ -90,7 +90,7 @@ def pick_bounded_query(tools: list, symbol: str) -> tuple[str, dict]:
 
     # 退化：时间窗 ≤1 天、条数 =1 的事件时间线，任何一项无法安全合成即报错
     if "get_event_timeline" in by_name:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return "get_event_timeline", {
             "since": (now - timedelta(days=1)).strftime("%Y-%m-%d"),
             "to": now.strftime("%Y-%m-%d"),
@@ -110,7 +110,8 @@ async def protocol_gate(args: argparse.Namespace) -> None:
     errlog = None if args.show_server_stderr else open("/dev/null", "w")  # noqa: SIM115
     try:
         async with asyncio.timeout(args.timeout):
-            async with stdio_client(params, errlog=errlog) as (read, write):
+            # 三层嵌套是 MCP SDK 的用法本身；合并成括号形式要整体重排函数体，不值得
+            async with stdio_client(params, errlog=errlog) as (read, write):  # noqa: SIM117
                 async with ClientSession(read, write) as session:
                     started = time.perf_counter()
                     init = await session.initialize()
@@ -198,7 +199,7 @@ async def main() -> int:
         await adapters_gate(args)
 
     EVIDENCE["verdict"] = "pass"
-    EVIDENCE["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    EVIDENCE["finished_utc"] = datetime.now(UTC).isoformat()
 
     blob = json.dumps(EVIDENCE, ensure_ascii=False)
     secret = get_settings().xiaoshi_api_key.get_secret_value()

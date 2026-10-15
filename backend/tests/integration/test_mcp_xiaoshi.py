@@ -45,4 +45,4 @@ def test_mcp_verification_passes(tmp_path: Path) -> None:
 
     payload = json.loads(evidence.read_text())
     assert payload["verdict"] == "pass"
-    assert REQUIRED_STEPS <= {step["step"] for step in payload["steps"]}
+    assert {step["step"] for step in payload["steps"]} >= REQUIRED_STEPS

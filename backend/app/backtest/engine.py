@@ -30,9 +30,9 @@ from app.backtest.events import build_feed
 from app.backtest.portfolio import Portfolio
 from app.backtest.strategies import Strategy, build_strategy
 from app.backtest.types import (
+    BacktestError,
     Bar,
     BarContext,
-    BacktestError,
     DroppedSignal,
     EquityPoint,
     Fill,

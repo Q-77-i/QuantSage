@@ -683,14 +683,13 @@ class Database:
         equity: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """建会话 + 首批决策/持仓/净值点，一个事务。"""
-        async with self.pool.connection() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "INSERT INTO paper_accounts (id, user_id, name, config, cash, as_of, rules) "
-                    "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s)",
-                    (account_id, user_id, name, Jsonb(config), cash, as_of, Jsonb(rules)),
-                )
-                await _write_paper_state(conn, account_id, positions, decisions, equity)
+        async with self.pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO paper_accounts (id, user_id, name, config, cash, as_of, rules) "
+                "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s)",
+                (account_id, user_id, name, Jsonb(config), cash, as_of, Jsonb(rules)),
+            )
+            await _write_paper_state(conn, account_id, positions, decisions, equity)
         row = await self.get_paper_account(user_id, account_id)
         assert row is not None  # 刚插进去的行必然取得到
         return row
@@ -711,22 +710,21 @@ class Database:
         equity: list[dict[str, Any]],
     ) -> bool:
         """推进一个交易日（一个事务）。返回 False = 守卫没中（已被别的请求推进过），**什么都没写**。"""
-        async with self.pool.connection() as conn:
-            async with conn.transaction():
-                cursor = await conn.execute(
-                    "UPDATE paper_accounts SET cash = %s, realized_pnl = %s, as_of = %s, "
-                    "status = %s, rules = %s, updated_at = now() "
-                    "WHERE id = %s::uuid AND user_id = %s AND as_of = %s RETURNING id",
-                    (cash, realized_pnl, as_of, status, Jsonb(rules), account_id, user_id,
-                     expected_as_of),
-                )
-                if await cursor.fetchone() is None:
-                    return False
-                # 持仓整体换一遍（不改写别的会话的行）：陈旧行必须消失，否则平掉的仓位会长留
-                await conn.execute(
-                    "DELETE FROM paper_positions WHERE account_id = %s::uuid", (account_id,)
-                )
-                await _write_paper_state(conn, account_id, positions, decisions, equity)
+        async with self.pool.connection() as conn, conn.transaction():
+            cursor = await conn.execute(
+                "UPDATE paper_accounts SET cash = %s, realized_pnl = %s, as_of = %s, "
+                "status = %s, rules = %s, updated_at = now() "
+                "WHERE id = %s::uuid AND user_id = %s AND as_of = %s RETURNING id",
+                (cash, realized_pnl, as_of, status, Jsonb(rules), account_id, user_id,
+                 expected_as_of),
+            )
+            if await cursor.fetchone() is None:
+                return False
+            # 持仓整体换一遍（不改写别的会话的行）：陈旧行必须消失，否则平掉的仓位会长留
+            await conn.execute(
+                "DELETE FROM paper_positions WHERE account_id = %s::uuid", (account_id,)
+            )
+            await _write_paper_state(conn, account_id, positions, decisions, equity)
         return True
 
     async def list_paper_accounts(self, user_id: int, limit: int) -> list[dict[str, Any]]:

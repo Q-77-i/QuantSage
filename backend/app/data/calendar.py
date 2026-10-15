@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import json
 from bisect import bisect_left, bisect_right
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
-from typing import Collection, Iterable
 
 CALENDAR_FILE = Path(__file__).resolve().parent / "trading_calendar.json"
 

@@ -42,7 +42,7 @@ from app.api.tasks import router as tasks_router
 from app.api.watchlist import router as watchlist_router
 from app.backtest.batch import BatchRequestError
 from app.backtest.types import BacktestError, NoDataError
-from app.paper import PaperConflict, PaperError
+from app.core import llm
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
 from app.core.db import (
@@ -53,16 +53,16 @@ from app.core.db import (
     init_schema,
     open_pool,
 )
-from app.strategy import SandboxError, StrategyCheckFailed, StrategyRejected
 from app.core.langfuse import build_langfuse_handler
+from app.core.logging import setup_logging
 from app.core.security import SecurityHeadersMiddleware
 from app.core.session import SessionRenewalMiddleware
+from app.data.duckdb_client import DataNotReady
+from app.etl.scheduler import start_scheduler
 from app.memory.decision_store import MemoryHolder
 from app.memory.scheduler import start_settlement_scheduler
-from app.core import llm
-from app.core.logging import setup_logging
-from app.etl.scheduler import start_scheduler
-from app.data.duckdb_client import DataNotReady
+from app.paper import PaperConflict, PaperError
+from app.strategy import SandboxError, StrategyCheckFailed, StrategyRejected
 from app.tasks import worker as task_worker
 
 log = logging.getLogger(__name__)

@@ -26,14 +26,13 @@ from __future__ import annotations
 
 import json
 import os
+import resource  # noqa: S404 - 只用于给自己设配额，不碰用户输入
 import sys
 import threading
 import time
 from dataclasses import replace
 from datetime import date
 from typing import Any
-
-import resource  # noqa: S404 - 只用于给自己设配额，不碰用户输入
 
 from app.backtest.report import build_report
 from app.backtest.types import BacktestError

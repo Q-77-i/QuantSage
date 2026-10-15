@@ -94,8 +94,8 @@ def report_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signed_in: Any) 
     """跑到末端的账户（有成交、有未平仓）+ 一份已生成的报告 + 一个分享 token。"""
     from langgraph.store.memory import InMemoryStore
 
-    from app.memory.decision_store import DecisionMemory
     from app.memory import service as memory_service
+    from app.memory.decision_store import DecisionMemory
 
     days = _days()
     root = make_backtest_dir(tmp_path, _bars(days), events=_events(), symbol=SYMBOL)

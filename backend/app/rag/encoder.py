@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from app.core.config import get_settings
 from app.rag import RagNotReady

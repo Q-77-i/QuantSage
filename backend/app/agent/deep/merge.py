@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.deep.types import ROLES, ROLE_LABELS, EvidenceRef, RoleResult
+from app.agent.deep.types import ROLE_LABELS, ROLES, EvidenceRef, RoleResult
 
 
 @dataclass(frozen=True, slots=True)

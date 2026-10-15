@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from app.agent import tools as agent_tools
 from app.backtest.types import CN_TZ
 from app.rag import RagNotReady
 from app.rag.retrieve import RetrievedEvent
-from datetime import datetime
 
 
 def hit(event_id: str = "news:1", **overrides) -> RetrievedEvent:

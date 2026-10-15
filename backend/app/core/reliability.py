@@ -27,11 +27,9 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 log = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 #: 一次失败的处置分类。`cancelled` 与 `permanent` 都**不重试**，区别在要不要向上抛。
 Kind = Literal["retryable", "permanent", "rate_limited", "cancelled"]
@@ -402,7 +400,7 @@ def _on_failure(dep: Dependency, exc: BaseException, attempt: int, started: floa
     return _wait_plan(dep, kind, exc, attempt, started)
 
 
-async def guard(name: str, fn: Callable[[], Awaitable[T]]) -> T:
+async def guard[T](name: str, fn: Callable[[], Awaitable[T]]) -> T:
     """在策略下跑一次调用：熔断闸 → 尝试 → 失败分类 → 退避重试。
 
     **熔断只拦新调用，不打断进行中的重试**——重试自己由 `max_total_seconds` 兜底。
@@ -436,7 +434,7 @@ async def guard(name: str, fn: Callable[[], Awaitable[T]]) -> T:
             return result
 
 
-def guard_sync(name: str, fn: Callable[[], T]) -> T:
+def guard_sync[T](name: str, fn: Callable[[], T]) -> T:
     """`guard` 的同步孪生（`ChatLiteLLM` 的同步路径用）。语义逐条相同。"""
     dep = get_dep(name)
     now = dep.clock()

@@ -24,11 +24,10 @@ from typing import Any
 from langgraph.errors import NodeTimeoutError
 from langgraph.types import Command
 
-from app.agent.deep.budget import Budget
 from app.agent.deep.debate import DebateTurn
 from app.agent.deep.graph import DeepState, build_deep_graph
 from app.agent.deep.merge import merge
-from app.agent.deep.risk_gate import GateDecision, GateResult, GateHit
+from app.agent.deep.risk_gate import GateDecision, GateHit, GateResult
 from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.synthesize import Draft
 from app.agent.deep.types import Brief, RoleResult
@@ -182,9 +181,8 @@ async def astream_deep_run(
                 continue
             if kind == "on_chain_start":
                 yield "node_start", trace.node_start(str(node))
-            elif kind == "on_chain_end":
-                if str(node) in trace._open:
-                    yield "node_end", trace.node_end(str(node))
+            elif kind == "on_chain_end" and str(node) in trace._open:
+                yield "node_end", trace.node_end(str(node))
     except NodeTimeoutError as exc:
         # 节点级墙钟兜底（E4 L2）：节点**挂住**了，不是「可预期的降级」。命中即整跑失败，
         # 文案点名是哪个节点——通用那句 `NodeTimeoutError: Node 'x' exceeded…` 太像内部堆栈。

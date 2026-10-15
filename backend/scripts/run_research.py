@@ -22,7 +22,7 @@ import asyncio
 import json
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -113,7 +113,6 @@ async def run_deep(question: str, *, as_of: datetime, symbols: tuple[str, ...] |
     from langgraph.checkpoint.memory import InMemorySaver
 
     from app.agent.deep.runner import astream_deep_run
-    from app.agent.deep.types import Brief
     from app.report.deep import REPORT_KIND
 
     decision = await route_question(question, force=mode) if mode else await route_question(question)

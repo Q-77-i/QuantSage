@@ -15,8 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.api import research as research_api
 from app.agent.deep.roles.base import RoleContext
+from app.api import research as research_api
 from app.main import app
 from tests.fakes import FakeDatabase
 from tests.test_deep_graph import DeepFake

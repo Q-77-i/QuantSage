@@ -63,9 +63,9 @@ def test_call_sites_share_one_injectable_global() -> None:
     这条是上一条用例成立的原因，单独写出来是因为它最容易在重构里被悄悄破坏
     （有人改回 `from app.core.llm import complete`，行为用例可能仍然绿，注入面却没了）。
     """
+    from app import main as main_module
     from app.agent.deep import debate, router, synthesize
     from app.agent.deep.roles import base as roles_base
-    from app import main as main_module
     from app.memory import reflection as reflection_module
     from app.report import narrative as narrative_module
 

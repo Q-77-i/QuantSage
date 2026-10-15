@@ -125,7 +125,7 @@ def validate_params(
         allowed = "、".join(sorted(schema)) or "（无）"
         raise StrategyRejected(f"不接受参数 {unknown}；可用：{allowed}")
     return {
-        name: coerce(spec, values[name] if name in values else spec.default)
+        name: coerce(spec, values.get(name, spec.default))
         for name, spec in schema.items()
     }
 

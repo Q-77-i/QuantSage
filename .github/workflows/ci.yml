@@ -1,0 +1,88 @@
+name: CI
+
+# 触发：主干推送 + PR + 手动重跑。
+#
+# ⚠ **集成套件不在 CI 内**（110 项需要真容器 / 真密钥 / 真实 `data/`——2.6GB，不进 Git），
+# 四幕可靠性演练与 MCP 握手同样不在。**「CI 绿」不等于「全部测试通过」**，这条口径写在
+# `docs/specs/P3-En.md` §7.8，别在两处各讲一遍。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次仍在跑的——省额度，也让状态只反映最新一次。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 仓库的 uv 默认索引钉在**清华镜像**（为国内开发机）。GitHub runner 在境外，
+  # 不覆盖的话装依赖会慢到不可用。**只改 CI，不动本机配置**（SPEC §7.1）。
+  UV_DEFAULT_INDEX: https://pypi.org/simple
+
+jobs:
+  backend:
+    name: 后端 · ruff + pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # torch / FlagEmbedding **不装**：离线套件实测完全不需要它们（用 import hook 屏蔽二者后
+      # 1491 项全绿；`app/` 全仓零模块级 torch 导入）。省约 2GB 与数分钟，`uv.lock` 不动。
+      - name: 装依赖
+        run: uv sync --frozen --no-install-package torch --no-install-package FlagEmbedding
+      - name: lint
+        run: uv run ruff check .
+      - name: 测试
+        run: uv run pytest -q
+
+  frontend:
+    name: 前端 · lint + typecheck + test + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      # `build` 会先跑 `sync-monaco.mjs`（把 monaco 产物拷进 `public/`），无外部依赖。
+      - run: pnpm build
+
+  audit:
+    name: 供应链审计
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # 审**清单**而不是本地已装的包：CI 跳装了 torch，`--path` 会让它成为审计盲区。
+      # `--no-hashes` 是必需的——带 hash 的清单与 pip 解析结果比对会失败（E8a 踩过，SPEC §7.4）。
+      - name: 后端依赖审计
+        working-directory: backend
+        run: |
+          uv export --no-hashes --no-emit-project --format requirements-txt > "$RUNNER_TEMP/req.txt"
+          uvx pip-audit -r "$RUNNER_TEMP/req.txt" --strict
+      # 例外清单在 `frontend/pnpm-workspace.yaml` 的 `auditConfig.ignoreGhsas` 里（目前只有
+      # `braces` 一条：**上游无补丁可升**，路径是 shadcn CLI 的构建期 glob 工具链、运行时不加载
+      # ——SPEC §8.4 已如实记录，这里不假装已解决）。**例外入库而不是写在命令里**：跟着代码
+      # 评审走，CI 与本地跑的是同一份口径；上游出补丁即从配置里删掉那条。
+      # 例外之外的高危一律失败。
+      - name: 前端依赖审计
+        working-directory: frontend
+        run: pnpm audit --prod --audit-level high

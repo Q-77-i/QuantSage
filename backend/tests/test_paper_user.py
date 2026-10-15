@@ -22,7 +22,6 @@ from app.core.config import get_settings
 from app.data import calendar as cal
 from app.main import app
 from app.strategy import SandboxLimits
-from app.strategy.sandbox import default_limits as real_default_limits
 from app.strategy.templates import template_source
 from tests.conftest import make_backtest_dir, write_bars_parquet
 from tests.fakes import FakeDatabase

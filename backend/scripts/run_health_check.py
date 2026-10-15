@@ -18,7 +18,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "data_dir": str(base),
             "strict": args.strict,
             "summary": {
