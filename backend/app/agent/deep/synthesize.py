@@ -23,6 +23,7 @@ from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.types import Brief, ROLE_LABELS
 from app.core import llm
 from app.core.reliability import CircuitOpen
+from app.core.untrusted import wrap_untrusted
 
 #: prompt 版本（进报告正文——综述以它为身份，重放要认得出来）
 PROMPT_VERSION = "m8-synthesis-1"
@@ -89,8 +90,10 @@ def synthesis_prompt(
         "",
         f"可用证据（引用只能从下面的键里挑，共 {len(merged.evidence)} 条）：",
     ]
-    for item in merged.evidence:
-        lines.append(f"- [{item.key}] {item.title}")
+    # 同辩论那处：证据标题是语料文本，整块打不可信边界（E8c，SPEC §8.5）
+    title_lines = [f"- [{item.key}] {item.title}" for item in merged.evidence]
+    if title_lines:
+        lines.append(wrap_untrusted("\n".join(title_lines), source="事件语料证据"))
     if turns:
         lines += ["", "辩论记录："]
         for turn in turns:

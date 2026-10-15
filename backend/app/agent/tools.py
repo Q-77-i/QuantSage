@@ -16,6 +16,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
+from app.core.untrusted import wrap_untrusted
 from app.data import duckdb_client
 from app.data.duckdb_client import DataNotReady
 
@@ -167,7 +168,9 @@ async def search_events(
         sources = " / ".join(x for x in (hit.source, hit.original_source) if x)
         targets = "/".join(hit.symbols[:6]) if hit.symbols else "—"
         lines.append(f"   来源：{sources or '—'}｜标的：{targets}")
-    return "\n".join(lines)
+    # 语料是**外部数据**，进 prompt 前打上不可信边界（E8c，SPEC §8.5）。
+    # 只包命中的清单，不包上面那些「查不到 / 不可用」的话——那是我们自己的说明。
+    return wrap_untrusted("\n".join(lines), source="本地事件语料")
 
 
 class _Invalid:
@@ -225,6 +228,29 @@ def guard_tools(tools: list[BaseTool]) -> list[BaseTool]:
     return [_guarded(tool) for tool in tools]
 
 
+def mark_online(result: Any) -> Any:
+    """给小石（在线）工具的返回打上不可信边界（E8c，SPEC §8.5）。
+
+    **形状感知**：MCP 适配器造出来的是 `content_and_artifact`——`content` 是给模型看的
+    （字符串或内容块列表），`artifact` 是给程序用的结构化数据。**只包 content**：
+    artifact 是我们自己下游要解析的（`graph.py` 的预览与历史回看按它取文本），
+    包了会连着把下游一起弄坏。
+    """
+    if isinstance(result, tuple) and len(result) == 2:
+        content, artifact = result
+        return (mark_online(content), artifact)
+    if isinstance(result, str):
+        return wrap_untrusted(result, source="小石在线接口", kind="online")
+    if isinstance(result, list):  # 内容块列表：逐块包文本块，其余块原样
+        return [
+            {**block, "text": wrap_untrusted(block["text"], source="小石在线接口", kind="online")}
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+            else block
+            for block in result
+        ]
+    return result  # 不是我们认识的形状：原样返回，宁可不包也不改语义
+
+
 def _guarded(tool: BaseTool) -> BaseTool:
     from langchain_core.tools import StructuredTool
 
@@ -235,7 +261,9 @@ def _guarded(tool: BaseTool) -> BaseTool:
     async def guarded(*args: Any, **kwargs: Any) -> Any:
         from app.core import reliability
 
-        return await reliability.guard("xiaoshi-mcp", lambda: inner(*args, **kwargs))
+        result = await reliability.guard("xiaoshi-mcp", lambda: inner(*args, **kwargs))
+        # 小石的返回是**外部数据**：熔断包装之后再打边界（顺序无所谓，但两件事都要做）
+        return mark_online(result)
 
     return tool.model_copy(update={"coroutine": guarded})
 

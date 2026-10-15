@@ -28,6 +28,7 @@ from app.agent.deep.types import ROLE_LABELS, Brief, EvidenceRef, RoleResult
 from app.core import llm
 from app.core.config import get_settings
 from app.core.reliability import CircuitOpen
+from app.core.untrusted import wrap_untrusted
 
 #: 解读的统一硬要求：数字只能来自给定材料，不许算、不许编（claim 闸门在角色层的预演）
 INTERPRET_RULES = (
@@ -55,12 +56,18 @@ class RoleContext:
 
 
 def interpret_prompt(role: str, material: str) -> str:
-    """角色解读的 prompt。**纯函数**：同样输入永远同样 prompt（可测、可复现）。"""
+    """角色解读的 prompt。**纯函数**：同样输入永远同样 prompt（可测、可复现）。
+
+    材料是语料（外部数据），**包进不可信块**（E8c，SPEC §8.5）——五个角色都走这一处，
+    边界标记因此不会漏面。**包在外层、内容一字不改**：数字闸门与证据回链读的是原始材料，
+    不受影响。
+    """
     label = ROLE_LABELS.get(role, role)
     return (
         f"你是 A 股{label}取证角色。下面是程序取回的材料。\n"
         f"请用 2–4 条要点概括它对投资研究的意义，每条以「- 」开头。\n"
-        f"{INTERPRET_RULES}\n\n{material}"
+        f"{INTERPRET_RULES}\n\n"
+        f"{wrap_untrusted(material, source=f'{label}材料')}"
     )
 
 

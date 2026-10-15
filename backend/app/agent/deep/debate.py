@@ -25,6 +25,7 @@ from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.types import Brief, EvidenceRef
 from app.core import llm
 from app.core.reliability import CircuitOpen
+from app.core.untrusted import wrap_untrusted
 
 SIDE_BULL = "bull"
 SIDE_BEAR = "bear"
@@ -94,8 +95,11 @@ def debate_prompt(
         "",
         "可用证据（**引用只能从下面的键里挑**，写成 citations）：",
     ]
-    for item in evidence:
-        lines.append(f"- [{item.key}] {item.event_time or item.day}　{item.title}")
+    # 证据标题是语料文本（外部数据）：整块包进不可信边界（E8c，SPEC §8.5）。
+    # 包在**证据清单**这一块上，不碰上面的研究问题与下面的发言规则。
+    title_lines = [f"- [{item.key}] {item.event_time or item.day}　{item.title}" for item in evidence]
+    if title_lines:
+        lines.append(wrap_untrusted("\n".join(title_lines), source="事件语料证据"))
     if transcript:
         lines += ["", "前面几轮的发言："]
         for turn in transcript:
