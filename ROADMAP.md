@@ -8,7 +8,7 @@
 
 **阶段**：P2-Mn 的 M1–M10 已全部交付并验收（里程碑 `m-p2`，2026-10-13）。P1-Tn 与 P2-Mn 的浏览器内闭环均可走完。
 
-**最近交付**：**P3-E7a**（2026-10-15，SPEC §7 v2.17）——工程化基建落地：**ruff 接入**（中等规则集 + `line-length=120`，存量 **152 条清零**，其中逮到 1 个**真缺陷**：`etl/archive.py` 用了 `subprocess.CompletedProcess[str]` 却从未 import，靠 `from __future__ import annotations` 侥幸不炸）· **GitHub Actions CI**（三 job：后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）· **供应链审计持续化**（`uv export --no-hashes` + `pip-audit -r` 审**清单**，修好了 E8a 记的 hash 校验失败，且覆盖被跳装的 torch）。**两轮 CI 复盘共逮到 27 个问题并全部处置**（依据 SPEC §7.10 / §7.11）——首跑 4 个（两个工作流错：审计 job 没装 pnpm、`uv run` 会重复同步把 torch 装回来；两个测试隔离的真缺陷：「离线套件」此前隐含依赖真实 `data/`，且 `-m "not integration"` 挡不住 import 期副作用）；第二跑 23 个**全是宿主环境差异**（时区 / 沙箱内存阈值贴太紧 / 缺 `.env` 配置 / 一条拿未入库文件当路标的测试）⇒ CI 补 `TZ` + 一份最小假配置，测试侧修三处，并把「离线」的边界写清。**口径订正：离线 1491 → 1487、集成 110 → 114**（不是测试少了，是归类错了）。
+**最近交付**：**P3-E7a**（2026-10-15，SPEC §7 v2.17）——工程化基建落地：**ruff 接入**（中等规则集 + `line-length=120`，存量 **152 条清零**，其中逮到 1 个**真缺陷**：`etl/archive.py` 用了 `subprocess.CompletedProcess[str]` 却从未 import，靠 `from __future__ import annotations` 侥幸不炸）· **GitHub Actions CI**（三 job：后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）· **供应链审计持续化**（`uv export --no-hashes` + `pip-audit -r` 审**清单**，修好了 E8a 记的 hash 校验失败，且覆盖被跳装的 torch）。**CI 已从零跑绿**（2026-10-15 第三跑 `38741094527`：前端 73s / 后端 390s / 审计 36s，总 394 秒）。**三跑共逮到 27 个问题并全部处置**（依据 SPEC §7.10 / §7.11）——首跑 4 个（两个工作流错：审计 job 没装 pnpm、`uv run` 会重复同步把 torch 装回来；两个测试隔离的真缺陷：「离线套件」此前隐含依赖真实 `data/`，且 `-m "not integration"` 挡不住 import 期副作用）；第二跑 23 个**全是宿主环境差异**（时区 / 沙箱内存阈值贴太紧 / 缺 `.env` 配置 / 一条拿未入库文件当路标的测试）⇒ CI 补 `TZ` + 一份最小假配置，测试侧修三处，并把「离线」的边界写清。**口径订正：离线 1491 → 1487、集成 110 → 114**（不是测试少了，是归类错了）。
 
 **下一个动作**：E7 余下三段按序 **E7b**（覆盖率门槛：先测基线再定 `fail_under`；eval gate 口径订正）→ **E7c**（Langfuse 字段规范化：补四个空字段 + 深路径/报告调用补挂 handler）→ **E7d**（实验可复现：`backtest_runs.data_digest`）→ 然后 E2 多用户治理（配额必做、RBAC 从简）→ E3 数据工程（Redis 缓存 / 体检定时化 / 快照）→ E5 风控（挂模拟盘）→ E9 企业级文档。
 
@@ -58,7 +58,7 @@
 | E4 可靠性 L0–L7 | ✅ E4a（policy + LLM 侧）· E4b（限流 / 数据源熔断 / 幂等键）· E4c（chat 护栏 + 告知面 + 演练脚本）——三段均于 2026-10-14/15 交付 |
 | E5 风控 | ⬜ |
 | E6 组合 | ✂️ 已砍（后置） |
-| E7 工程化 | 🚧 E7a CI 骨架 + ruff + 供应链审计（2026-10-15）· E7b 覆盖率门槛 + eval gate 口径 ⬜ · E7c Langfuse 字段规范化 ⬜ · E7d 实验可复现 ⬜ |
+| E7 工程化 | 🚧 **E7a CI 骨架 + ruff + 供应链审计**（2026-10-15，**CI 三 job 已跑绿**，run `38741094527`）· E7b 覆盖率门槛 + eval gate 口径 ⬜ · E7c Langfuse 字段规范化 ⬜ · E7d 实验可复现 ⬜ |
 | E8 安全 + 对外 MCP | ✅ E8a 服务侧加固 · E8b **对外 MCP Server** · E8c 注入边界标记（三段均于 2026-10-15 交付） |
 | E9 企业级文档 | ⬜ |
 
