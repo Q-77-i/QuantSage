@@ -68,8 +68,11 @@ jobs:
       # 见 SPEC §7.3）。门槛贴着基线设会天天响；这里的余量约 130 条语句，够一次正常
       # 重构，但拦得住「整个模块没测试」。口径细节（模板 omit、两个子进程 worker 的
       # 结构性 0%）在 SPEC §7.3——**改这个数字等于改闸门宽度**，要在 SPEC 留痕。
+      # `term-missing:skip-covered` 而非默认 `term`：只列**未满 100% 的文件与缺行号**
+      # （满覆盖的约 44 个不打印），日志即诊断——排查平台差异时靠它定位缺口行，
+      # 平时看日志也直接知道哪没测到。
       - name: 测试
-        run: uv run pytest -q --cov=app --cov-fail-under=89
+        run: uv run pytest -q --cov=app --cov-fail-under=89 --cov-report=term-missing:skip-covered
 
   frontend:
     name: 前端 · lint + typecheck + test + build
