@@ -178,16 +178,15 @@ _INVALID = _Invalid()
 
 
 def _parse_as_of(value: str | None):
-    """`YYYY-MM-DD` 或完整 ISO 时间 → datetime；未传返回 None；解析失败返回哨兵。"""
-    from datetime import date, datetime
+    """`YYYY-MM-DD` 或完整 ISO 时间 → datetime；未传返回 None；解析失败返回哨兵。
 
-    if value is None or not str(value).strip():
-        return None
-    text = str(value).strip()
+    解析规则**不在本模块**：`rag.retrieve.parse_as_of` 是唯一实现（对外 MCP Server 用的是
+    同一份——接受哪些写法是对外契约）。这里只把它的 `ValueError` 翻成本工具的哨兵。
+    """
+    from app.rag.retrieve import parse_as_of
+
     try:
-        if len(text) == 10:
-            return datetime.combine(date.fromisoformat(text), datetime.min.time())
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parse_as_of(value)
     except ValueError:
         return _INVALID
 

@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 .claude/settings.local.json
+# MCP 客户端配置：命令与参数必须是**本机的绝对路径**（换机器就得改），
+# 故只入库 `.mcp.json.example`，本地那份由 README 的步骤照抄一份。
+.mcp.json
 
 # 私有文档（可读，不提交）
 docs/private/

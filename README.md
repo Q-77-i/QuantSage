@@ -176,6 +176,38 @@ flowchart LR
 
 ---
 
+## 把 QuantSage 挂成 MCP 数据源
+
+平台的 PIT 语料检索可以**直接暴露给任何 MCP 客户端**（Claude Desktop / Claude Code / 任何讲 MCP 的 agent）——AI 不只是用我们的页面，而是把我们的数据当数据源用。服务是 stdio 形态（本地单进程，不开端口），实现在 [`backend/app/mcp/server.py`](backend/app/mcp/server.py)。
+
+抄一份配置即可（**命令与参数必须是本机绝对路径**，换机器要改）：
+
+```bash
+cp .mcp.json.example .mcp.json   # 再把里面的 /ABSOLUTE/PATH/TO/QuantSage 换成真实路径
+```
+
+Claude Code 直接读项目根的 `.mcp.json`（重启后 `/mcp` 可见）；Claude Desktop 把同样的 `mcpServers` 块贴进 `claude_desktop_config.json` 即可。
+
+它暴露**一个工具** `search_events`：
+
+| 参数 | 说明 |
+|---|---|
+| `query` | 自然语言问题或关键词 |
+| `as_of` | 截止时点（`YYYY-MM-DD` 或完整 ISO）。**省略 = 现在**；问「某个历史时点当时市场看到了什么」必须显式传 |
+| `symbol` / `event_type` / `top_k` | 限定标的 / 事件类型 / 返回条数（默认 5、上限 10） |
+
+返回结构化 JSON：`as_of`（**实际生效**的时点）/ `coverage`（本地语料窗口）/ `score_kind` / `hits[]`（标题、`event_time` 与 `available_at` 双时间戳、方向、重要度、摘要、标的、来源三元组、得分）。上限自定：摘要截断、整份返回有硬上限且**超出时如实标注丢了几条**；**不设翻页**——检索是排序不是枚举，要更多就换查询词。
+
+三条如实说明：**① 首个调用慢**（要载本地嵌入模型，实测冷启动 **8.8s**，之后每次约 **0.2s**）；**② 默认不精排**（`score_kind="rrf"` 就是这个意思——精排要多载一份 2.3GB 模型）；**③ 服务本身无鉴权**（本地 stdio 单进程形态，读到的是全局语料；多租户部署需另加）。
+
+自检（不需要任何客户端，真 stdio 握手 + PIT 双断言）：
+
+```bash
+cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e8/mcp-verification.json
+```
+
+---
+
 ## 已知边界
 
 这是当前进度的诚实清单，避免读者误判完成度：

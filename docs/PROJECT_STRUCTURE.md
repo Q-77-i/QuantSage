@@ -25,6 +25,7 @@ QuantSage/
 │   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环
 │   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止
 │   │   ├── data/                 # DuckDB 客户端、交易日历、行情刷新、小石 CLI/MCP 装配
+│   │   ├── mcp/                  # 对外 MCP Server（E8b）：把 PIT 语料检索亮给外部 AI 客户端
 │   │   └── core/                 # 配置、checkpointer、LLM 与 Langfuse 入口、日志脱敏
 │   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py）
 │   └── tests/                    # 离线 + tests/integration
@@ -44,9 +45,10 @@ QuantSage/
 │                                 #   （纯函数 + 单测；组件本身不做单测，靠走查脚本）
 ├── docs/
 │   ├── PRD.md                    # 需求与验收
-│   ├── specs/                    # 技术规格（逐阶段滚动：P1-Tn.md · P2-Mn.md）
+│   ├── specs/                    # 技术规格（逐阶段滚动：P1-Tn.md · P2-Mn.md · P3-En.md）
 │   ├── tutorials/                # 使用教程与示例策略教程
 │   └── images/                   # README 用截图（由 frontend/scripts/capture-*.mjs 生成）
+├── .mcp.json.example             # MCP 客户端配置模板（本地 .mcp.json 是绝对路径，不入库）
 ├── docker/postgres/init/
 └── docker-compose.yml
 ```

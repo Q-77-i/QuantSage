@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.10）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.10 ｜ 2026-10-15 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E8 进行中**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）已交付，E8b（对外 MCP Server）与 E8c（注入边界标记）待实施（§8，乙案 + JWT 撤销）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.11 ｜ 2026-10-15 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E8 进行中**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）与 E8b（**对外 MCP Server**）已交付，E8c（注入边界标记）待实施（§8，乙案 + JWT 撤销）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -13,7 +13,7 @@
 | [§1](#1-规划基线) | 规划基线（P3 起笔时点的现状核对） |
 | [§2](#2-e1-架构分层) | E1 架构分层（E1a 任务队列 · E1c 接缝 · [§2.8](#28-e1b网格--批量迁入队列2026-10-14-定稿) E1b 网格批量迁入——**全节已交付**） |
 | [§5](#5-e4-可靠性-l0l7) | E4 可靠性 L0–L7（**全节已交付**） |
-| [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**E8a 已交付**；E8b / E8c 待实施） |
+| [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**E8a / E8b 已交付**；E8c 待实施） |
 | §3 / §4 / §6 / §7 / §9 其余 | E2 / E3 / E5 / E7 / E9 规格（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
 | [§11](#11-变更记录) | 变更记录 |
@@ -497,10 +497,28 @@ E8 对清单主体的动作是**核验与订正**，不是再加固一遍。四�
 - **自定返回上限**（小石「500 行硬顶 + 不可翻页」的反面）：`top_k ≤ 10`；摘要截 240 字、单条正文截断并标注「已截断」；总长硬上限约 **12KB**，超出即截断并如实说明；**不设 cursor**——检索是**排序**不是枚举，需要更多就换查询词或加过滤（与小石的区别：不提供假的翻页承诺）。
 - **语义档默认 hybrid（无精排）**：精排要再载一份 2.3GB 模型且走 MPS（与 API 进程争用；M8b 实测 MPS 精排并发完全串行）。默认档 `score_kind="rrf"` 如实标注。
 - **错误结构化**：Qdrant 停 / 模型缺 / 语料为空 → `{"ok": false, "error": "...", "detail": "..."}`，不抛栈（错误也是给模型看的信息面）。
-- **配置**：项目根 `.mcp.json`（Claude Code 用）与 Claude Desktop 的 `claude_desktop_config.json` 片段各一份；`command` 用 venv **绝对路径** + `cwd=backend`；env 只放非密钥项（`QDRANT_URL` / `RAG_MODEL_DIR`）——**MCP Server 不调 LLM，一个密钥都不进**。
+- **配置**：项目根 `.mcp.json`（Claude Code 用；**本地那份不入库**，入库的是 `.mcp.json.example`——`command` 必须是本机绝对路径）与 Claude Desktop 的 `claude_desktop_config.json` 说明（README 一节）。
+  实施期简化：**`env` 块整个不需要**——配置按文件位置回溯到仓库根读 `.env`，`QDRANT_URL` / `RAG_MODEL_DIR` 都有代码默认值；启动壳 `scripts/serve_mcp.py` 自举 `sys.path`，故也不依赖客户端的 cwd（比 SPEC 原稿「`cwd=backend`」更稳）。**MCP Server 不调 LLM，一个密钥都不进**，这条没变。
 - **验收脚本** `backend/scripts/verify_quantsage_mcp.py`（沿用 `verify_xiaoshi_mcp.py` 体例：真 stdio 握手 → `tools/list` → 一次 PIT 检索 → 证据落 `logs/e8/`）。PIT 断言两条一起上：① 对 `build_filter` 断言服务端过滤（扩到 MCP 参数面）；② 同一 query 在两个 `as_of` 下返回集不同（晚可得的探针在早窗口不出现）——单靠探针不稳（探针未必进 top-k）。
 - **已知成本**：首个调用载嵌入模型 **7–15s**（M3 读数）；预热取舍同后端（默认关）。
 - **多用户边界**：本 Server 无鉴权，读到的是**全局语料**（非按用户数据）；本地 stdio 单进程形态下成立，多租户部署需加鉴权（P4）。
+
+**E8b 已交付（2026-10-15）的实测读数**（`logs/e8/mcp-verification.json`）：
+
+| 项 | 读数 |
+|---|---|
+| 握手 | 协议 `2025-11-25`，serverName `quantsage`，**483ms** |
+| `tools/list` | **恰好 1 个**：`search_events` |
+| 冷启动首调 | **8805ms**（含载入本地嵌入模型） |
+| 热调用 | **195ms / 190ms** |
+| `score_kind` | `rrf`（hybrid 档，未精排——如实标注） |
+| 语料覆盖 | `2026-07-07 ~ 2026-10-08`（随日增前移） |
+| PIT 断言①（`available_at ≤ 生效 as_of`） | 两个窗口各 10 条，**0 违规、0 缺时间戳** |
+| PIT 断言②（两窗口命中集必须不同） | 差集 **6 条**，全是 `policy:*`——早窗口（08-01）看不见、晚窗口（09-30）看得见，**过滤确实在服务端生效** |
+| 真实客户端 | Claude Code `2.1.296` 经 `.mcp.json` 调用成功（`logs/e8/mcp-client-demo.json`）：`as_of=2026-08-01` 的三条命中 `available_at` 全在 07-15~07-31 之间 |
+| 错误分类（真路径核过） | 把 `QDRANT_URL` 指向死端口：`collection.get_client()` 抛的**正是** `RagNotReady`（`ResponseHandlingException` 已被它翻译），工具据此回 `{"ok": false, "error": "rag_unavailable"}`，而不是掉进 `search_failed` |
+
+**实施期两条**：① `top_k` 的收敛式曾写成 `top_k or DEFAULT_TOP_K`——`0` 是 falsy，「要 0 条」被悄悄改成「要 5 条」，离线用例当场逮到；现与内部 chat 工具同一条 `max(1, min(top_k, 10))`。② **模型加载期没有任何东西往 stdout 写**（真握手 483ms 干净通过），故**不需要** `redirect_stdout` 那层防御——先跑再判，不预写防护代码。
 
 ### 8.7 容器隔离：本轮不做（记录）
 
@@ -557,7 +575,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
   * `tests/test_config.py::test_strict_msgpack_is_enforced`——**防回退**：删掉 `app/__init__.py` 那两行不会有任何测试变红，这条就是为此存在。
   * 前端 `lib/api.test.ts` **6 例**：`loginRedirectTarget` 的三种「不跳」（鉴权端点自己 / 已在登录注册页 / 无 `window`）+ 非 401 不跳 + `next` 带回含查询串的当前位置。
   * **真机冒烟**（uvicorn + 真库，留档 `logs/e8/headers.txt`）：五个头都在；注册 → 登出 → **旧票 401**、库里 `token_version=1`；过半程的票在 `/health` 上拿到新 cookie、刚签的票不拿。冒烟账号已清理。
-- **MCP（E8b）**：`tests/test_mcp_server.py`（工具函数直调：`top_k` 越界收敛 / `as_of` 非法 → 结构化错误 / 截断与总长上限 / 返回带来源三元组与**生效 `as_of`**）；`scripts/verify_quantsage_mcp.py`（真 stdio 握手 + PIT 双断言，产物 `logs/e8/`）。
+- **MCP（E8b，已交付）**：`tests/test_mcp_server.py` **14 例**（工具函数直调，注入假检索层、不连 Qdrant 不载模型）：结构化返回带双时间戳与来源三元组 / **生效 `as_of` 回显** / 默认档写死 `MODE_HYBRID` / `top_k` 越界收敛（含 `0` 这一档——`or` 写法就是在这条上翻的车）/ 空串过滤项当没传 / 三种坏 `as_of` → `bad_argument` / 空 query → `bad_argument` / **`RagNotReady` 不与「查不到」混为一谈** / 意外异常翻 `search_failed` 不抛栈 / 超长 payload 从尾部丢且如实标注 / 摘要截断 / 空结果 `ok:true, count:0`；`scripts/verify_quantsage_mcp.py`（**真 stdio 握手 + PIT 双断言**，产物 `logs/e8/mcp-verification.json`）——与 `drill_reliability.py` 同属**非 pytest 的验收轨**：要真 Qdrant 与真模型，不进离线用例集。
 - **注入（E8c）**：`tests/test_injection_guard.py` 三条（闭合标签不破块 / 指令注入不产生工具调用 / 深路径 prompt 内语料全在块内）。
 - **审计（E8a）**：`logs/e8/audit-backend.json` / `audit-frontend.json`（一次性证据，非用例）。
 
@@ -567,6 +585,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 |---|---|---|
 | v2.0 | 2026-10-13 | 规划评估拍板（底稿 docs/private/Pn-n/P3-En/P3-En-规划评估.md）：四处裁剪（E1 定向接缝 / E4 L0+L4 进程内 / E7 eval gate 只跑确定性断言 / E8 清单库直用化）+ E6 砍；PRD v0.10 / CLAUDE.md / ROADMAP 同步。正文待按功能 ID 滚动填写 |
 | v2.1 | 2026-10-14 | §2（E1）正文定稿（底稿 docs/private/Pn-n/P3-En/P3-E1-规划评估.md）：**E1a（任务队列 + 单次回测异步）+ E1c（LLM 调用面取用式）先做，E1b（网格/批量迁入）后延**。三处现状订正——API 版本化已是基线、数据侧接缝已存在（零代码只登记）、LLM 侧绑定导入是真缺口；痛点订正——单次回测实测 0.3–2s，E1a 不得声称解决长任务丢失。队列实体 = 任务表（理由：`asyncio.Queue` 绑事件循环，与模块级 `TestClient` 的每请求 loop 冲突） |
+| v2.11 | 2026-10-15 | **E8b 交付 —— 对外 MCP Server：平台成了 AI 的数据源**（落地记录 `docs/private/Pn-n/P3-En/P3-E8b.md`）。① **交付**：`app/mcp/server.py`（FastMCP `mcp==1.30.0` **自带，零新依赖**，stdio）+ 单工具 `search_events`（结构化 JSON：`as_of` **回显实际生效时点** / `coverage` / `score_kind` / `hits[]` 带双时间戳与来源三元组）；上限自定（`top_k ≤ 10`、摘要 240、总长 12KB 且超出**如实标注丢了几条**、**不设 cursor**）；错误结构化（`bad_argument` / `rag_unavailable` / `search_failed`，**不抛栈**，且「不可用」绝不写成「查不到」）；固定 **hybrid 档**（不载精排那份 2.3GB 模型，`score_kind="rrf"` 如实标）；`scripts/serve_mcp.py` 启动壳（`sys.path` 自举，与客户端 cwd 无关）+ `.mcp.json.example`（**本地 `.mcp.json` 不入库**——命令必须是本机绝对路径）+ README 一节。② **`as_of` 解析收口**：`_parse_as_of` 从 `agent/tools.py` 上提到 `rag/retrieve.py::parse_as_of`（接受哪些写法是**对外契约**，chat 工具与 MCP Server 共用一份，前者保留哨兵语义）。③ **实测**（`logs/e8/mcp-verification.json`）：握手 483ms、`tools/list` 恰好 1 个、**冷启动首调 8805ms / 热调用 195ms**、**PIT 断言①**（每条 `available_at ≤ 生效 as_of`）两窗口各 10 条 **0 违规**、**断言②**（两窗口命中集必须不同）差集 6 条全是 `policy:*`（早窗口 08-01 看不见、晚窗口 09-30 看得见 ⇒ **过滤真在服务端生效**）。④ **真实客户端**：Claude Code `2.1.296` 经 `.mcp.json` 调用成功（`as_of=2026-08-01` 三条命中 `available_at` 全在 07-15~07-31），留档 `logs/e8/mcp-client-demo.json`；**本机未装 Claude Desktop，对外如实标注客户端是 Claude Code，不假称 Desktop**（§8.9）。⑤ **实施期两条**：`top_k` 收敛式曾写成 `top_k or DEFAULT_TOP_K`（`0` 是 falsy ⇒「要 0 条」变「要 5 条」，离线用例逮到）；**模型加载期没有任何东西往 stdout 写**（真握手干净通过）⇒ **不需要** `redirect_stdout` 防御——先跑再判。⑥ **回归**：后端离线 **1482 passed**（基线 1468，+14）、集成 **110 passed**、前端 **466 passed**（未动前端，与 E8a 同数）。 |
 | v2.10 | 2026-10-15 | **E8a 交付 —— 服务侧加固：安全响应头 + 会话续期与撤销 + 加固清单核验 + 一次性依赖审计**（落地记录 `docs/private/Pn-n/P3-En/P3-E8a.md`）。① **交付**：`app/core/security.py`（**纯 ASGI** 响应头中间件，五个头；不用 `BaseHTTPMiddleware` 的理由是它会包装响应体迭代器、给三条 SSE 路径引入缓冲与额外任务）+ `frontend/next.config.ts::headers()`（四条，无 CSP）；`app/core/session.py`（**纯 ASGI** 续期中间件：过半程才换、只在成功响应上换、不读库）+ `core/auth.py` 的 `Session`/`renewal_due`/`session_cookie_value`（**cookie 属性唯一来源**，端点与中间件共用）；`users.token_version`（幂等 ALTER）+ `require_user` 比对 + `/auth/logout` 递增 ⇒ **登出真的登出**；前端 `lib/api.ts::loginRedirectTarget` + 三处 SSE 出口：会话中途失效跳 `/login?next=`。② **两处实施期订正**：**续期不能挂依赖注入的 `Response`**（SSE 直出 `StreamingResponse` 时 FastAPI 不合并其头，`fastapi/routing.py:732-735`——挂了在三条流式路由上静默失效，用例 `test_renewal_also_lands_on_sse_routes` 就是这条的守卫）；**`pip-audit -r <uv export 清单>` 实测在 hash 校验上失败**，改用 `--path` 直审已装包。③ **审计结论**：后端 166 包 **0 漏洞**；前端初次 7 条（3 high / 2 moderate / 2 low，全是传递依赖）→ `pnpm-workspace.yaml` 加 overrides（`postcss ^8.5.28` 顶掉 next 钉死的 8.4.31；`dompurify ^3.4.16`）→ 复跑剩 **1 条 high**：`braces` **上游无补丁**，路径是 shadcn CLI 的构建期 glob 工具链，**如实记录不假装解决**。④ **加固清单订正**：`LANGGRAPH_STRICT_MSGPACK` 记「已强制」（它是**库级**开关，原「不适用」的误记同步改 CLAUDE.md §五与 PRD）；补 `test_strict_msgpack_is_enforced` 防回退。⑤ **真机冒烟**（uvicorn + 真库）：五个头在、登出后旧票 401 且库中 `token_version=1`、过半程票拿到新 cookie 而刚签的不拿；冒烟账号已清理。⑥ **回归**：后端离线 **1468 passed**（基线 1446，+22）、集成 **110 passed**（真库/真网络，10 分 41 秒）、前端 **466 passed**（+6）+ typecheck/lint 全绿（**`pnpm build` 未跑**：dev 在跑，build 会覆盖 `.next`——本仓既有口径）。⚠ 前端 401 跳登录与四条响应头**需重启一次 `pnpm dev` 才生效**（配置在启动时读） |
 | v2.9 | 2026-10-15 | **§8（E8 安全 + 对外 MCP）规格定稿**（底稿 `docs/private/Pn-n/P3-En/P3-E8-规划评估.md`）：拍板**乙案 + JWT 撤销**，切 **E8a 服务侧加固 → E8b 对外 MCP Server → E8c 注入防护与收口**（E8a 为可停止损位）。三处现状订正——① **加固清单三项已在做**：checkpointer 基线、checkpoint 系已精确 pin（`langgraph-checkpoint==4.2.0` **高于全部已知 CVE 修复版** 3.0.0/4.0.0/4.0.1rc1/4.1.1）、**`LANGGRAPH_STRICT_MSGPACK` 早已强制**（`app/__init__.py` import 期兜底；它是 `langgraph-checkpoint` 的**库级**开关，非 Platform 专属）⇒ **CLAUDE.md §五「STRICT_MSGPACK 不适用」与仓库事实相反**，订正为「已强制」并补防回退断言；② **JWT 续期不能挂依赖注入的 Response**：chat/research 的 SSE 端点直出 `StreamingResponse` 时 FastAPI **不合并**注入 Response 的头（`fastapi/routing.py:732-735`）⇒ 定死**中间件签发**，否则三条流式路由上静默失效；③ **MCP 两处成本先认**：嵌入模型冷启动 7–15s（M3 读数）、**本机未装 Claude Desktop**（验收改「自动握手脚本 + Claude Code 挂载」，§8.9 写明不假称 Desktop）。设计：§8.2 响应头五条（API 含 CSP，前端四条无 CSP，HSTS 与前端 CSP 不做）、§8.3 滑动续期（**过半程才换**）+ `users.token_version` 撤销（历史 token 无 `ver` 按 0）、§8.4 一次性审计（**进 CI 属 E7**）、§8.5 `wrap_untrusted` 边界标记（纵深一层，非「解决注入」）、§8.6 FastMCP stdio 单工具（总长 12KB / `top_k ≤ 10` / 默认 hybrid 无精排 / **不设 cursor**）、§8.7 **明确记录「本轮不做容器隔离」**（P2 M4a 曾写「留 P3-E8」，不让它悬着）。**待用户确认后开工** |
 | v2.8 | 2026-10-15 | **E4c 交付 —— chat 护栏 + 告知面 + 演练脚本，E4 全节收口**（落地记录 `docs/private/Pn-n/P3-En/P3-E4c.md`）。① **交付**：`DEEPSEEK_API_BASE` settings（**演练「杀 LLM」的可控手段**——不动密钥、可还原，空=走默认）；chat 路径护栏（`astream_chat` 把逐次 `usage` 累加进**深路径同一个 `Budget`**，token/成本/墙钟到限即停，步数仍由图自己管；到限文案走既有 `error` 帧，理由见 §5.6）；失败**按分类给话术**（`api/chat.py::failure_frame`：熔断中 / 超时 / 限流 / 上游不可用 / 内部错误——此前一律「内部错误，请重试」）；角色/辩论/综合三处补 `except CircuitOpen`（此前落进通用分支写成「解读不可用（CircuitOpen）」，等于什么都没说）；前端 `chat-state.ts` 的 `ended` 分支**不再覆盖服务端已给出的说明**（否则分类文案被「连接提前结束」吃掉，等于白写）。② **演练脚本 `scripts/drill_reliability.py` 四幕**（真拔数据源 / 杀 LLM / 触发限流 / 熔断恢复），产物 `logs/e4-drill/<时间戳>/`；**真跑一次留档**（代码 `a89e4bc`，13 条断言 0 红）：拔 CLI 五次 `FileNotFoundError` 后第六次 **0.000s 被熔断拒绝、子进程只起了 5 次**；杀 LLM 两轮各 3.3s（重试 + 降级链）后**两档都开路**，第三轮 **1.0ms 内被拒**（不再耗超时）；连打提交**第 27 次 429 + `Retry-After: 1`**；冷却未过仍拒、过后真调用成功（pro 档，1.0s）且熔断复位。③ **实施期两条教训**：幕④**不能依赖上一幕留下的熔断状态**（幕③ 耗时早已越过冷却，第一版断言必红而代码没毛病）⇒ 改为自己重新杀一次；**「快跑」旗标是坏设计**（跳过冷却等于不给证据）⇒ 删掉。④ **真机核对**：流式路径的 `on_chat_model_end` **确实带** `usage_metadata` 与 `response_metadata.model_name`（一次真实 flash 调用 448 in / 138 out，计价 $0.0003）——成本上限在生产里真能触发（假模型不带 `model_name` 时计 0，是「不猜价」的既定口径）。⑤ **回归**：后端离线 **1446 passed**（基线 1438，+8）、集成 110、前端 **460 passed**（+1）+ typecheck/lint 全绿 |

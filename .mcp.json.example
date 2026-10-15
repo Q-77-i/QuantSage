@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "quantsage": {
+      "command": "/ABSOLUTE/PATH/TO/QuantSage/backend/.venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/TO/QuantSage/backend/scripts/serve_mcp.py"]
+    }
+  }
+}

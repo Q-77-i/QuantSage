@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from qdrant_client import models
@@ -79,6 +79,24 @@ class RetrievedEvent:
     text: str
     score: float
     score_kind: str  # "rerank" | "rrf" | "dense"
+
+
+def parse_as_of(value: str | None) -> datetime | None:
+    """`YYYY-MM-DD` 或完整 ISO 时间 → datetime；未传（或空白）→ `None`；解析失败抛 `ValueError`。
+
+    **两个调用方共用这一份**（chat 的 `search_events` 工具与对外 MCP Server）：接受哪些写法是
+    **对外契约**，各写一份迟早漂移。裸时间（只有日期、或不带时区的 ISO）返回**不带时区**的
+    datetime，由 `resolve_as_of` 按北京时间补齐——「解释成哪个时区」只该有一处口径，故两步分开。
+
+    解析失败**抛**而不是返回哨兵：两个调用方各有各的报错通道（工具返回一句人话 / MCP 返回
+    结构化错误），把选择权留给它们。
+    """
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    if len(text) == 10:
+        return datetime.combine(date.fromisoformat(text), datetime.min.time())
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
 def resolve_as_of(value: datetime | None) -> datetime:
