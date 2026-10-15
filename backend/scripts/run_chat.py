@@ -74,7 +74,12 @@ async def main(argv: list[str] | None = None) -> int:
 
         try:
             async for event, payload in astream_chat(
-                agent, message=args.ask, thread_id=thread_id, callbacks=callbacks
+                agent,
+                message=args.ask,
+                thread_id=thread_id,
+                # 脚本没有登录用户——trace 里 user_id 留空，如实标注「非用户发起的验收跑」
+                user_id=None,
+                callbacks=callbacks,
             ):
                 if event == "tool_call":
                     tool_calls += 1

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -217,6 +217,9 @@ async def complete(
     timeout: float = 20.0,
     chat: ChatLiteLLM | None = None,
     thinking: bool = True,
+    callbacks: Sequence[Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    run_name: str | None = None,
 ) -> Completion:
     """一次调用，连正文带用量一起回（M8 的取证/辩论/综合用）。
 
@@ -227,8 +230,21 @@ async def complete(
     **`Completion.model` 是实际用的那个模型**（不是 `model` 参数）——降级链换过档时两者不同，
     报告里那句「哪个模型产出的」据此才不是假话（SPEC §5.2）。回调而非 contextvar：
     `wait_for` 会把调用放进子任务，contextvar 的写入传不回父上下文（实测过的坑）。
+
+    `callbacks` / `metadata`（E7c）：观测配置从这里进——**经 `ainvoke` 的 config 传**，
+    不 baked 进模型实例（实例归调用方所有，往它身上挂东西会串）。两者是配对的：
+    handler 决定有没有人读，metadata 是它读的四个字段。
+
+    `run_name`（E7c，**只有挂了 handler 时才有意义**）：给这次调用套一个具名壳。**必须套**——
+    裸模型调用当 trace 根时，实测有两处不对（本机 Langfuse v4 + SDK 4.16，对照实验见 SPEC §7.6）：
+      ① trace 名落不上（`langfuse_trace_name` 只在**有 chain 父**时才成为 trace 名）；
+      ② 同会话的多次裸调用会被并进**同一条** trace（两次结算 + 一次综述合成一条）。
+    套壳后逐个调用各成一条、名字正确。套壳会多一层链的观测，只在观测启用时套（`callbacks`
+    在即为启用；离线用例不传 callbacks，行为一字不变）。
     """
     import asyncio
+
+    from langchain_core.runnables import RunnableLambda
 
     used: list[str] = []
     if chat is None:
@@ -239,7 +255,17 @@ async def complete(
             # 注入进来的**真**模型（用例）也把实际模型报回来。注入物归调用方所有，
             # 且这条分支在生产路径上不会走到（`chat` 只为离线测试而存在）。
             client.on_model_used = used.append
-    response = await asyncio.wait_for(client.ainvoke(prompt), timeout=timeout)
+    config: dict[str, Any] = {}
+    if callbacks:
+        config["callbacks"] = list(callbacks)
+    if metadata:
+        config["metadata"] = dict(metadata)
+    runnable: Any = client
+    if run_name and callbacks:
+        # 恒等壳：不改数据，只提供「chain 父」这个结构，让 trace 有名字且不被并走
+        shell = RunnableLambda(lambda value: value).with_config(run_name=run_name)
+        runnable = shell | client
+    response = await asyncio.wait_for(runnable.ainvoke(prompt, config=config or None), timeout=timeout)
     usage = getattr(response, "usage_metadata", None)
     return Completion(
         text=text_of(response),
@@ -254,7 +280,18 @@ async def ask_once(
     model: str = DEFAULT_MODEL,
     timeout: float = 20.0,
     chat: ChatLiteLLM | None = None,
+    callbacks: Sequence[Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    run_name: str | None = None,
 ) -> str:
     """一句话问答（M7 的综述与反思用）：只要正文，其余同 `complete`（**行为保持一字不变**）。"""
-    result = await complete(prompt, model=model, timeout=timeout, chat=chat)
+    result = await complete(
+        prompt,
+        model=model,
+        timeout=timeout,
+        chat=chat,
+        callbacks=callbacks,
+        metadata=metadata,
+        run_name=run_name,
+    )
     return result.text

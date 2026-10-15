@@ -24,6 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 from app.agent.deep.budget import Budget, Limits
 from app.agent.prompts import SYSTEM_PROMPT
 from app.core.config import get_settings
+from app.core.langfuse import TRACE_NAME_CHAT, make_langfuse_metadata
 
 log = logging.getLogger(__name__)
 
@@ -177,16 +178,28 @@ async def astream_chat(
     *,
     message: str,
     thread_id: str,
+    user_id: int | None = None,
     callbacks: Sequence[Any] | None = None,
 ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     """驱动图并产出 `(事件名, 载荷)`：token / tool_call / tool_result / done。
 
     error 事件不在这里产出——图抛出的异常留给调用方决定怎么收尾（API 层转 error 帧，
     脚本直接打印），避免这里吞掉异常让上层失去判断依据。
+
+    **这是 chat 唯一的 config 构造点**（E7c）：Langfuse 的四个运行期字段（会话 / 用户 /
+    业务名 / 标签）经 `metadata` 从这里下去。`user_id` 缺省 None 时键改传空串——
+    SDK 见非 str 会**静默丢弃**该字段，宁可显式空着也别给个会被丢的类型
+    （脚本 `run_chat.py` 就是这么跑的）。
     """
     config: dict[str, Any] = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": RECURSION_LIMIT,
+        "metadata": make_langfuse_metadata(
+            session_id=thread_id,
+            user_id=user_id if user_id is not None else "",
+            trace_name=TRACE_NAME_CHAT,
+            tags=("chat",),
+        ),
     }
     if callbacks:
         config["callbacks"] = list(callbacks)

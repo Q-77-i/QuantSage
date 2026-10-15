@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.10）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.18 ｜ 2026-10-15 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 进行中**（§7，2026-10-15）——**E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`，CI 实测基线 89.36%）已落地**，E7c/E7d 待做；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.20 ｜ 2026-10-15 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 进行中**（§7，2026-10-15）——**E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`，CI 实测基线 89.36%）、E7c Langfuse 四字段 + 两条路径补挂 handler（真机逐项核对通过）已落地**，E7d 待做；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -13,7 +13,7 @@
 | [§1](#1-规划基线) | 规划基线（P3 起笔时点的现状核对） |
 | [§2](#2-e1-架构分层) | E1 架构分层（E1a 任务队列 · E1c 接缝 · [§2.8](#28-e1b网格--批量迁入队列2026-10-14-定稿) E1b 网格批量迁入——**全节已交付**） |
 | [§5](#5-e4-可靠性-l0l7) | E4 可靠性 L0–L7（**全节已交付**） |
-| [§7](#7-e7-工程化) | E7 工程化（E7a CI 骨架 + 静态检查 + 供应链审计 · **E7b 覆盖率门槛 + eval gate 口径**——均已交付；E7c Langfuse 字段规范化 · E7d 实验可复现待做） |
+| [§7](#7-e7-工程化) | E7 工程化（E7a CI 骨架 + 静态检查 + 供应链审计 · **E7b 覆盖率门槛 + eval gate 口径** · **E7c Langfuse 字段规范化 + 补挂 handler**——均已交付；E7d 实验可复现待做） |
 | [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**全节已交付**：E8a 服务侧加固 · E8b 对外 MCP Server · E8c 注入边界标记） |
 | §3 / §4 / §6 / §9 其余 | E2 / E3 / E5 / E9 规格（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
@@ -522,20 +522,37 @@ uv run pytest -q --cov=app --cov-fail-under=88 --cov-report=term-missing:skip-co
 
 ### 7.6 Langfuse 字段规范化
 
-**唯一 config 构造点**：`agent/graph.py:186-193`。补 `metadata` 四个键（SDK 4.16 从 metadata 读，见 `langfuse/langchain/CallbackHandler.py:496-520`）：
+**已交付（E7c，2026-10-15）**。两个缺口都补上了：四个运行期字段全空、深路径/报告路径根本没挂 handler。
 
-| metadata 键 | 取值 |
-|---|---|
-| `langfuse_session_id` | `thread_id`（会话级串联） |
-| `langfuse_user_id` | `require_user` 拿到的用户 id |
-| `langfuse_trace_name` | 业务语义名（如 `chat` / `deep-research`，不沿用节点名） |
-| `langfuse_tags` | 路径标签（`chat` / `deep` / `report`） |
+**四个键的唯一构造点**：`core/langfuse.py::make_langfuse_metadata()`（SDK 4.16 从运行时 config 的 `metadata` 读这四个键，`langfuse/langchain/CallbackHandler.py:496-520`；**键名与类型都是 SDK 的契约**——三个 str、tags 必须 list，元组会被静默忽略）。handler 本身不吃运行期信息（构造签名只有 public_key / trace_context）⇒ **lifespan 建一次、跨请求复用**，字段随每次运行经 config 传。
 
-⚠ **否证一条易踩的假设**：metadata 里的 `thread_id` **不会**自动变成 `session_id`——SDK 只在 `_get_langgraph_resume_key()` 里读它，用途是 `interrupt` 恢复时关联断掉的 trace。必须显式传 `langfuse_session_id`。
+| 路径 | 业务名（`langfuse_trace_name`） | session_id | 接线点 |
+|---|---|---|---|
+| chat | `chat` | `thread_id` | `agent/graph.py::astream_chat`（chat 唯一的 config 构造点）+ `api/chat.py` 传 `user_id` |
+| 深路径 | `deep-research` | `run_id` | `api/research.py::_drive` → `astream_deep_run(callbacks=, metadata=)` → 图 config |
+| 报告综述 | `report` | `account_id` | `api/reports.py::create_report` → `build_narrative(trace=)` |
+| 结算反思 | `settle` | `account_id` | `api/reports.py` 三处 + `memory/scheduler.py` 定时 job，统一走 `core/langfuse.py::settle_trace()` |
 
-**补挂 handler（比字段缺失更硬的缺口）**：深路径（M8）与报告生成调用**当前完全没被追踪**。补挂到这些调用点上——PRD 的「可回溯任意一次历史请求」对它们目前不成立。
+tags 与业务名同值（`chat` / `deep`+`research` / `report` / `settle`）。`TraceConfig` 把 handler 与字段**打包同行**——只传一半就是「有 handler 但字段空」或「字段构造了没人读」。
 
-**由 SDK 自动采集、不手工传的**：模型版本、token 用量与成本、延迟、工具调用序列（它们落在 generation / observation 上）。**验收时逐项核对，不假设**（§7.9）。
+⚠ **否证两条易踩的假设（都是实测）**：
+1. metadata 里的 `thread_id` **不会**自动变成 `session_id`——SDK 只在 `_get_langgraph_resume_key()` 里读它，用途是 `interrupt` 恢复。必须显式传 `langfuse_session_id`。
+2. **`langfuse_trace_name` 只在「有 chain 父」时才成为 trace 名**：裸模型调用（`PolicyChatModel.ainvoke` 直调）当 trace 根时，trace 名**落不上**，且同会话的多次裸调用会被并进**同一条** trace（首轮实测：两次结算反思 + 一次综述三次调用合成一条、名字空）。⇒ `llm.complete()` 在**挂了 handler 且给了 `run_name`** 时给调用套一层**具名恒等壳**（`RunnableLambda`），提供 chain 父这个结构。**离线路径不套**（不传 callbacks 时行为一字不变）。对照实验：套壳前 3 次调用 1 条空名 trace → 套壳后每次调用各一条、名字正确。
+
+**已知怪癖（如实登记，不修）**：`POST /reports` 一次请求里的 settle 与 narrative 两次调用**共享同一条 trace**（父 span 相同），而**同会话的两次独立请求不会合并**（对照：`e7c-probe-F` 的 report 与 settle 各成一条）。即「一次请求 = 一条 trace」在报告端点上被并成「结算 + 综述同框」——字段与 span 全对、两种业务的链名都在树里（`settle` 与 `report` 各是一个根链），不影响回溯；修它要动请求内的上下文边界，收益不抵风险。
+
+**由 SDK 自动采集、不手工传的**：模型版本、token 用量与成本、延迟、工具调用序列（落在 generation / observation 上）——**已逐项在真机核对**，读数见 §7.9 第 5 条。
+
+**定价表（同日补齐；机制与操作都记在这，别再当黑盒猜）**：
+
+- **机制**：单价是**每 token 的美元纯数字**（`prices.price` 为 `numeric(65,30)`，如 `0.0000003` = $0.30/M），**成本 = Σ(该 usage_type 的 token 数 × 单价)**；**无倍率换算、无货币符号**。模型名匹配是**对上报名原样跑 SQL 正则**（`model ~ match_pattern`，`findModelInPostgres`）——**不剥前缀**：`openai/gpt-4o` 能命中只因默认正则写了 `(openai/)?`。
+- **默认表不含 DeepSeek**（自托管 v4 的 177 条默认模型里零 deepseek 条目）⇒ 起初 `total_cost=0` 是**没匹配上**，不是算错。
+- **峰谷两档只能取一档（实测逼出来的结论）**：DeepSeek 官方分高峰与空闲时段，**谷时 = 峰时的精确一半**（高峰 = 北京时间周一至周五 9:00–12:00、14:00–18:00，不含法定节假日；其余含周末/节假日全天为谷时）。而 Langfuse 的分层条件**只能吃「用量阈值」与「静态属性相等」**（读 `pricing-tiers/matcher.js`：`usageDetailPattern` 或 `model_parameters`/`metadata` 的固定值），**没有时间维度**；时段又是**服务端按请求时刻自动判**的 ⇒ 两档在 Langfuse 里结构上无法并存。**取谷时**：本项目实测 **375 次调用 100% 落在谷时**（使用集中在北京时间夜间与周末，定时 ETL 也在 21:40 之后），且与本项目形态一致。**两档之间是精确 ×2**，改档只需改脚本一处常量重跑。
+- **价目来源与汇率误差（认下来）**：取**官方价目页（2026-09-10 调价后）的每百万 token 人民币**，按 `1/6.67` 折成 Langfuse 要的每 token 美元——**误差来自这一步换算**；好在这不是我们拍的汇率：官方英文站给的 `$` 价与它折出来的数逐项吻合（$0.15/M ↔ 1 元/M），是同源近似。⚠ **别用 LiteLLM 的 `model_prices_and_context_window` 表**：它仍停在调价前的旧价（flash in $0.30/M out $1.20/M、pro in $1.32/M out $3.96/M，比现价高 2 倍）。
+- **已补两条自定义模型**（经公开 API `POST /api/public/models`，项目 key 即可写）：`(?i)^deepseek/deepseek-flash$`（谷时 in **$0.1499/M**、out **$0.5997/M**、cache_read **$0.003/M**）与 `(?i)^deepseek/deepseek-v4-pro$`（谷时 in **$0.6747/M**、out **$2.024/M**、cache_read **$0.0225/M**）。
+- ⚠ **`input_cache_read` 一档公开 API 不收**（`prices[]` 里给了也被静默丢弃）⇒ 补了一行库数据（`INSERT INTO prices …`，与 UI 写的是同一张表）。另：**公开 API 没有按 id 的部分更新**（PATCH 实测 405）⇒ 改价 = 按 matchPattern 找到 → 删 → 重建。
+- **可重放**：`scripts/seed_langfuse_prices.py`（幂等；`--check` 只读核对）——**不落成脚本的话，那两条模型就只是某台机器上的手工状态**（重装 Langfuse 即丢）。改价/换峰谷档/加模型都改它。
+- **实测核对**（谷时档）：`input=9 × $0.149925e-6/M-token + output=1 × $0.5997e-6 = $1.949e-6` ✓（分毫吻合）；缓存命中一档亦验过（`input=170 全价 + input_cache_read=384 折价`）。
 
 ### 7.7 实验可复现
 
@@ -567,7 +584,12 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 2. **ruff**：`uv run ruff check .` 退出码 0；`archive.py` 的 F821 已修；模板排除与 B008 忽略各有注释写明依据。
 3. **覆盖率**：`fail_under` 有实测基线支撑（CI **89.36%** / 本机 90.22%，按前者定标 ⇒ 门槛 **88**），读数与分层写进 §7.3——**已达成**；**CI 首跑后已按实际读数重新定标**（v2.19），两端差异的性质与排查手段见 §7.3。
 4. **审计**：两个 job 在 CI 里真跑；例外清单每条带理由。
-5. **Langfuse**：跑一次真实请求，在 UI 上**逐字段核对** `user_id` / `session_id` / `trace_name` / `tags` / 模型版本 / token 成本 / 延迟七项；**深研与报告路径各有 trace**。
+5. **Langfuse**：跑一次真实请求，**逐字段核对** `user_id` / `session_id` / `trace_name` / `tags` / 模型版本 / token 成本 / 延迟七项；**深研与报告路径各有 trace**——**已达成（E7c，2026-10-15，本机自托管 Langfuse v4）**：
+   - 四条路径都真跑过（chat / deep-research / report / settle），trace 落在 `events_core`（v4 events-only 的存储面），四字段读数：chat `trace_name=chat / user=1647 / session=线程 id / tags=['chat']`；深路径 `deep-research / 1647 / run_id / ['research','deep']`；报告与结算 `report`/`settle`、session=账户 id。
+   - **深路径与报告路径此前零 trace**，现在各有：深路径一条 trace 下 26 个 span、10 次 generation；报告/结算的链名（`settle` / `report`）在树里可辨。
+   - SDK 自动项核对：generation 上 `provided_model_name=deepseek/deepseek-flash`、`model_parameters={"temperature":0}`、token 用量（含 `output_reasoning` 与 `input_cache_read` 明细）、延迟（1.25–8.26s）全部在。
+   - **成本（同日补齐，见 §7.6 尾「定价表」）**：默认表不含 DeepSeek 系列 ⇒ 起初 `total_cost=0` 是「没匹配上」；补两条自定义模型（官方价目、谷时档、汇率换算的误差有据）后**逐项对得上**——如 `input=9 × $0.149925e-6/token + output=1 × $0.5997e-6 = $1.949e-6`；缓存命中一档也验过。
+   - ⚠ **验收用的读数走 ClickHouse `events_core` 只读查询**（本机 `docker exec`），而不是 UI 里逐条点击——v4 events-only 模式下 `traces`/`observations` 物化表为空、公开 API 也读不到 trace 列表（`/api/public/traces` 404，仅 `/api/public/v2/observations` 可用），**字段本身与 UI 同源**（UI 也读同一批事件）。
 6. **实验可复现**：同一次回测记录能给出数据快照指纹；`data_snapshot()` 的增量成本有实测数字。
 7. **回归**：后端离线 1487 + 集成 114 + 前端 466 + typecheck/lint 全绿。
 
@@ -811,12 +833,12 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 - **chat 侧（E4c）**：`tests/test_chat_guard.py` 8 例（token/成本/墙钟三个上限各自即停且**部分正文保留**、不发 `done`；未超限时行为一字不变；到限文案点名是哪个计数器；失败分类五档；**数据源熔断时角色降级写明的就是熔断**）。⚠ 造「熔断」必须用 `reliability.trip(name)`（按当前时钟开路）——`trip(0.0)` 会让 `allow()` 认为冷却早已过而放行探测，用例会真发一次网络调用。
 - **演练**：`scripts/drill_reliability.py` 四幕，产物 `logs/e4-drill/<时间戳>/`（`report.md` + `journal.log`）。
 
-### E7（E7a + E7b 已交付，E7c/E7d 待做）
+### E7（E7a–E7c 已交付，E7d 待做）
 
 - **CI 即测试载体**（§7.1、§7.5）：本节的「落点」与前几节不同——前几节登记用例**落在哪些文件**，本节登记**哪些用例被 CI 执行**。CI 跑 = 后端离线全量 + 前端 vitest/typecheck/lint/build + ruff + 覆盖率门槛 + 审计；**不跑**集成套件、真语料评测集、演练、MCP 握手（§7.8）。
 - **ruff**（§7.2）：无新用例——它是**存量清零 + 防回退**。防回退由 CI 的 `ruff check .` 承担（退出码即断言）；`line-length=120` 与模板排除是本仓储的**口径值**，改它们等于改闸门宽度，需在 SPEC 留痕。
 - **覆盖率**（§7.3，E7b）：**无新用例**——它把既有 1487 项离线用例的**读数**变成闸门（`fail_under = 88`，按 CI 基线 89.36% 定标）。门槛本身是「防回退」：新增代码即须带测试，除非在 SPEC 留下一处**记录在案的真实缺口**。排除项只有 `templates/` 一处，依据同 ruff。
-- **Langfuse**（§7.6）：新增 `tests/test_langfuse_metadata.py`（离线，断言 config 构造出的 metadata 四键齐全且取值正确——**不连 Langfuse**，那是验收期真机核对的事）。深路径与报告路径的 handler 挂载各一条用例（桩住 handler，断言被传进了调用）。
+- **Langfuse**（§7.6，E7c 已交付）：`tests/test_langfuse_metadata.py` **12 例**（离线，**不连 Langfuse**）——四键形状（三个 str、tags 是 list）/ `TraceConfig` 的两样同行与 `kwargs()` 展开 / 未挂载 handler 时降级为空 / chat 的 config 四键齐全（含无登录用户给空串）/ 深路径把 callbacks 与 metadata 送进图 config / narrative 的 trace 透传 / **裸模型调用的具名壳**（挂了 handler 且有 run_name 才套壳、离线不套）。真机逐字段核对是验收期动作（§7.9 第 5 条），不在用例里。
 - **实验可复现**（§7.7）：`data_digest` 的用例进离线（假数据目录算指纹）；**「同一份数据得同一个指纹」是核心断言**——它是「实验可复现」在测试层的唯一可验证形态。
 
 ### E8（全节已交付）
@@ -837,6 +859,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.20 | 2026-10-15 | **§7.6（E7c Langfuse 字段规范化）交付**——四条路径的四个运行期字段全部真机核对通过，深路径/报告路径补挂 handler。**设计**：键名唯一落点 `core/langfuse.py::make_langfuse_metadata()`（三个 str + tags 必须 list 是 SDK 契约）；handler 建一次跨请求复用（构造签名不吃运行期信息），字段经 config 的 `metadata` 传；新增 `TraceConfig` 把 handler 与字段**打包同行**、`settle_trace()` 统一结算口径。**接线**：chat `thread_id`/`user_id`/`chat`；深路径 `run_id`/`user_id`/`deep-research`（`astream_deep_run` 新增 `callbacks`/`metadata`）；报告 `account_id`/`user_id`/`report`；结算 `account_id`/`user_id`/`settle`（API 三处 + 定时 job，`complete`/`ask_once` 新增 `callbacks`/`metadata`/`run_name`）。**两条否证（实测）**：① `thread_id` 不会自动成 session（同 §7.6 原记）；② **`langfuse_trace_name` 只在有 chain 父时才是 trace 名**——裸模型调用当根时名字落不上、且同会话多次裸调用被并进一条 trace（首轮实测 3 次调用合成 1 条空名 trace）⇒ `complete()` 在「挂了 handler 且有 `run_name`」时套一层**具名恒等壳**（离线不套，行为不变）；对照实验：套壳后每次调用各一条、名字正确。**真机读数**（本机自托管 Langfuse v4，走 ClickHouse `events_core` 只读面，证据 `logs/e7c/langfuse-verification.md`）：深路径一条 trace **26 span / 10 次 generation**（此前零 trace），generation 上 `provided_model_name`/`model_parameters`/token（含 reasoning 与 cache 明细）/延迟 1.25–8.26s 全在。**成本同日补齐并订正**：默认表不含 DeepSeek ⇒ 起初 `total_cost=0` 是「没匹配上」；补两条自定义模型（公开 API 写入 + cache 档补 SQL）后逐项对账一致（含缓存命中折价）。**当日二轮订正**：先前价目误用 LiteLLM 的旧价（比现价高一倍），且未处理**峰谷两档**——改取官方价目页人民币价、按官方同源汇率折美元、**取谷时档**（本项目 375 次调用 100% 在谷时），理由与操作记在 §7.6 尾。**已知怪癖**：`POST /reports` 一次请求内的 settle 与 narrative 共享一条 trace（同会话独立请求不合并）——不修，如实登记。**用例 12 例**（离线）：四键形状 / TraceConfig 配对 / chat config 四键 / 深路径透传 / 综述与反思透传 / 具名壳开关。**回归**：离线 **1499 passed**（1487 + 12 新用例）、覆盖率满足 88 门槛。 |
 | v2.19 | 2026-10-15 | **E7b 门槛按 CI 定标 + 两端差异逐行查明**——首跑绿（`38751253731`）但读数 **89.36%** 而非本机的 90.22%，对着 89 只剩 0.36 点余量（约 38 条语句，会随机红）⇒ **门槛降到 88**（CI 余量约 145 条语句）。为查差异把 CI 报告改为 `--cov-report=term-missing:skip-covered`（日志直接给未满文件与缺行号，**长期保留**）。**逐行比对结论（两跑一致，非噪声）**：两端用例数相同（1487）、语句数相同（10695），差异是**两个方向**的——**CI 独缺 221 行**（`deep/roles/*` 四角色取数主体 / `core/db.py` 的 `init_schema` / `main.py` lifespan「库可用」分支……全是**依赖本机真实资源**的路径）、**本机独缺 17 行**（连库失败的 except、`langfuse.py` 未配置的关闭分支——**裸环境的路径**）。⇒ **不是 macOS vs Linux 的平台差异，是「本机服务齐备 vs CI 干净」的环境分叉**：同一份用例在两端各验了半边。这是 §7.10「离线隐含依赖真实环境」的**残余**（当时修完 15 条，这几处漏网），**如实登记为已知债**（§7.8），修复（相关用例显式喂合成数据/假服务）是独立一块、未排期。**门槛按 CI 定标不受影响**——CI 是干净那端，读数更接近真实部署形态。ROADMAP / README 同步。 |
 | v2.18 | 2026-10-15 | **§7.3（E7b 覆盖率门槛）落地**——`pytest-cov==7.0.0` 进 dev 组（精确 pin，同 ruff 理由：新版本可能改统计口径＝悄悄挪闸门）。**分两层实测基线**（本机，2026-10-15）：整体 **10695 语句 / 缺 1046 / 90.22%**；其中**两个子进程 worker**（`strategy/worker.py`、`report/pdf_worker.py`）**139 语句全缺**——coverage 默认不追子进程，**结构性 0%，照实纳入分母**（排除它俩才是粉饰）；其余 `app/` **91.41%**。**唯一排除项 `app/strategy/templates/`**（`[tool.coverage.run] omit`，244 语句）——与 ruff 的 `exclude` 同一条理由（沙箱注入式源码文本，主进程从不 import）。**门槛取 89**：基线取整下浮、余量约 130 条语句（够一次重构，但拦得住「整模块无测试」；**不取 90**：贴着基线设会天天响）。CI 命令 `uv run pytest -q --cov=app --cov-fail-under=89`，**本机已按原样验证通过**（`Required test coverage of 89% reached. Total coverage: 90.22%`，1487 passed，exit 0）。**平台前提已核**：本机与 CI(Linux) 可比——离线 1487 项两端无 skip、`app/` 仅一处 `sys.platform` 分支且在被排除的子进程 worker 里；**CI 首跑核对读数，差 >1 点再调**。**默认不加进 `addopts`**（本地日常不付插桩代价）。**PRD v0.11 两处口径订正同步落地**：①评测集 NDCG@10 读数不进 CI（真索引 + 2.3GB 模型 + 2.6GB `data/`，runner 结构不可达）——进 CI 的是指标公式与离线管线用例；②随机种子删除（引擎纯确定性），「实验可复现 = 配置 + 数据快照版本」。**§7.9 验收口径 3 与 §10 覆盖率条同步改写；ROADMAP / README 已同步。** |
 | v2.0 | 2026-10-13 | 规划评估拍板（底稿 docs/private/Pn-n/P3-En/P3-En-规划评估.md）：四处裁剪（E1 定向接缝 / E4 L0+L4 进程内 / E7 eval gate 只跑确定性断言 / E8 清单库直用化）+ E6 砍；PRD v0.10 / CLAUDE.md / ROADMAP 同步。正文待按功能 ID 滚动填写 |

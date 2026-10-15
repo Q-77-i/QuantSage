@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -155,13 +155,23 @@ async def astream_deep_run(
     brief: Brief,
     resume: Mapping[str, Any] | None = None,
     max_rounds: int | None = None,
+    callbacks: Sequence[Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> AsyncIterator[Frame]:
     """跑（或恢复）一次深路径，逐帧产出过程事件。**不碰数据库**——落库由调用方做。
 
     帧集合：`node_start` / `node_end` / `interrupt` / `report` / `error` / `done`。
+
+    `callbacks` / `metadata` 是 **E7c 的观测入口**：深路径此前完全没挂 Langfuse handler
+    （PRD 的「可回溯任意一次历史请求」对它不成立）。handler 与四个运行期字段由调用方
+    （API 层）构造——本模块只是把它送进图 config，图内每次模型调用随之被追踪。
     """
     graph = build_deep_graph(ctx=ctx, checkpointer=checkpointer, max_rounds=max_rounds)
-    config = {"configurable": {"thread_id": run_id}}
+    config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
+    if metadata:
+        config["metadata"] = dict(metadata)
+    if callbacks:
+        config["callbacks"] = list(callbacks)
     trace = RunTrace()
     payload: Any = Command(resume=dict(resume)) if resume is not None else {
         "run_id": run_id,

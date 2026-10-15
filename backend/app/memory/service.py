@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from app.backtest.benchmark import market_benchmark
+from app.core.langfuse import TraceConfig
 from app.data import duckdb_client as dc
 from app.memory.decision_store import DecisionMemory, is_current
 from app.memory.reflection import build_reflection
@@ -88,8 +89,13 @@ async def settle_account(
     chat: Any = None,
     data_dir: Any = None,
     now: str | None = None,
+    trace: TraceConfig | None = None,
 ) -> tuple[dict[str, Any], SettlementRun]:
-    """结算一个账户并把复盘载荷交回去（幂等；只对**新到期**的回合调模型）。"""
+    """结算一个账户并把复盘载荷交回去（幂等；只对**新到期**的回合调模型）。
+
+    `trace`：E7c 的观测配置（handler + 四个字段），透传给反思那次 LLM 调用
+    ——结算路径此前完全没被追踪。
+    """
     row = await db.get_paper_account(user_id, account_id)
     if row is None:
         raise LookupError("模拟盘会话不存在")
@@ -130,7 +136,9 @@ async def settle_account(
             reused += 1
         else:
             reflection = (
-                await build_reflection(settled.to_payload(), chat=chat) if settled.settled else None
+                await build_reflection(settled.to_payload(), chat=chat, trace=trace)
+                if settled.settled
+                else None
             )
             record = await memory.save(
                 user_id=user_id,

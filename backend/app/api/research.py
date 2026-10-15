@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from typing import Any, Literal
 
@@ -45,6 +45,7 @@ from app.api.limits import limit
 from app.api.sse import sse_frame, sse_response
 from app.core.auth import require_db, require_user
 from app.core.config import get_settings
+from app.core.langfuse import TRACE_NAME_DEEP, langfuse_callbacks, make_langfuse_metadata
 from app.report.deep import REPORT_KIND
 from app.report.snapshot import report_hash
 
@@ -131,6 +132,7 @@ async def _drive(
     brief: Brief,
     resume: dict[str, Any] | None,
     budget_payload: dict[str, Any] | None = None,
+    callbacks: Sequence[Any] | None = None,
 ) -> AsyncIterator[Frame]:
     """真正干活的那条流：跑图 → 逐帧产出 → 结束前**落库**（报告 + 运行状态）。"""
     ctx = build_context(brief=brief, budget_payload=budget_payload)
@@ -146,6 +148,15 @@ async def _drive(
         brief=brief,
         resume=resume,
         max_rounds=min(get_settings().research_debate_rounds, MAX_ROUNDS_HARD),
+        callbacks=callbacks,
+        # 四个运行期字段在这里构造（E7c）：会话 = 本次运行（run_id），业务名固定
+        # `deep-research`——**不沿用节点名**（节点名是 langgraph 的，业务上不可读）。
+        metadata=make_langfuse_metadata(
+            session_id=run_id,
+            user_id=user_id,
+            trace_name=TRACE_NAME_DEEP,
+            tags=("deep", "research"),
+        ),
     ):
         if name == "report":
             report = payload["report"]
@@ -269,6 +280,7 @@ async def create_run(
     producer = _drive(
         db=db, checkpointer=checkpointer, user_id=user_id, run_id=run_id,
         question=body.question, brief=brief, resume=None,
+        callbacks=langfuse_callbacks(request.app.state),
     )
     task = asyncio.create_task(_pump(queue, producer))
     _DETACHED.add(task)
@@ -308,6 +320,7 @@ async def resume_run(
         question=row["question"], brief=brief,
         resume={"choice": body.choice, "note": body.note},
         budget_payload=row.get("budget") or None,
+        callbacks=langfuse_callbacks(request.app.state),
     )
     task = asyncio.create_task(_pump(queue, producer))
     _DETACHED.add(task)

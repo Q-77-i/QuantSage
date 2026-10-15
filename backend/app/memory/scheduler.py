@@ -21,6 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[impo
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 
 from app.core.config import get_settings
+from app.core.langfuse import settle_trace
 
 TZ = "Asia/Shanghai"
 
@@ -48,8 +49,13 @@ async def settle_all_accounts(state: Any) -> dict[str, int]:
     totals = {"accounts": 0, "saved": 0, "reused": 0, "failed": 0}
     for account in accounts:
         try:
+            # E7c：定时结算与手动结算**同一口径**的观测配置（handler 批次内复用，
+            # 只有 session/user 逐账户换）——调度器此前完全没被追踪
             _review, run = await settle_account(
-                db, memory, user_id=int(account["user_id"]), account_id=str(account["id"])
+                db, memory, user_id=int(account["user_id"]), account_id=str(account["id"]),
+                trace=settle_trace(
+                    state, account_id=account["id"], user_id=int(account["user_id"])
+                ),
             )
         except Exception as exc:  # noqa: BLE001 —— 一个账户炸了不该拖垮整轮
             totals["failed"] += 1

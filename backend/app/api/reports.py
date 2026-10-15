@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.backtest.benchmark import market_benchmark
 from app.core.auth import require_db, require_user
+from app.core.langfuse import TRACE_NAME_REPORT, settle_trace, trace_config
 from app.data import duckdb_client as dc
 from app.memory.decision_store import DecisionMemory, MemoryUnavailable, memory_for
 from app.memory.scheduler import next_run_time
@@ -213,6 +214,10 @@ async def create_report(
     account_id = str(payload.account_id)
     row, config, decisions, equity = await _load_account(db, user["id"], account_id)
 
+    # E7c 观测：报告生成路径此前完全没被追踪。两个业务名分开（`report` 综述 / `settle` 反思），
+    # 会话维度都取账户——同一账户的多次生成/结算在 Langfuse 里串成一条线
+    trace = trace_config(request.app.state)
+
     review: dict[str, Any] | None = None
     try:
         memory = await memory_for(request.app.state)
@@ -220,7 +225,8 @@ async def create_report(
         memory = None  # 记忆不可用：报告照常出，只是没有逐笔复盘块
     if memory is not None:
         review, _run = await settle_account(
-            db, memory, user_id=user["id"], account_id=account_id
+            db, memory, user_id=user["id"], account_id=account_id,
+            trace=settle_trace(request.app.state, account_id=account_id, user_id=user["id"]),
         )
 
     snapshot = await asyncio.to_thread(_snapshot_for, row, config, decisions)
@@ -237,7 +243,16 @@ async def create_report(
         row=row, config=config, decisions=decisions, equity=equity, snapshot=snapshot,
         review=review,
     )
-    body = assemble_report(facts, await build_narrative(_narrative_brief(facts)))
+    body = assemble_report(
+        facts,
+        await build_narrative(
+            _narrative_brief(facts),
+            trace=trace.with_metadata(
+                session_id=account_id, user_id=user["id"],
+                trace_name=TRACE_NAME_REPORT, tags=("report",),
+            ),
+        ),
+    )
     try:
         validate_claims(body)
     except ClaimError as exc:  # 闸门不过：拒收，不落库（自证不过的报告不该存在）
@@ -437,7 +452,8 @@ async def account_review(
     """
     try:
         review, _run = await settle_account(
-            db, memory, user_id=user["id"], account_id=str(account_id)
+            db, memory, user_id=user["id"], account_id=str(account_id),
+            trace=settle_trace(request.app.state, account_id=account_id, user_id=user["id"]),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="模拟盘会话不存在") from exc
@@ -455,7 +471,8 @@ async def settle_now(
     """手动触发结算（幂等；与定时 job 走**同一个函数**）。返回本次读数与下次定时时刻。"""
     try:
         _review, run = await settle_account(
-            db, memory, user_id=user["id"], account_id=str(account_id)
+            db, memory, user_id=user["id"], account_id=str(account_id),
+            trace=settle_trace(request.app.state, account_id=account_id, user_id=user["id"]),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="模拟盘会话不存在") from exc

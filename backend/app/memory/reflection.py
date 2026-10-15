@@ -14,6 +14,7 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 
 from app.core import llm
+from app.core.langfuse import TraceConfig
 from app.core.llm import DEFAULT_MODEL, LLMNotConfigured
 
 #: prompt 版本：改一个字就升一版（记忆里以它为身份，配合模型名判断「同一段反思」）
@@ -83,10 +84,17 @@ async def build_reflection(
     chat: BaseChatModel | None = None,
     model: str = DEFAULT_MODEL,
     timeout: float = 20.0,
+    trace: TraceConfig | None = None,
 ) -> Reflection:
-    """生成一句话教训；任何失败都降级为「缺席 + 原因」，不向上抛。"""
+    """生成一句话教训；任何失败都降级为「缺席 + 原因」，不向上抛。`trace` 是 E7c 的观测配置。"""
     try:
-        text = await llm.ask_once(reflection_prompt(facts), model=model, timeout=timeout, chat=chat)
+        text = await llm.ask_once(
+            reflection_prompt(facts),
+            model=model,
+            timeout=timeout,
+            chat=chat,
+            **(trace or TraceConfig()).kwargs(),
+        )
     except LLMNotConfigured as exc:
         return Reflection(None, model, note=f"模型未配置：{exc}")
     except TimeoutError:

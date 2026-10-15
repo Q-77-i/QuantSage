@@ -33,6 +33,7 @@ from app.api.limits import limit
 from app.api.sse import sse_frame
 from app.core import reliability
 from app.core.auth import require_db, require_user
+from app.core.langfuse import langfuse_callbacks
 
 log = logging.getLogger(__name__)
 
@@ -151,8 +152,7 @@ async def chat(
     else:
         await db.claim_thread(thread_id, int(user["id"]))
 
-    handler = getattr(request.app.state, "langfuse_handler", None)
-    callbacks = [handler] if handler is not None else None
+    callbacks = langfuse_callbacks(request.app.state)
 
     async def stream() -> AsyncIterator[str]:
         yield ": ok\n\n"  # 先送一帧，让响应头尽快落地
@@ -165,7 +165,11 @@ async def chat(
             async with _run_lock(thread_id):
                 try:
                     async for item in astream_chat(
-                        agent, message=body.message, thread_id=thread_id, callbacks=callbacks
+                        agent,
+                        message=body.message,
+                        thread_id=thread_id,
+                        user_id=int(user["id"]),
+                        callbacks=callbacks,
                     ):
                         queue.put_nowait(("event", item))
                 except asyncio.CancelledError:
