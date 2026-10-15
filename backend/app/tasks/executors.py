@@ -26,6 +26,7 @@ from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig
 from app.backtest.report import build_report
 from app.backtest.types import Mode
+from app.report.snapshot import window_digest
 from app.strategy import USER_STRATEGY, code_sha256
 from app.strategy.sandbox import run_user_strategy
 from app.tasks.stream import done_payload
@@ -98,11 +99,19 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
     两条分支与 `api/backtest.py` 的同步时代逐字同源（内置 `build_report` / 用户策略沙箱），
     差别只在于材料来自任务行而不是请求体。**失败不落记录**（与今天异常路径不留半条同语义），
     由 worker 标 `failed`。
+
+    **E7d 数据指纹**：执行前按窗口算一次（窗口子集，实测 0.05s），两条分支**统一注入**
+    报告的 `meta.data_digest` 并落库——用户策略的报告由沙箱产出，此处补同一键，两条路径同形。
     """
     request = task["request"]
     config = _config_of(request)
     run_id = str(uuid.uuid4())
     user_strategy = request["strategy"] == USER_STRATEGY
+
+    # 数据指纹：**执行时才算**（量的是实际读到的数据，不是提交时的预测）
+    digest = await asyncio.to_thread(
+        window_digest, config.data_dir, start=config.start, end=config.end, adjust=config.adjust
+    )
 
     if user_strategy:
         outcome = await run_user_strategy(
@@ -115,8 +124,9 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
         report = outcome.report
     else:
         report = await asyncio.to_thread(
-            build_report, config, compare_pit=bool(request.get("compare_pit"))
+            build_report, config, compare_pit=bool(request.get("compare_pit")), data_digest=digest
         )
+    report.setdefault("meta", {})["data_digest"] = digest
 
     await db.save_backtest_run(
         run_id,
@@ -125,6 +135,7 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
         report,
         strategy_id=request.get("strategy_id") if user_strategy else None,
         code_sha256=code_sha256(request["source"]) if user_strategy else None,
+        data_digest=digest,
     )
     return {"run_id": run_id}
 
@@ -193,6 +204,18 @@ async def _execute_cells(
     if ctx.stop.is_set():
         # 协作式中止：**不落库**，任务由 worker 标 cancelled
         return dict(CANCELLED)
+
+    # E7d：网格/批量按**整批**取一次数据指纹（SPEC §7.7 的粒度要求）——窗口取批次共享窗，
+    # 各格窗口理论一致；没有共享窗（全失败）就不给指纹，如实留空
+    shared = summary.get("window")
+    if shared:
+        summary["data_digest"] = await asyncio.to_thread(
+            window_digest,
+            options.data_dir,
+            start=date.fromisoformat(shared["start"]),
+            end=date.fromisoformat(shared["end"]),
+            adjust=options.adjust,
+        )
 
     run_id = str(uuid.uuid4())
     await db.save_optimization_run(

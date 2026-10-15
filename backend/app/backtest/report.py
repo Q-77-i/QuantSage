@@ -270,12 +270,17 @@ def build_report(
     strategy_factory: StrategyFactory | None = None,
     strategy_name: str | None = None,
     uses_events: bool | None = None,
+    data_digest: str | None = None,
 ) -> dict[str, Any]:
     """跑回测并返回 SPEC §5 的报告结构（可直接 `json.dumps`）。
 
     `strategy_factory` / `strategy_name` 是用户策略（M4）的入口，报告结构与内置策略**完全同构**，
     只多两个标识键（`strategy_kind` / `strategy_name`）——前端不需要第二条渲染路径。
     工厂每遍调用一次（PIT 对比要跑两遍）。
+
+    `data_digest`（E7d）：本次读到的**数据指纹**（`report/snapshot.py::window_digest`）。
+    由执行体算好传进来（每次运行只算一次），进 `meta` 随报告冻结——「实验可复现」在
+    数据维度的自证。缺省 None 时不写该键（离线用例与不带数据目录的调用照旧）。
     """
     result = run_backtest(config, strategy=strategy_factory() if strategy_factory else None)
     metrics = compute_metrics(result.equity_curve, result.trades, config.initial_cash)
@@ -310,6 +315,9 @@ def build_report(
             # 语料覆盖区间 + 窗口内事件数：让存下来的报告自证「这次看的是哪一段事件语料」
             "event_coverage": dc.event_coverage(config.data_dir),
             "events_in_window": _events_in_window(config, strategy_uses_events),
+            # E7d：数据指纹（窗口内分片的 sha256 汇总）——与配置一起构成「实验可复现」的两半；
+            # 由调用方算好传入，这里只落键（报告冻结后它就是这份数据身份的一部分）
+            **({"data_digest": data_digest} if data_digest else {}),
             # A 股规则本次实际生效到哪一步（M5a）：`limit_check=skipped` 时报告要自证
             # 「这次没做涨跌停判定」以及为什么，而不是让读者以为做了
             "a_share_rules": result.a_share_rules.to_dict(),

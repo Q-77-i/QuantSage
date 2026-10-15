@@ -1,7 +1,7 @@
 "use client";
 
 import { symbolName, strategyLabel } from "@/lib/backtest-form";
-import { amount, count, num, pct } from "@/lib/format";
+import { amount, count, num, pct, shortHash } from "@/lib/format";
 import type { BacktestReport, Metrics } from "@/lib/types";
 
 /**
@@ -64,6 +64,16 @@ export function MetricsSummary({
         )}
         <Sep />
         <span>{meta.costs}</span>
+        {/* 数据指纹（E7d）：与请求配置一起构成「实验可复现」的两半。
+            旧记录没有这一项（不显示，也不编值）；悬停给全值——12 位是为了放进这一行 */}
+        {meta.data_digest && (
+          <>
+            <Sep />
+            <span title={meta.data_digest}>
+              数据指纹 <span className="num">{shortHash(meta.data_digest)}</span>
+            </span>
+          </>
+        )}
         {Object.entries(meta.params).length > 0 && (
           <>
             <Sep />

@@ -224,6 +224,11 @@ export interface BacktestMeta {
   benchmark?: BenchmarkInfo;
   /** A 股规则生效情况（M5a）。同上，旧记录缺失 */
   a_share_rules?: AShareRuleStatus;
+  /**
+   * 数据指纹（E7d）：本次运行读到的**窗口内分片**的 sha256 汇总。
+   * 与请求配置一起构成「实验可复现」的两半；**旧记录没有这一项**，按缺失显示「—」。
+   */
+  data_digest?: string;
 }
 
 /** 被拒 / 未能成交的信号（M5a）。`code` 为 null 的是非 A 股规则原因（已持仓等） */
@@ -332,6 +337,8 @@ export interface BacktestRunSummary {
   metrics: Metrics;
   /** 用户策略的名字（M4c）；内置策略为 null */
   strategy_name: string | null;
+  /** 数据指纹（E7d）；旧记录为 null */
+  data_digest: string | null;
 }
 
 export interface BacktestRunDetail {
@@ -343,6 +350,8 @@ export interface BacktestRunDetail {
   strategy_id: string | null;
   /** 当次运行的源码 sha256（内置策略为 null） */
   code_sha256: string | null;
+  /** 当次运行的数据指纹（E7d）；旧记录为 null */
+  data_digest: string | null;
 }
 
 // ── 自选股（M1c）───────────────────────────────────────────────────────────

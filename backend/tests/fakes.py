@@ -308,6 +308,7 @@ class FakeDatabase:
         *,
         strategy_id: str | None = None,
         code_sha256: str | None = None,
+        data_digest: str | None = None,
     ) -> None:
         self.runs[run_id] = {
             "id": run_id,
@@ -317,6 +318,7 @@ class FakeDatabase:
             "report": report,
             "strategy_id": strategy_id,
             "code_sha256": code_sha256,
+            "data_digest": data_digest,
         }
         self._run_order.append(run_id)
 
@@ -340,6 +342,8 @@ class FakeDatabase:
                     "metrics": row["report"]["metrics"],
                     # 与真库的 `report->'meta'->>'strategy_name'` 同义（内置策略为 None）
                     "strategy_name": row["report"]["meta"].get("strategy_name"),
+                    # E7d 数据指纹（真库是平铺列；旧记录为 None）
+                    "data_digest": row.get("data_digest"),
                 }
             )
             if len(summaries) == limit:
@@ -357,6 +361,7 @@ class FakeDatabase:
             "report": row["report"],
             "strategy_id": row["strategy_id"],
             "code_sha256": row["code_sha256"],
+            "data_digest": row.get("data_digest"),
         }
 
     # ── 批量 / 网格汇总（M5b）────────────────────────────────

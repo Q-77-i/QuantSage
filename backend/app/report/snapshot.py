@@ -84,7 +84,7 @@ def _digest_of(shard_list: Sequence[Mapping[str, str]]) -> str:
 
 
 def data_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
-    """行情与语料的分片指纹 + 覆盖区间。形状见 SPEC §8「持久化与快照」。"""
+    """行情与语料的分片指纹 + 覆盖区间（**全量口径**，研报/深研用）。形状见 SPEC §8。"""
     base = dc.resolve_data_dir(data_dir)
     bars = digests((base / "bars").glob("*.parquet"))
     events = digests((base / "events").glob("*.parquet"))
@@ -102,6 +102,74 @@ def data_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
         "corpus": {"start": coverage["start"], "end": coverage["end"]},
         "market_end": latest["latest_trade_date"],
     }
+
+
+# ── 窗口口径（E7d）：回测/网格的「数据快照版本」 ─────────────────────────────
+#
+# 为什么不复用全量 `data_snapshot()`：它要逐片 sha256 全部 931MB + 84MB（本机实测
+# 0.82s 热缓存 / 2.3s 冷读），而一次回测本身只要 2–3s、单格 `build_report` 0.25s；
+# **窗口子集只要 0.05s**（差 17 倍，实测见 SPEC §7.7）。
+#
+# 口径（**只取该次运行真的会读到的分片**）：
+#   * bars 分片名 `cn-daily_CN_{adjust}_{year}.parquet` ⇒ 区间覆盖到的年份 × **本次复权口径**；
+#   * events 分片名 `cn-events_{YYYY-MM-DD}.parquet` ⇒ 落在 [start, end] 内的日子。
+#     events 只取窗口内是**保守正确**的：PIT 只会排除事件、不会引入窗口外的
+#     （`available_at ≥ event_time`），所以窗口外分片不可能影响这次运行的结论。
+# 于是一条运行记录自证「我读的是哪一份数据」——与其结论一一对应，且比全量口径**更贴题**。
+
+
+def _bars_in_window(base: Path, start: date, end: date, adjust: str) -> list[Path]:
+    """区间覆盖到的 bars 分片（按年 × 复权口径）。"""
+    from app.data.bars import BARS_NAME
+
+    years = range(start.year, end.year + 1)
+    names = {BARS_NAME.format(adjust=adjust, year=year) for year in years}
+    return [p for p in (base / "bars").glob("*.parquet") if p.name in names]
+
+
+def _events_in_window(base: Path, start: date, end: date) -> list[Path]:
+    """落在 [start, end] 内的 events 分片（名字带 `YYYY-MM-DD`，选日期即可）。"""
+    picked: list[Path] = []
+    for path in (base / "events").glob("*.parquet"):
+        day = _shard_day(path.name)
+        if day is not None and start <= day <= end:
+            picked.append(path)
+    return picked
+
+
+def _shard_day(name: str) -> date | None:
+    stem = name.removeprefix("cn-events_").removesuffix(".parquet")
+    try:
+        return date.fromisoformat(stem)
+    except ValueError:
+        return None
+
+
+def window_snapshot(
+    data_dir: Path | None, *, start: date, end: date, adjust: str = "qfq"
+) -> dict[str, Any]:
+    """窗口内的数据快照：分片指纹 + 窗口（**回测/网格的 `data_digest` 原料**）。
+
+    **纯文件系统**：只读分片、不碰 DuckDB/清单——指纹的原料就该是分片本身
+    （同上「清单是记录不是测量」）。这一条同时让它对空目录/离线夹具稳定可用。
+    """
+    base = dc.resolve_data_dir(data_dir)
+    bars = digests(_bars_in_window(base, start, end, adjust))
+    events = digests(_events_in_window(base, start, end))
+    return {
+        "window": {"start": start.isoformat(), "end": end.isoformat(), "adjust": adjust},
+        "bars": {"shards": bars, "digest": _digest_of(bars)},
+        "events": {"digest": _digest_of(events), "days": len(events)},
+    }
+
+
+def window_digest(
+    data_dir: Path | None, *, start: date, end: date, adjust: str = "qfq"
+) -> str:
+    """窗口数据指纹：同数据同窗口必得同一个值（「实验可复现」在数据维度的身份）。"""
+    return hashlib.sha256(
+        canonical_json(window_snapshot(data_dir, start=start, end=end, adjust=adjust)).encode("utf-8")
+    ).hexdigest()
 
 
 def snapshot_hash(snapshot: Mapping[str, Any]) -> str:

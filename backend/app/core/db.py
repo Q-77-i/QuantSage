@@ -97,6 +97,9 @@ SCHEMA = (
     # `strategy_id` **不设外键**：策略删了记录仍在（报告 JSONB 自足，见 SPEC §5 M4c）。
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS strategy_id UUID",
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS code_sha256 TEXT",
+    # E7d：实验可复现的数据维度身份——**窗口内分片**的指纹（`app/report/snapshot.py::window_digest`）。
+    # 旧记录为 NULL（不做回填：那要重算数据、不可信），前端按缺失显示。
+    "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS data_digest TEXT",
     # M5b：批量 / 网格的**汇总**（`request` + `summary`，**不落完整报告**）。
     # `summary.cells` 只有每格的 `params → metrics` 与收益矩，没有净值曲线与逐笔——
     # 一百格 × 上千点净值曲线会把这张表撑成 MB 级 JSONB，而要看某一格的完整报告，
@@ -567,17 +570,20 @@ class Database:
         *,
         strategy_id: str | None = None,
         code_sha256: str | None = None,
+        data_digest: str | None = None,
     ) -> None:
         """落一次回测。`request` 与 `report` 都是普通 dict，必须显式包 `Jsonb`——
         psycopg 不会把 dict 自动转 jsonb，而 `list` 会被适配成数组。
 
         `strategy_id` / `code_sha256` 只对用户策略有值：前者供「我的回测」认出策略，
-        后者供前端比对「代码是否已改」（M4c 运行契约）。
+        后者供前端比对「代码是否已改」（M4c 运行契约）。`data_digest`（E7d）是这次运行
+        读到的数据指纹（窗口内分片），供「实验可复现」核对；报告 meta 里也有一份。
         """
         await self._exec(
-            "INSERT INTO backtest_runs (id, user_id, request, report, strategy_id, code_sha256) "
-            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s)",
-            (run_id, user_id, Jsonb(request), Jsonb(report), strategy_id, code_sha256),
+            "INSERT INTO backtest_runs "
+            "(id, user_id, request, report, strategy_id, code_sha256, data_digest) "
+            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s, %s)",
+            (run_id, user_id, Jsonb(request), Jsonb(report), strategy_id, code_sha256, data_digest),
         )
 
     async def list_backtest_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
@@ -594,7 +600,9 @@ class Database:
             "request->>'symbol' AS symbol, request->>'strategy' AS strategy, "
             "request->>'start' AS start, request->>'end' AS end, "
             "request->>'pit_mode' AS pit_mode, report->'metrics' AS metrics, "
-            "report->'meta'->>'strategy_name' AS strategy_name "
+            "report->'meta'->>'strategy_name' AS strategy_name, "
+            # E7d：数据指纹——列表行也显示（旧记录为 NULL，前端按缺失显示）
+            "data_digest "
             "FROM backtest_runs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
             (user_id, limit),
         )
@@ -607,8 +615,8 @@ class Database:
         得出「已非当次运行的代码」。服务端不做这个判断——事实给出去，结论由读取方下。
         """
         row = await self._one(
-            "SELECT id, created_at, request, report, strategy_id, code_sha256 FROM backtest_runs "
-            "WHERE id = %s::uuid AND user_id = %s",
+            "SELECT id, created_at, request, report, strategy_id, code_sha256, data_digest "
+            "FROM backtest_runs WHERE id = %s::uuid AND user_id = %s",
             (run_id, user_id),
         )
         if row is None:

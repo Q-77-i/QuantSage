@@ -112,6 +112,25 @@ def test_successful_task_saves_run_and_marks_done(
     assert record["request"]["pit_mode"] == "pit"
 
 
+def test_run_carries_data_digest(signed_in: FakeDatabase, data_dir: Path) -> None:
+    """E7d：执行体把**窗口数据指纹**同时落进记录列与报告 meta——两处必须同一个值。
+
+    指纹的鉴别力在 `test_snapshot_window.py` 里测（同数据同值、窗口外改动不影响）；
+    这里钉的是**接线**：执行体算了一次、两处写了一样的。
+    """
+    task_id = queue(signed_in, frozen_request())
+
+    assert drive_tasks(signed_in) == 1
+    record = signed_in.runs[signed_in.tasks[task_id]["result"]["run_id"]]
+
+    digest = record["data_digest"]
+    assert isinstance(digest, str) and len(digest) == 64
+    assert record["report"]["meta"]["data_digest"] == digest
+    # 列表摘要也带得出（「我的回测」不看完整报告）
+    summaries = asyncio.run(signed_in.list_backtest_runs(TEST_USER["id"], 10))
+    assert summaries[0]["data_digest"] == digest
+
+
 def test_tasks_run_in_fifo_order(signed_in: FakeDatabase, data_dir: Path) -> None:
     first = queue(signed_in, frozen_request(symbol=SYMBOL))
     second = queue(signed_in, frozen_request(symbol=OTHER_SYMBOL))
