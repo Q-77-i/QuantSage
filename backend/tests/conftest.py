@@ -30,6 +30,13 @@ from tests.fakes import FakeDatabase  # noqa: E402
 
 CN_TZ = "Asia/Shanghai"
 
+#: 「内存这一层不掺和」的策略配额上限。凡是用例验的是**别的**闸门（CPU / 墙钟 / 输出 /
+#: stderr）时，内存阈值就要高到不会抢先触发——**同一份负载在 Linux 上的 RSS 比 macOS 高**，
+#: 贴着实测值设（如 512）在 CI 上会改成内存先死、报出来的 `kind` 不是用例期望的那个
+#: （2026-10-15 第二跑，7 条一起红）。看门狗本身没问题，`worker.py` 已按平台折算
+#: `ru_maxrss` 的单位（macOS 字节 / Linux KB）。反过来，**要验内存闸门**的用例仍该给紧值。
+NO_MEMORY_LIMIT = 8192
+
 BARS_SCHEMA = pa.schema(
     [
         ("symbol", pa.string()),

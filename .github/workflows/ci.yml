@@ -2,7 +2,7 @@ name: CI
 
 # 触发：主干推送 + PR + 手动重跑。
 #
-# ⚠ **集成套件不在 CI 内**（110 项需要真容器 / 真密钥 / 真实 `data/`——2.6GB，不进 Git），
+# ⚠ **集成套件不在 CI 内**（114 项需要真容器 / 真实 `data/`——2.6GB，不进 Git / 真密钥），
 # 四幕可靠性演练与 MCP 握手同样不在。**「CI 绿」不等于「全部测试通过」**，这条口径写在
 # `docs/specs/P3-En.md` §7.8，别在两处各讲一遍。
 on:
@@ -24,6 +24,27 @@ env:
   # 重新装回来（约 2GB，实测首跑让后端 job 跑了 15 分钟）。同步已经在上一步做过了，
   # 这里一律不再同步。
   UV_NO_SYNC: "1"
+  # runner 默认 UTC，而本应用的展示层按**宿主时区**渲染时间（数据本身是 Asia/Shanghai）。
+  # 不设这一条，四条断言「时刻渲染成 +08:00」的用例会把同一个瞬间显示成 +00:00 而红。
+  # ⚠ 这只是让 CI 与部署环境一致；**应用本身没有把展示时区钉死**（见 SPEC §7.11 已知边界）。
+  TZ: Asia/Shanghai
+  # ── 一份**最小的假配置**（CI 没有 `.env`）────────────────────────────────
+  # 这些是**配置**不是凭据，也不产生任何真实调用——等价于开发机上那份 `.env`，
+  # 让应用走正常路径而不是降级路径。缺了它们的后果是静默降级，表现很偏：
+  #   * 缺 `JWT_SECRET` ⇒ 鉴权端点先撞 `auth.py` 的「鉴权未配置」→ **503 而不是 401**
+  #     （10 条断言未登录即 401 的用例因此全红）
+  #   * 缺 `XIAOSHI_*` ⇒ `adapter_connection()` 抛 `XiaoshiNotInstalled`（1 条读超时用例）
+  #   * 缺 `DEEPSEEK_API_KEY` ⇒ 角色降级成 `LLMNotConfigured`，盖住了用例真正要验的
+  #     「熔断」文案（1 条）
+  # `/bin/true` 只作占位：用例只检查它进了连接参数，**不会真的执行**。⚠ 但 `xiaoshi.py`
+  # 会校验它**存在且可执行**（`is_file()` + `X_OK`），所以不能随手编一个路径——
+  # `/bin/true` 在 Ubuntu 上稳（`/bin` 是 `/usr/bin` 的软链）；本机是 macOS 时对应
+  # `/usr/bin/true`，本地复现 CI 条件时要跟着换。
+  JWT_SECRET: ci-dummy-secret-not-a-real-key
+  XIAOSHI_API_KEY: ci-dummy
+  XIAOSHI_MCP_COMMAND: /bin/true
+  XIAOSHI_CLI_COMMAND: /bin/true
+  DEEPSEEK_API_KEY: ci-dummy
 
 jobs:
   backend:
@@ -38,7 +59,7 @@ jobs:
         with:
           enable-cache: true
       # torch / FlagEmbedding **不装**：离线套件实测完全不需要它们（用 import hook 屏蔽二者后
-      # 1491 项全绿；`app/` 全仓零模块级 torch 导入）。省约 2GB 与数分钟，`uv.lock` 不动。
+      # 全绿；`app/` 全仓零模块级 torch 导入）。省约 2GB 与数分钟，`uv.lock` 不动。
       - name: 装依赖
         run: uv sync --frozen --no-install-package torch --no-install-package FlagEmbedding
       - name: lint

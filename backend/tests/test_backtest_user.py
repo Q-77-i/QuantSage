@@ -32,7 +32,14 @@ from app.main import app
 from app.strategy import SandboxLimits
 from app.strategy.sandbox import default_limits as real_default_limits
 from app.strategy.templates import TEMPLATES, template_source
-from tests.conftest import drive_tasks, make_backtest_dir, submit_and_run, trading_days, ts
+from tests.conftest import (
+    NO_MEMORY_LIMIT,
+    drive_tasks,
+    make_backtest_dir,
+    submit_and_run,
+    trading_days,
+    ts,
+)
 from tests.fakes import FakeDatabase
 
 client = TestClient(app)
@@ -302,18 +309,28 @@ BAD_CODES: dict[str, tuple[str, str, object]] = {
     "返回值形态": ("def on_bar(ctx):\n    return 1\n", "submit", 422),
 }
 
+#: 运行期那两条坏法**各给一套配额**，因为「谁先触发」正是它们要验的东西：
+#: 「死循环」要在 wall/cpu 上被拦 ⇒ 内存阈值必须高到不抢先；「大内存」反过来靠内存拦。
+#: **共用一套紧配额是错的**——内存压到 200MB 时，Linux 上子进程的 RSS 基线本身就逼近它，
+#: 死循环会先死在内存在，报出来的 `kind` 不是 wall/cpu（CI 首跑就是这么红的，2026-10-15）。
+RUNTIME_LIMITS: dict[str, SandboxLimits] = {
+    "死循环": SandboxLimits(
+        wall_seconds=1.5, cpu_seconds=2, memory_mb=NO_MEMORY_LIMIT, output_bytes=64 * 1024
+    ),
+    # 墙钟给得比「死循环」宽：这条要留出真的把内存吃上去的时间
+    "大内存": SandboxLimits(
+        wall_seconds=10.0, cpu_seconds=10, memory_mb=200, output_bytes=64 * 1024
+    ),
+}
+
 
 def test_fault_matrix_keeps_service_alive(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
     """六条坏法各给明确错误，且**每条之后服务仍活着**（`/health` 200）。
 
-    配额压到「2s CPU / 1.5s 墙钟 / 200MB 内存 / 64KB 输出」，与 M4a 的矩阵同口径——
-    否则一条死循环用例就要真等 20s。
+    运行期那两条的配额见 `RUNTIME_LIMITS`——**各给一套**，不能共用。
     """
-    limits["value"] = SandboxLimits(
-        wall_seconds=1.5, cpu_seconds=2, memory_mb=200, output_bytes=64 * 1024
-    )
     seen: dict[str, object] = {}
     for name, (code, stage, expected) in BAD_CODES.items():
         created = make_strategy(code, name=f"坏法-{name}")
@@ -323,6 +340,7 @@ def test_fault_matrix_keeps_service_alive(
             assert response.json()["findings"]
             seen[name] = response.status_code
         else:  # 运行期才知道的：提交 202，失败落任务
+            limits["value"] = RUNTIME_LIMITS[name]
             task = run_user_task(created["id"])
             assert task["status"] == "failed", (name, task)
             assert task["error"]["kind"] in expected, (name, task["error"])
@@ -331,7 +349,7 @@ def test_fault_matrix_keeps_service_alive(
 
     # 紧配额下超长输出（报告本身超过 64KB）也要被拦成运行期错误
     limits["value"] = SandboxLimits(
-        wall_seconds=20, cpu_seconds=15, memory_mb=512, output_bytes=200
+        wall_seconds=20, cpu_seconds=15, memory_mb=NO_MEMORY_LIMIT, output_bytes=200
     )
     created = make_strategy(template_source("ma_cross"), name="输出超限")
     assert run_user_task(created["id"])["error"]["kind"] == "output"
@@ -348,7 +366,7 @@ def test_sandbox_termination_carries_kind(
     signed_in: FakeDatabase, data_dir: Path, limits: dict[str, SandboxLimits]
 ) -> None:
     """配额类失败带 `kind`（请求合法，是这次运行没能完成）——现在落在任务的 `error` 里。"""
-    limits["value"] = SandboxLimits(wall_seconds=1.5, cpu_seconds=600, memory_mb=512)
+    limits["value"] = SandboxLimits(wall_seconds=1.5, cpu_seconds=600, memory_mb=NO_MEMORY_LIMIT)
     created = make_strategy("def on_bar(ctx):\n    while True:\n        pass\n", name="死循环")
     task = run_user_task(created["id"])
     assert task["status"] == "failed"

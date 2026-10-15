@@ -52,9 +52,14 @@ def test_redacting_filter_masks_secret_in_log_record() -> None:
 
 
 def test_repo_root_resolution() -> None:
-    """.env 与 docker-compose.yml 都在仓库根 —— 保证配置回溯路径没写错。"""
-    assert (REPO_ROOT / ".env").is_file()
+    """`REPO_ROOT` 指向仓库根 —— 用**入库的**文件当路标，保证配置回溯路径没写错。
+
+    ⚠ **别拿 `.env` 当路标**：它被 gitignore，**任何一次干净 clone 上都不存在**
+    （不只是 CI——CI 首跑只是把这件事暴露出来了，2026-10-15）。入库文件才证明得了
+    路径回溯正确。
+    """
     assert (REPO_ROOT / "docker-compose.yml").is_file()
+    assert (REPO_ROOT / "backend" / "pyproject.toml").is_file()
 
 
 def test_strict_msgpack_is_enforced() -> None:

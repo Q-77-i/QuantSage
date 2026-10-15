@@ -23,7 +23,7 @@ from app.data import calendar as cal
 from app.main import app
 from app.strategy import SandboxLimits
 from app.strategy.templates import template_source
-from tests.conftest import make_backtest_dir, write_bars_parquet
+from tests.conftest import NO_MEMORY_LIMIT, make_backtest_dir, write_bars_parquet
 from tests.fakes import FakeDatabase
 
 client = TestClient(app)
@@ -60,7 +60,7 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[date]:
 @pytest.fixture
 def limits(monkeypatch: pytest.MonkeyPatch) -> dict[str, SandboxLimits]:
     """紧配额，不让坏代码真的等满 20s（同 M4a 口径）。"""
-    current = {"value": SandboxLimits(wall_seconds=20, cpu_seconds=10, memory_mb=512,
+    current = {"value": SandboxLimits(wall_seconds=20, cpu_seconds=10, memory_mb=NO_MEMORY_LIMIT,
                                       output_bytes=1_000_000, stderr_bytes=10_000)}
     monkeypatch.setattr("app.strategy.sandbox.default_limits", lambda: current["value"])
     return current

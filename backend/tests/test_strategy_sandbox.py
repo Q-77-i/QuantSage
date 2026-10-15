@@ -25,7 +25,7 @@ from app.strategy.sandbox import (
     config_to_payload,
     run_user_strategy_sync,
 )
-from tests.conftest import make_backtest_dir
+from tests.conftest import NO_MEMORY_LIMIT, make_backtest_dir
 
 SYMBOL = "600519"
 START = date(2026, 1, 5)
@@ -217,9 +217,8 @@ def test_escape_hatches_are_closed(data_dir: Path) -> None:
 
 # ── 配额：坏代码的代价关在子进程里 ────────────────────────────────────────
 
-
 def test_cpu_limit_kills_endless_loop(data_dir: Path) -> None:
-    limits = SandboxLimits(wall_seconds=30.0, cpu_seconds=2, memory_mb=512)
+    limits = SandboxLimits(wall_seconds=30.0, cpu_seconds=2, memory_mb=NO_MEMORY_LIMIT)
     with pytest.raises(SandboxError) as info:
         run_source("def on_bar(ctx):\n    while True:\n        pass\n", data_dir, limits=limits)
     assert info.value.kind == "cpu"
@@ -227,7 +226,7 @@ def test_cpu_limit_kills_endless_loop(data_dir: Path) -> None:
 
 def test_wall_timeout_is_the_backstop(data_dir: Path) -> None:
     """墙钟兜底：CPU 上限调高，强制走到父进程这一层（真实场景里对应卡在不吃 CPU 的等待）。"""
-    limits = SandboxLimits(wall_seconds=1.5, cpu_seconds=600, memory_mb=512)
+    limits = SandboxLimits(wall_seconds=1.5, cpu_seconds=600, memory_mb=NO_MEMORY_LIMIT)
     with pytest.raises(SandboxError) as info:
         run_source("def on_bar(ctx):\n    while True:\n        pass\n", data_dir, limits=limits)
     assert info.value.kind == "wall"
@@ -248,7 +247,7 @@ def test_memory_watchdog_kills_big_allocation(data_dir: Path) -> None:
 
 def test_stdout_overflow_is_killed(data_dir: Path) -> None:
     """stdout 是协议通道：信封只有一行、远小于上限，超限即杀（正常报告 0.2MB 左右）。"""
-    limits = SandboxLimits(wall_seconds=30.0, cpu_seconds=30, memory_mb=512, output_bytes=200)
+    limits = SandboxLimits(wall_seconds=30.0, cpu_seconds=30, memory_mb=NO_MEMORY_LIMIT, output_bytes=200)
     with pytest.raises(SandboxError) as info:
         run_source(MA_USER_SOURCE, data_dir, limits=limits)
     assert info.value.kind == "output"
@@ -261,7 +260,7 @@ def test_noisy_print_is_truncated_and_run_survives(data_dir: Path) -> None:
         "    print('调试信息' * 20)\n"
         "    return []\n"
     )
-    limits = SandboxLimits(wall_seconds=30.0, cpu_seconds=30, memory_mb=512, stderr_bytes=1024)
+    limits = SandboxLimits(wall_seconds=30.0, cpu_seconds=30, memory_mb=NO_MEMORY_LIMIT, stderr_bytes=1024)
     outcome = run_source(source, data_dir, limits=limits)
     assert outcome.report["meta"]["bars"] == BARS  # 报告完好
     assert 0 < len(outcome.stderr_tail.encode()) <= 1024
