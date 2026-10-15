@@ -173,6 +173,47 @@ def test_me_with_token_of_deleted_user_is_401(client: TestClient, db: Any) -> No
     assert client.get("/api/v1/auth/me").status_code == 401
 
 
+def test_logout_revokes_the_old_token(client: TestClient, db: Any) -> None:
+    """E8a：登出对**服务端**生效——旧票作废，而不只是把 cookie 从浏览器抹掉。
+
+    照真实场景还原：票在登出前被复制走（另一台设备 / 被窃），登出后再拿它来用。
+    上面那条 `test_me_after_logout_is_401` 只证明「本地 cookie 被清了」，证明不了撤销。
+    """
+    client.post("/api/v1/auth/register", json=CREDENTIALS)
+    stolen = client.cookies.get(COOKIE_NAME)
+    assert stolen is not None
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+    client.post("/api/v1/auth/logout")
+    client.cookies.set(COOKIE_NAME, stolen)
+
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert db.users[1]["token_version"] == 1
+
+
+def test_login_after_logout_issues_a_usable_token(client: TestClient) -> None:
+    """登出后再登录拿到的票必须能用：签发按**库里的**版本。
+
+    写死 0 的实现会在这里红——它签出一张版本对不上的票，用户刚登录就被判失效
+    （这条是实施时最容易踩的坑，单独钉住）。
+    """
+    client.post("/api/v1/auth/register", json=CREDENTIALS)
+    client.post("/api/v1/auth/logout")
+
+    assert client.post("/api/v1/auth/login", json=CREDENTIALS).status_code == 200
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_logout_survives_a_dead_database() -> None:
+    """库不可用不拦登出——「登出因为库挂了而失败」最没道理。这一次退化成旧语义：仅清 cookie。"""
+    app.state.db = None
+
+    response = TestClient(app).post("/api/v1/auth/logout")
+
+    assert response.status_code == 200
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
 def test_auth_endpoints_are_503_without_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     """JWT_SECRET 缺失时不静默降级为无鉴权，而是显式 503。"""
     monkeypatch.setenv("JWT_SECRET", "")

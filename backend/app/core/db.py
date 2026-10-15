@@ -38,9 +38,13 @@ SCHEMA = (
         id            BIGSERIAL PRIMARY KEY,
         email         TEXT        NOT NULL UNIQUE,
         password_hash TEXT        NOT NULL,
-        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        token_version INT         NOT NULL DEFAULT 0
     )
     """,
+    # E8a：老库补列（`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做，同 M4c 的约定）。
+    # 语义：token 里的 `ver` 与它不等即视为已撤销——登出/改密把它加一。
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 0",
     """
     CREATE TABLE IF NOT EXISTS chat_threads (
         thread_id      UUID PRIMARY KEY,
@@ -328,12 +332,26 @@ class Database:
         return row
 
     async def find_user_by_email(self, email: str) -> dict[str, Any] | None:
+        # `token_version` 一并取出：登录要按它签发（否则登出后再登录会签出一张立刻失效的票）
         return await self._one(
-            "SELECT id, email, password_hash FROM users WHERE email = %s", (email,)
+            "SELECT id, email, password_hash, token_version FROM users WHERE email = %s",
+            (email,),
         )
 
     async def find_user_by_id(self, user_id: int) -> dict[str, Any] | None:
-        return await self._one("SELECT id, email FROM users WHERE id = %s", (user_id,))
+        # `token_version` 随行返回：`require_user` 用它判撤销，省一次读库（E8a）
+        return await self._one(
+            "SELECT id, email, token_version FROM users WHERE id = %s", (user_id,)
+        )
+
+    async def bump_token_version(self, user_id: int) -> None:
+        """把用户的撤销版本加一：此前签发的所有 token 立即失效（登出/改密用，E8a）。
+
+        用户不存在时是空操作——登出不该因为「会话早已无效」而报错。
+        """
+        await self._exec(
+            "UPDATE users SET token_version = token_version + 1 WHERE id = %s", (user_id,)
+        )
 
     # ── 会话归属 ────────────────────────────────────────────
 

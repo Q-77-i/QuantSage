@@ -55,6 +55,8 @@ from app.core.db import (
 )
 from app.strategy import SandboxError, StrategyCheckFailed, StrategyRejected
 from app.core.langfuse import build_langfuse_handler
+from app.core.security import SecurityHeadersMiddleware
+from app.core.session import SessionRenewalMiddleware
 from app.memory.decision_store import MemoryHolder
 from app.memory.scheduler import start_settlement_scheduler
 from app.core import llm
@@ -222,6 +224,12 @@ app.add_middleware(
     # ——这是同类坑的第三次（前两次：CORS 漏放行 PUT、缺 X-Thread-Id），新增一个要读的头就回这里加
     expose_headers=["X-Thread-Id", "X-Run-Id"],
 )
+
+# E8a 的两个纯 ASGI 中间件（为什么不用 `BaseHTTPMiddleware` 见各自模块的 docstring）。
+# `add_middleware` 的**后加者在更外层**：续期先加、安全头后加 ⇒ 安全头覆盖最广（连续期
+# 中间件自己的响应也带上），而续期只管「成功响应上换 cookie」，谁在外层都不改它的判据。
+app.add_middleware(SessionRenewalMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 for router in (
     auth_router,

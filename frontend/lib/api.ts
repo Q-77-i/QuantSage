@@ -119,6 +119,53 @@ export function describeError(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? cause.message : fallback;
 }
 
+/** 鉴权端点自己的 401 不是「会话失效」：登录页的 401 是「密码错」（见 `loginRedirectTarget`）。 */
+const AUTH_PATH_PREFIX = "/api/v1/auth/";
+
+/**
+ * 会话中途失效（401）该跳哪：返回登录页地址，或 `null` 表示「不跳，照常抛错」。
+
+ * **纯函数**：三种不该跳的情形都是踩过的坑，写宽一点点就是重定向环或吞掉错误提示，
+ * 所以判据单独拿出来由单测钉住，而不是散在 fetch 调用点里。
+ *
+ * 不跳的三种：
+ *  ① 鉴权端点自己（`/auth/login` 输错密码就是 401——跳过去等于把错误提示换成一次重定向）；
+ *  ② 已经在登录/注册页（跳自己 = 环）；
+ *  ③ 服务端渲染阶段（`window` 不存在，没得跳）。
+ *
+ * `/auth/me` 也在 ① 里：**「未登录」那条路有它自己的主人**——`AuthProvider` 探测 +
+ * `(app)/layout.tsx` 的守卫（它已经在跳 `/login?next=`）。两处都跳会互相打架，
+ * 这里只管「本来登着，中途失效了」。
+ */
+export function loginRedirectTarget(
+  status: number,
+  path: string,
+  currentPath: string,
+  hasWindow: boolean,
+): string | null {
+  if (status !== 401) return null;
+  if (!hasWindow) return null;
+  if (path.startsWith(AUTH_PATH_PREFIX)) return null;
+  if (currentPath === "/login" || currentPath === "/register") return null;
+  return `/login?next=${encodeURIComponent(currentPath)}`;
+}
+
+/**
+ * 会话失效就把人送去登录页（`next` 带回当前位置，登录后原地返回）。
+ *
+ * 只做跳转，**不吞异常**——调用点照常抛 `ApiError`，页面上的错误文案与跳转互不干扰。
+ */
+export function bounceToLogin(status: number, path: string): void {
+  if (typeof window === "undefined") return;
+  const target = loginRedirectTarget(
+    status,
+    path,
+    window.location.pathname + window.location.search,
+    true,
+  );
+  if (target) window.location.assign(target);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // credentials 必须带：会话是 httpOnly cookie，JS 读不到也放不进去，只能让浏览器带上。
   // 前后端同 site（127.0.0.1 的 3001 ↔ 8000），SameSite=Lax 不影响这条请求。
@@ -131,6 +178,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // 非 JSON（网关错误页一类）：留给兜底文案
     }
+    bounceToLogin(response.status, path);
     throw new ApiError(response.status, messageFromBody(body, response.status), body);
   }
   return (await response.json()) as T;

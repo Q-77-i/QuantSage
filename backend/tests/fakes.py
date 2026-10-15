@@ -142,7 +142,13 @@ class FakeDatabase:
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
             raise EmailTaken(email)
-        user = {"id": self._next_id, "email": email, "password_hash": password_hash}
+        # `token_version` 与真库的列默认值同源（E8a）：撤销版本从 0 起
+        user = {
+            "id": self._next_id,
+            "email": email,
+            "password_hash": password_hash,
+            "token_version": 0,
+        }
         self.users[self._next_id] = user
         self._next_id += 1
         return user
@@ -152,6 +158,11 @@ class FakeDatabase:
 
     async def find_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         return self.users.get(user_id)
+
+    async def bump_token_version(self, user_id: int) -> None:
+        user = self.users.get(user_id)
+        if user is not None:
+            user["token_version"] += 1
 
     async def claim_thread(self, thread_id: str, user_id: int) -> None:
         self.threads.setdefault(thread_id, user_id)

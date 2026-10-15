@@ -1,0 +1,78 @@
+"""会话续期中间件（E8a，SPEC §8.3）。
+
+**为什么是中间件，而不是 `require_user` 的依赖注入**：本仓 chat / research 的 SSE 端点直接
+`return StreamingResponse(...)`，而 FastAPI 在「端点直出 Response」这条路径上**不合并**注入
+`Response` 的头（`fastapi/routing.py` 的 `isinstance(raw_response, Response)` 分支只带走
+background）——续期 cookie 挂在依赖上会在三条流式路由上**静默失效**。中间件与端点形态无关。
+
+**纯 ASGI**：理由同 `app/core/security.py`（不复述）。
+
+两条判据写死：
+  * **过半程才换**（`Session.renewal_due`）——每个响应都发 `Set-Cookie` 会让缓存与调试都变脏，
+    而收益为零：半程判据已经保证活跃用户走不到过期；
+  * **只在成功响应（<400）上换**——401/503 是「这次请求没成」，不该顺手续命。
+
+签发用的版本取自 token 自身：成功响应意味着 `require_user` 已比对过版本，所以这里**不读库**
+（读库会把每个响应都拖上一次查询，而中间件看得到所有请求，包括不需要鉴权的那些）。
+"""
+
+from __future__ import annotations
+
+from http.cookies import SimpleCookie
+
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.core.auth import COOKIE_NAME, decode_session, issue_token, session_cookie_value
+
+
+def _cookie(scope: Scope, name: str) -> str | None:
+    """从 ASGI scope 里取一个 cookie 的值（没有就是 None）。"""
+    for key, value in scope.get("headers", []):
+        if key == b"cookie":
+            jar = SimpleCookie()
+            jar.load(value.decode("latin-1"))
+            morsel = jar.get(name)
+            return morsel.value if morsel else None
+    return None
+
+
+class SessionRenewalMiddleware:
+    """活跃会话过半程即换新 cookie：**活跃即续、闲置满 TTL 失效**。"""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        renewal = _renewal_cookie(scope)
+
+        async def send_with_cookie(message: Message) -> None:
+            if (
+                renewal is not None
+                and message["type"] == "http.response.start"
+                and int(message["status"]) < 400
+            ):
+                message = {
+                    **message,
+                    "headers": [*message.get("headers", []), (b"set-cookie", renewal)],
+                }
+            await send(message)
+
+        await self.app(scope, receive, send_with_cookie)
+
+
+def _renewal_cookie(scope: Scope) -> bytes | None:
+    """该续就给出 Set-Cookie 的头值，否则 None。纯解码，不读库（理由见模块 docstring）。"""
+    token = _cookie(scope, COOKIE_NAME)
+    if not token:
+        return None
+
+    session = decode_session(token)
+    if session is None or not session.renewal_due():
+        return None
+
+    fresh = issue_token(session.user_id, version=session.version)
+    return session_cookie_value(fresh).encode("latin-1")

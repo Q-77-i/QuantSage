@@ -8,7 +8,7 @@
  *   ② `:` 开头的是注释帧（服务端每 15s 发的保活），要忽略而不是当事件。
  */
 
-import { ApiError, apiBase, errorMessage } from "./api";
+import { ApiError, apiBase, bounceToLogin, errorMessage } from "./api";
 
 export interface SseFrame {
   event: string;
@@ -79,6 +79,7 @@ export async function streamGet(path: string, options: PostStreamOptions): Promi
   });
 
   if (!response.ok) {
+    bounceToLogin(response.status, path); // 会话中途失效就送去登录页（E8a）
     throw new ApiError(response.status, await errorMessage(response));
   }
   if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
@@ -125,6 +126,7 @@ export async function streamPost(
 
   if (!response.ok) {
     // 后端在**开流之前**判死的请求级错误都走这条路（422 / 404），detail 才是可行动的
+    bounceToLogin(response.status, path); // 会话中途失效就送去登录页（E8a）
     throw new ApiError(response.status, await errorMessage(response));
   }
   if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
@@ -171,6 +173,7 @@ export async function streamChat(options: ChatStreamOptions): Promise<void> {
 
   if (!response.ok) {
     // 后端的 detail 才是可行动的（如「Agent 未就绪」），裸状态码只会让用户干瞪眼
+    bounceToLogin(response.status, "/api/v1/chat"); // 会话中途失效就送去登录页（E8a）
     throw new ApiError(response.status, await errorMessage(response));
   }
   if (!response.body) throw new ApiError(response.status, "响应没有流式主体");

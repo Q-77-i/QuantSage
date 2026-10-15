@@ -1,2 +1,12 @@
 allowBuilds:
   unrs-resolver: true
+
+# 依赖审计的处置（P3-E8a，SPEC §8.4）：**传递依赖**的已知漏洞用 override 顶上去，
+# 不等上游松手。两条都已实测（`pnpm audit --prod` 前后对比，见 logs/e8/）：
+#   * postcss：next 钉死在 8.4.31，而 8.4.31 吃了四条公告（两条高危、两条中危）。
+#     顶到 8.5.28 —— 树里本来就有这个版本（@tailwindcss/postcss 在用），属同大版本内替换。
+#   * dompurify：monaco 带进来的两条低危，3.4.16 已修。
+# 剩一条无补丁可升（braces，`patched: None`），如实记在 SPEC §8.1。
+overrides:
+  postcss: ^8.5.28
+  dompurify: ^3.4.16

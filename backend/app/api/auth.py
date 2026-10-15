@@ -18,10 +18,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, field_validator
 
 from app.core.auth import (
+    COOKIE_NAME,
     DUMMY_HASH,
     PASSWORD_MAX_BYTES,
     PASSWORD_MIN_BYTES,
     clear_session_cookie,
+    decode_session,
     hash_password,
     issue_token,
     password_bytes,
@@ -95,13 +97,31 @@ async def login(request: Request, response: Response, body: LoginRequest) -> Use
     if user is None or not matched:
         raise HTTPException(status_code=401, detail="邮箱或密码不正确")
 
-    set_session_cookie(response, issue_token(int(user["id"])), remember=body.remember)
+    # **按库里的撤销版本签发**：登出过（版本已加一）的用户再登录，拿到的票才与库对得上
+    set_session_cookie(
+        response,
+        issue_token(int(user["id"]), version=int(user.get("token_version") or 0)),
+        remember=body.remember,
+    )
     return UserOut(id=int(user["id"]), email=user["email"])
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, bool]:
-    """幂等：没登录也返回成功，不做鉴权（清一个不存在的 cookie 没有副作用）。"""
+async def logout(request: Request, response: Response) -> dict[str, bool]:
+    """幂等：没登录也返回成功，不做鉴权（清一个不存在的 cookie 没有副作用）。
+
+    E8a 起顺带**撤销**：cookie 能解出会话就把它那一版作废（`users.token_version` 加一），
+    于是「登出」对服务端也生效，而不是只把 cookie 从浏览器抹掉（那之前旧票还能用满 7 天）。
+
+    两条刻意的让步：**库不可用时不拦**（登出因为库挂了而失败最没道理，这一次退化成旧语义：
+    仅清 cookie）；**不看 token 是否被撤销过**（重复登出照样成功，语义仍是幂等）。
+    """
+    token = request.cookies.get(COOKIE_NAME)
+    session = decode_session(token) if token else None
+    db = getattr(request.app.state, "db", None)
+    if session is not None and db is not None:
+        await db.bump_token_version(session.user_id)
+
     clear_session_cookie(response)
     return {"ok": True}
 

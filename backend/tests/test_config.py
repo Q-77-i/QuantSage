@@ -55,3 +55,19 @@ def test_repo_root_resolution() -> None:
     """.env 与 docker-compose.yml 都在仓库根 —— 保证配置回溯路径没写错。"""
     assert (REPO_ROOT / ".env").is_file()
     assert (REPO_ROOT / "docker-compose.yml").is_file()
+
+
+def test_strict_msgpack_is_enforced() -> None:
+    """加固清单之一（E8a，SPEC §8.1）：checkpoint 反序列化白名单**必须**是开着的。
+
+    `app/__init__.py` 在 import 期 `setdefault("LANGGRAPH_STRICT_MSGPACK", "true")`，而
+    langgraph 把结果读成模块级常量并缓存——所以「导入了 app」与「langgraph 认为是 strict」
+    必须同时成立。这条防的是**回退**：那两行看着像无用代码，被「顺手清理」掉之后
+    checkpoint 会退回「任何 Python 可调用对象都能在加载时执行」，而**没有任何测试会因此变红**
+    （CLAUDE.md §五 曾把这条误记为「Platform 专属、不适用」，实为库级开关，SPEC §8.1 已订正）。
+    """
+    import app  # noqa: PLC0415 —— 就是要「先 import app」
+    from langgraph.checkpoint.serde import _msgpack  # noqa: PLC0415 —— 该开关只在私有模块暴露
+
+    assert app.STRICT_MSGPACK_ENFORCED is True
+    assert _msgpack.STRICT_MSGPACK_ENABLED is True
