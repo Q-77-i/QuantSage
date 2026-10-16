@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
 import duckdb
 
+from app.backtest.types import CN_TZ  # 最底层、不 import 包内任何模块（见其 docstring）
 from app.core.config import REPO_ROOT
 from app.data import bars
 from app.data import calendar as cal
@@ -49,6 +51,10 @@ BARS_STALE_TRADING_DAYS = 5
 #: X6 归档上界停滞的自然日上限。源侧滚动窗口会停更（实测停过 9 天），停多久算异常由人定，
 #: 这里只负责让它**看得见**——与 E7 的「源侧有、本地无」互补
 ARCHIVE_STALL_DAYS = 3
+#: X7 源侧**行情通道**停滞的交易日上限（E3a）。**刻意不复用 `BARS_STALE_TRADING_DAYS`**——
+#: 两个量看着同值，但一个量「本地 vs 日历」、一个量「源侧 vs 日历」，将来要分开调时不该互相牵动。
+#: 按交易日而非自然日：行情的源侧维度是 `{year, adjust}`，周末与长假不该顶红。
+SOURCE_STALL_TRADING_DAYS = 5
 #: B5 自洽性容差（百分点）：close 环比与 `change_pct` 的允许偏差。**必须写死**——
 #: 容差取 0 时实测命中 762 万条，判据就不可复现了。
 STEP_TOLERANCE_PP = 0.011
@@ -824,6 +830,96 @@ def check_x6_archive_stall(con, data_dir) -> Check:
     )
 
 
+def _release_time(manifest_version: str) -> datetime | None:
+    """从发布标识里抠出发布时刻（`history-public-v1-YYYYMMDDTHHMMSSZ`）。
+
+    **解析不出返回 None，不猜**——这个值只做副作用（detail 旁证），判级不靠它。
+    """
+    match = re.search(r"(\d{8})T(\d{6})Z", manifest_version or "")
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def check_x7_source_stall(con, data_dir) -> Check:
+    """**源侧行情通道自己**停更：`bars_sync.json` 的 `source_last` 落后日历多少个交易日（E3a）。
+
+    与 X5 的分工：X5 量「本地 vs 日历」——源侧冻结时它只会说「落后 N 个交易日」，
+    **看不出是谁的锅**（我们没拉？还是源侧没发？）。本项量的是**源侧自己的数据边界**，
+    标题直接给出归因。事件侧的同类问题由 X6 承担（那条量的就是源侧事件通道），不重复判。
+
+    **判据锚在 `source_last`，不是发布标识的时间戳**——账本 26 轮刷新的实证里有
+    「**发布会动、数据不动**」的形态：2026-10-13 那轮发布标识从 `…20261012T130505Z`
+    前进到 `…20261012T200508Z`，而 `source_last` 一动不动仍是 10-09（走了完整 21 片下载
+    会话，二级门禁判分片 sha 全同、未换入）。只盯发布标识，那天会判「源侧刚发过、正常」。
+    **判据要锚在用户看得见的那一行**（页头「行情截至 X」显示的就是数据边界）。
+
+    本地读、**不联网**——读的是 M2d 每次探测写下的门禁记忆，同 X5/X6 的既有口径。
+    """
+    state = bars.read_sync_state(_data_dir(data_dir) / "_meta")
+    release = _release_time(state.manifest_version)
+    share = {
+        "manifest_version": state.manifest_version or None,
+        "release_at": release.astimezone(CN_TZ).isoformat() if release else None,
+        "last_probe_at": state.last_probe_at or None,
+    }
+    if not state.source_last:
+        return Check(
+            id="X7",
+            level="info",
+            title="源侧停滞：无从判断（没有 source_last）",
+            detail=(
+                "`_meta/bars_sync.json` 里没有 `source_last`（还没探过源侧，或字段缺）——"
+                "**不当成停滞**。跑一次 `scripts/download_bars.py` 或等下一轮刷新即可拿到读数"
+            ),
+            data={"source_last": None, "stalled_trading_days": None, **share},
+        )
+    try:
+        boundary = date.fromisoformat(state.source_last)
+    except ValueError:
+        return Check(
+            id="X7",
+            level="info",
+            title="源侧停滞：无从判断（source_last 不是日期）",
+            detail=f"`source_last` = {state.source_last!r} 不是日期——**无从判断**（不是停滞，也不是正常）",
+            data={"source_last": state.source_last, "stalled_trading_days": None, **share},
+        )
+
+    expected = cal.last_session_on_or_before(date.today())
+    stalled = len(cal.sessions(boundary, expected)) - 1 if expected > boundary else 0
+    stalled_detail = (
+        f"源侧最后一次发布 {release.astimezone(CN_TZ):%Y-%m-%d %H:%M}（北京，取自发布标识 "
+        f"`{state.manifest_version}`）"
+        if release
+        else f"发布标识 `{state.manifest_version or '（空）'}` 读不出发布时间"
+    )
+    return Check(
+        id="X7",
+        level="warn" if stalled > SOURCE_STALL_TRADING_DAYS else "info",
+        title=(
+            f"源侧行情止于 {boundary}（{stalled} 个交易日未推进）"
+            if stalled
+            else "源侧行情与日历一致"
+        ),
+        detail=(
+            f"源侧（canonical 轨道）的数据边界止于 {boundary}，日历上最近一个交易日是 {expected}"
+            f"（落后 {stalled} 个交易日，阈值 {SOURCE_STALL_TRADING_DAYS}）；{stalled_detail}"
+            f"（{state.last_probe_at[:16]} 探测，上一轮 {state.status}）。**这一项量的是源侧自己，"
+            "不是我们**——本地是否已追平源侧看 X5，两者在追平时同值。⚠ **发布标识前进不等于数据前进**"
+            "（实测 2026-10-13 标识换了一版而边界不动）⇒ 判据只认 `source_last`"
+        ),
+        data={
+            "source_last": str(boundary),
+            "expected": str(expected),
+            "stalled_trading_days": stalled,
+            **share,
+        },
+    )
+
+
 def check_g1_datanotready(con, data_dir) -> Check:
     """挂账（只报不修）：`DataNotReady` 判据仍是「目录里有没有 parquet」。"""
     return Check(
@@ -840,16 +936,22 @@ def check_g1_datanotready(con, data_dir) -> Check:
 
 
 def check_g2_fingerprint(con, data_dir) -> Check:
-    """挂账（只报不修）：回测落库不含数据版本指纹（M2a 遗留①）。"""
+    """**已销账**（原 M2a 遗留①「回测落库不含数据版本指纹」）——E7d 已交付，SPEC §7.7。
+
+    保留该检查位而不是删掉：`CHECKS` 的标识（B1…G2）是报告与看板上的稳定锚，删一条会让
+    G 组断档，下一个人看到 G1 后面没有 G2 时会去翻历史找原因——那正是这一条要省下的时间。
+    """
     return Check(
         id="G2",
         level="info",
-        title="挂账：backtest_runs 不含数据版本指纹",
+        title="已销账：backtest_runs 含数据版本指纹（E7d）",
         detail=(
-            "指纹落在 `_meta/bars.json`（数据目录被 gitignore，不入库）。写进回测落库要动表结构 + "
-            "API + 前端回填，留 M5 与基准对比一起做"
+            "原挂账**已交付**：`backtest_runs.data_digest` 列 + 报告 `meta.data_digest` + 列表/详情"
+            "响应 + 前端「数据指纹」四处同值；口径是**窗口内分片**（`window_digest()`，只覆盖这次真会"
+            "读到的数据，比全量更贴题）。旧记录缺失显示「—」且**不回填**——回填是拿今天的数据重算，"
+            "属于伪造。见 SPEC §7.7"
         ),
-        data={"owner": "M5"},
+        data={"status": "closed", "delivered_by": "E7d"},
     )
 
 
@@ -875,6 +977,7 @@ CHECKS: tuple[Callable[..., Check], ...] = (
     check_x4_index_lag,
     check_x5_bars_staleness,
     check_x6_archive_stall,
+    check_x7_source_stall,
     check_g1_datanotready,
     check_g2_fingerprint,
 )
@@ -914,6 +1017,29 @@ def exit_code(checks: list[Check], *, strict: bool = False) -> int:
     if "error" in levels or (strict and "warn" in levels):
         return 1
     return 0
+
+
+def status_from_counts(*, error: int, warn: int) -> str:
+    """**红灯口径**（E3a）：有 error 红、否则有 warn 黄、否则绿。
+
+    两个入口共用这一条规则：手里是 `Check` 走 `overall_status`，手里是落档里的计数
+    （看板读台账）走这里。**看板与 API 都从服务端拿结论**——前端不重算，重算就会有两套口径。
+    与 `exit_code` 的分工：那个是给 CI/脚本的退出码（`--strict` 时 warn 也算失败），
+    这个是给人看的颜色（warn 只标黄，永远不等于失败）。
+    """
+    if error:
+        return "red"
+    if warn:
+        return "yellow"
+    return "green"
+
+
+def overall_status(checks: list[Check]) -> str:
+    """`status_from_counts` 的 in-memory 形态——直接吃一轮 `run_all()` 的结果。"""
+    return status_from_counts(
+        error=sum(1 for check in checks if check.level == "error"),
+        warn=sum(1 for check in checks if check.level == "warn"),
+    )
 
 
 def summarize(checks: list[Check]) -> str:

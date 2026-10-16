@@ -77,6 +77,20 @@ class Settings(BaseSettings):
     # 启动时补一次（延后 180s：语料 catchup 在 +20s、实测约 1 分钟，错开即可）
     bars_refresh_catchup_on_start: bool = True
 
+    # ── 数据体检定时化（E3a）：把 M2c 的脚本级体检挂上调度并落档 ──
+    # **默认关**，与上面两路同风格。⚠ 它与 ETL_ENABLED 同住一个调度器：那个关掉时这一路
+    # 也不起（同 bars_refresh 的既有口径，见 SPEC §4.1）。
+    #
+    # 时点 22:10 的依据：**体检必须在两个写通道之后跑**，否则测的是上一版数据
+    # （语料 21:10、行情 21:40）——顺序是语义不是巧合。
+    # 成本实测（2026-10-16）：整轮 **5.5s**（`run_all` 5.41s / 23 项 + 退市核实 0.09s），
+    # 其中 B1 要逐片重算行情 sha（888MB）是 I/O 大头；与写通道互斥（撞上就跳过并落痕）。
+    data_health_enabled: bool = False
+    data_health_hour: int = 22
+    data_health_minute: int = 10
+    # 启动时补一次（延后 300s：排在语料 +20s、行情 +180s 之后，三条互斥的活儿别挤一起）
+    data_health_catchup_on_start: bool = True
+
     # ── 研报 PDF 导出（M7d）：渲染器要打开前端的打印页 ──
     # 渲染在**子进程**里跑（`app/report/pdf_worker.py`），它需要一个能打开的前端地址。
     frontend_base_url: str = "http://127.0.0.1:3001"

@@ -23,6 +23,8 @@ import type {
   BarsResponse,
   CrossSection,
   DataFreshness,
+  DataHealth,
+  DataHealthHistory,
   EventCalendar,
   EventDetail,
   EventFeed,
@@ -228,6 +230,14 @@ export const api = {
   /** 拒绝记录**一页**（新的在前）。**审计半边的内容就是它**——只有用量快照的话没东西可看 */
   adminRejections: (params: { limit?: number; offset?: number } = {}) =>
     request<AdminRejections>(`/api/v1/admin/rejections${query({ ...params })}`),
+
+  // ── 数据看板（E3a）───────────────────────────────────────────────────
+  /** 体检首屏：最近一次落档 + 现算的新鲜度与源侧边界。**没跑过回 `last: null`，不是 404** */
+  dataHealth: () => request<DataHealth>("/api/v1/data/health"),
+
+  /** 体检台账**一页**（新的在前）。分页是必需的——台账只增不删 */
+  dataHealthHistory: (params: { limit?: number; offset?: number } = {}) =>
+    request<DataHealthHistory>(`/api/v1/data/health/history${query({ ...params })}`),
 
   // ── 数据 ──────────────────────────────────────────────────────────────
   /** 页头「数据截至 X」的数据源。查出来的，不是写死的 */

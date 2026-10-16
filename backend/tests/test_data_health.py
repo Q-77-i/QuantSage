@@ -626,3 +626,95 @@ def test_x6_missing_key_is_unknown_not_stalled(tmp_path: Path) -> None:
     check = run_one(tmp_path, "X6")
     assert check.level == "info"
     assert "无从判断" in check.detail
+
+
+# ── X7 源侧发布停滞（E3a）────────────────────────────────────
+
+
+def write_sync(root: Path, **fields: object) -> None:
+    """铺 `_meta/bars_sync.json`（M2d 的门禁记忆）。"""
+    meta = root / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    payload: dict = {
+        "manifest_version": "history-public-v1-20261012T200508Z",
+        "source_last": "2026-10-09",
+        "last_probe_at": "2026-10-16T13:44:41+00:00",
+        "last_change_at": "2026-10-12T16:16:43+00:00",
+        "status": "up_to_date",
+        "local_last": "2026-10-09",
+    }
+    payload.update(fields)
+    (meta / "bars_sync.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _sessions_back(n: int) -> date:
+    """今天往前数第 n 个交易日（含今天）——n=0 即最近一个交易日。"""
+    return cal.sessions(date(2020, 1, 2), date.today())[-(n + 1)]
+
+
+def test_x7_without_sync_state_is_undecidable_not_stalled(health_dir: Path) -> None:
+    """没有 `bars_sync.json` ⇒ **无从判断**（info），不得静默当成「没停更」——X6 的既有口径。"""
+    check = run_one(health_dir, "X7")
+
+    assert check.level == "info"
+    assert "无从判断" in check.title
+    assert check.data["stalled_trading_days"] is None
+
+
+def test_x7_flags_a_stalled_source(health_dir: Path) -> None:
+    """源侧自己的数据边界停在很久以前 ⇒ warn，且标题要说清是**源侧**。"""
+    write_sync(health_dir, source_last=str(date(2020, 1, 2)))
+    check = run_one(health_dir, "X7")
+
+    assert check.level == "warn"
+    assert "源侧行情止于" in check.title
+    assert check.data["stalled_trading_days"] > dh.SOURCE_STALL_TRADING_DAYS
+
+
+def test_x7_boundary_is_exclusive(health_dir: Path) -> None:
+    """停滞**恰好等于**阈值时不报（与 X5 的 `>` 同一口径，不另立一套比较）。"""
+    write_sync(health_dir, source_last=str(_sessions_back(dh.SOURCE_STALL_TRADING_DAYS)))
+    check = run_one(health_dir, "X7")
+
+    assert check.data["stalled_trading_days"] == dh.SOURCE_STALL_TRADING_DAYS
+    assert check.level == "info"
+
+
+def test_x7_is_quiet_when_the_source_keeps_moving(health_dir: Path) -> None:
+    write_sync(health_dir, source_last=str(_sessions_back(0)))
+    check = run_one(health_dir, "X7")
+
+    assert check.level == "info"
+    assert check.data["stalled_trading_days"] == 0
+
+
+def test_x7_reports_the_release_time_as_corroboration(health_dir: Path) -> None:
+    """发布标识的时间戳只作旁证进 detail——**不参与判级**（判据锚在 `source_last`）。
+
+    实证依据：2026-10-13 那轮发布标识前进了一版而 `source_last` 一动不动，
+    只盯标识会把「发布会动、数据不动」判成正常。
+    """
+    write_sync(health_dir, source_last=str(date(2020, 1, 2)))
+    check = run_one(health_dir, "X7")
+
+    assert check.level == "warn"  # 判级只由 stalled 决定
+    assert "2026-10-13 04:05" in check.detail  # 标识内嵌 UTC 10-12 20:05 ⇒ 北京 10-13 04:05
+    assert check.data["manifest_version"].endswith("Z")
+
+
+def test_x7_unparsable_reading_is_undecidable(health_dir: Path) -> None:
+    """`source_last` 解析不出日期 ⇒ info「无从判断」，不是停滞、也不是正常。"""
+    write_sync(health_dir, source_last="不是日期")
+    check = run_one(health_dir, "X7")
+
+    assert check.level == "info"
+    assert "无从判断" in check.title
+
+
+def test_x7_ignores_a_broken_release_id(health_dir: Path) -> None:
+    """发布标识解析不出时间不影响判级——旁证缺了就说缺了，不猜。"""
+    write_sync(health_dir, source_last=str(date(2020, 1, 2)), manifest_version="坏标识")
+    check = run_one(health_dir, "X7")
+
+    assert check.level == "warn"
+    assert "读不出" in check.detail

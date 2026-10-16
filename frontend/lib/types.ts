@@ -1489,3 +1489,61 @@ export interface CrossRow {
   /** 源侧 2026-08 起逐步停更、2026-09 起整列为空——界面不列这一栏 */
   turnover_pct: number | null;
 }
+
+// ── GET /api/v1/data/health（E3a）───────────────────────────────────────────
+
+/**
+ * 红灯口径（E3a）。**由服务端算**（`data_health.status_from_counts`）——前端只做翻译，
+ * 重算就会有两套口径。`null` = 那一轮没有结论（还没跑过，或被写锁跳过了）。
+ */
+export type HealthStatus = "red" | "yellow" | "green";
+
+export interface HealthCheckBrief {
+  id: string;
+  level: "error" | "warn" | "info";
+  title: string;
+}
+
+/** 台账一行（`_meta/health_runs.jsonl` 的摘要级形态，**不含 detail**）。 */
+export interface HealthRun {
+  at: string;
+  source: string;
+  /** 被写锁跳过的那一轮没有这几项——如实缺，不编 0 */
+  duration_ms?: number;
+  error?: number;
+  warn?: number;
+  info?: number;
+  exit_code?: number;
+  /** 有值即「这一轮没跑」：`locked` = 写通道在跑 */
+  skipped?: string;
+  check_status: HealthStatus | null;
+}
+
+/** 最近一次的**全文**（多一个 `checks` 与 `delisting`）。 */
+export interface HealthLast extends HealthRun {
+  checks: HealthCheckBrief[];
+}
+
+/** 源侧行情边界（E3a 的 X7 读数）。**判据锚在它而不是发布标识**——标识前进不等于数据前进。 */
+export interface StaleSource {
+  source_last: string | null;
+  expected?: string | null;
+  /** `null` = 无从判断（没探过源侧 / 读数不可解析），**不是 0** */
+  stalled_trading_days: number | null;
+  manifest_version: string | null;
+  release_at: string | null;
+  last_probe_at: string | null;
+}
+
+export interface DataHealth {
+  /** `null` = 还没跑过。**这是答案不是错误**（200 而不是 404） */
+  last: HealthLast | null;
+  /** 数据没落盘时为 null——那时「体检报了什么」正是最该看的东西 */
+  freshness: DataFreshness | null;
+  stale_source: StaleSource;
+  scheduler: { enabled: boolean; hour: number; minute: number; next_run_at: string | null };
+}
+
+export interface DataHealthHistory extends Paged {
+  runs: HealthRun[];
+}

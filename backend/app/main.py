@@ -28,6 +28,7 @@ from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
+from app.api.data import router as data_router
 from app.api.etl import router as etl_router
 from app.api.events import router as events_router
 from app.api.factor import router as factor_router
@@ -238,6 +239,7 @@ for router in (
     auth_router,
     chat_router,
     backtest_router,
+    data_router,
     market_router,
     events_router,
     watchlist_router,

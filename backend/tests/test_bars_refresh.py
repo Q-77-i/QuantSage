@@ -388,7 +388,7 @@ def test_rebuild_uses_local_shards_without_any_download(tmp_path: Path) -> None:
 async def test_bars_job_is_registered_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """调度接线本身也要验：开关关着就不该有这条 job（默认关是刻意的）。
 
-    `ETL_ENABLED` 是总闸——它关着两个 job 都不起，这条如实钉住（SPEC §3 M2d「落点」）。
+    `ETL_ENABLED` 是总闸——它关着三条 job 都不起，这条如实钉住（SPEC §3 M2d「落点」）。
     """
     from app.etl import scheduler as sched
 
@@ -404,6 +404,11 @@ async def test_bars_job_is_registered_only_when_enabled(monkeypatch: pytest.Monk
             bars_refresh_minute=40,
             bars_refresh_budget_seconds=1200,
             bars_refresh_catchup_on_start=False,
+            # E3a 之后 `start_scheduler` 还会读第三路的开关——替身得跟着长
+            data_health_enabled=False,
+            data_health_hour=22,
+            data_health_minute=10,
+            data_health_catchup_on_start=False,
         )
         return SimpleNamespace(**{**base, **overrides})
 
@@ -451,3 +456,121 @@ def test_local_last_trade_date_measures_the_parquet(tmp_path: Path) -> None:
     assert bars.local_last_trade_date(tmp_path) == date(2026, 10, 9)
     # 只有 bars/ 也要量得出来（不要求 events/ 已回填）
     assert not (tmp_path / "events").exists()
+
+
+# ── E3a：数据体检的调度接线 ─────────────────────────────────
+
+
+def _health_settings(**overrides: object):
+    """调度器的 stub 设置——体检那一路的开关与时刻。"""
+    base = dict(
+        etl_enabled=True,
+        etl_hour=21,
+        etl_minute=10,
+        etl_trailing_days=7,
+        etl_catchup_on_start=False,
+        bars_refresh_enabled=True,
+        bars_refresh_hour=21,
+        bars_refresh_minute=40,
+        bars_refresh_budget_seconds=1200,
+        bars_refresh_catchup_on_start=False,
+        data_health_enabled=True,
+        data_health_hour=22,
+        data_health_minute=10,
+        data_health_catchup_on_start=False,
+    )
+    return SimpleNamespace(**{**base, **overrides})
+
+
+async def test_health_job_is_registered_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E3a 第三路 job 的接线：关着就没有这条 job，打开则与另两条同时在。
+
+    顺带钉住**时点**：体检的触发时刻必须落在两个写通道之后——顺序是语义不是巧合
+    （早于它们跑，测的就是上一版数据）。断言打在**真的触发表达式**上，不是打在设置对象上。
+    """
+    from app.etl import scheduler as sched
+
+    monkeypatch.setattr(sched, "get_settings", lambda: _health_settings())
+    active = sched.start_scheduler()
+    assert active is not None
+    try:
+        job = active.get_job(sched.HEALTH_JOB_ID)
+        assert job is not None
+        assert "hour='22'" in str(job.trigger)
+        assert "minute='10'" in str(job.trigger)
+    finally:
+        active.shutdown(wait=False)
+
+    monkeypatch.setattr(sched, "get_settings", lambda: _health_settings(data_health_enabled=False))
+    off = sched.start_scheduler()
+    assert off is not None
+    try:
+        assert off.get_job(sched.HEALTH_JOB_ID) is None
+        assert off.get_job(sched.BARS_JOB_ID) is not None  # 关它一个不影响别人
+    finally:
+        off.shutdown(wait=False)
+
+
+def test_health_job_records_skipped_when_the_lock_is_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写通道在跑 ⇒ **跳过并落一行 skipped**，不排队等。
+
+    跳过也要留痕：否则「今天怎么没跑」在台账里查不到（M3 那条「台账的 failed 不等于缺数据」
+    的同族）。**跑体检要拿锁而不是只读锁状态**——一半时被换入分片，B1 的对账结论没有意义。
+    """
+    from app.data import health_log
+    from app.data.data_lock import LOCK
+    from app.etl import scheduler as sched
+
+    monkeypatch.setattr(sched, "get_settings", lambda: _health_settings(data_dir=tmp_path))
+    assert not LOCK.locked()
+    LOCK.acquire()
+    try:
+        sched._run_health_sync()
+    finally:
+        LOCK.release()
+
+    total, rows = health_log.read_runs(tmp_path)
+    assert total == 1
+    assert rows[0]["skipped"] == "locked"
+    assert rows[0]["source"] == "scheduler"
+
+
+def test_health_job_records_a_full_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """拿到锁就跑完并落档。空数据目录 ⇒ 短路成一条 `DATA` error，**照样落档**。
+
+    两条判据：① 失败的一轮也必须进台账（否则看板上只会看到「没有记录」，分不清是没跑还是坏）；
+    ② 退市核实跟着挂掉**不影响**体检结果落档——它是附加项，不是前置条件。
+    """
+    from app.data import health_log
+    from app.etl import scheduler as sched
+
+    monkeypatch.setattr(sched, "get_settings", lambda: _health_settings(data_dir=tmp_path))
+
+    sched._run_health_sync()
+
+    total, rows = health_log.read_runs(tmp_path)
+    assert total == 1
+    assert rows[0]["source"] == "scheduler"
+    assert rows[0]["error"] == 1
+    assert rows[0]["exit_code"] == 1
+    last = health_log.read_last(tmp_path)
+    assert last is not None
+    assert last["checks"][0]["id"] == "DATA"
+    assert "delisting" not in last  # 核实挂了就不写这个键，不写空壳
+
+
+async def test_health_catchup_is_registered_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """启动补跑那一条也要接上（延后 300s，排在语料 +20s、行情 +180s 之后）。"""
+    from app.etl import scheduler as sched
+
+    monkeypatch.setattr(
+        sched, "get_settings", lambda: _health_settings(data_health_catchup_on_start=True)
+    )
+    active = sched.start_scheduler()
+    assert active is not None
+    try:
+        assert active.get_job("data-health-catchup") is not None
+    finally:
+        active.shutdown(wait=False)
