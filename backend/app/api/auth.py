@@ -72,6 +72,8 @@ class LoginRequest(Credentials):
 class UserOut(BaseModel):
     id: int
     email: str
+    #: 角色（E2b）：前端据此决定要不要显示 admin 入口——**那不是门**，门在服务端（403）
+    role: str
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -83,7 +85,7 @@ async def register(
     password_hash = await asyncio.to_thread(hash_password, body.password)
     user = await db.create_user(body.email, password_hash)
     set_session_cookie(response, issue_token(int(user["id"])))
-    return UserOut(id=int(user["id"]), email=user["email"])
+    return UserOut(id=int(user["id"]), email=user["email"], role=user.get("role") or "user")
 
 
 @router.post("/login")
@@ -103,7 +105,7 @@ async def login(request: Request, response: Response, body: LoginRequest) -> Use
         issue_token(int(user["id"]), version=int(user.get("token_version") or 0)),
         remember=body.remember,
     )
-    return UserOut(id=int(user["id"]), email=user["email"])
+    return UserOut(id=int(user["id"]), email=user["email"], role=user.get("role") or "user")
 
 
 @router.post("/logout")
@@ -128,4 +130,4 @@ async def logout(request: Request, response: Response) -> dict[str, bool]:
 
 @router.get("/me")
 async def me(user: dict[str, Any] = Depends(require_user)) -> UserOut:
-    return UserOut(id=int(user["id"]), email=user["email"])
+    return UserOut(id=int(user["id"]), email=user["email"], role=user.get("role") or "user")

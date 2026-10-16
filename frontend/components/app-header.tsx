@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { api } from "@/lib/api";
-import { isActive, NAV_ITEMS } from "@/lib/nav";
+import { isActive, navItemsFor } from "@/lib/nav";
 import type { DataFreshness } from "@/lib/types";
 
 /**
@@ -40,7 +40,7 @@ export function AppHeader() {
             加第 5 项「优化」后 390px 下页头会横溢出 140px（第 6 项「因子」沿用同一条自滚策略）（界面验证逮到），
             而挤走的若是品牌或用户区，损失比让导航滚一下大得多 */}
         <nav className="flex min-w-0 items-center gap-1 overflow-x-auto text-sm whitespace-nowrap">
-          {NAV_ITEMS.map((item) => {
+          {navItemsFor(user?.role).map((item) => {
             const current = isActive(pathname, item.href);
             return (
               <Link

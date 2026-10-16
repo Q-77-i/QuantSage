@@ -17,12 +17,17 @@ from typing import Any
 
 import bcrypt
 import jwt
-from fastapi import HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request, Response
 
 from app.core.config import get_settings
 
 COOKIE_NAME = "qs_session"
 ALGORITHM = "HS256"
+
+#: 角色（E2b）：`users.role` 的两个取值。**只在这里定义一份**——`core/quota.py` 的
+#: 「admin 不限额」也引用它，免得两处各写一个字面量而漂移。
+ROLE_USER = "user"
+ROLE_ADMIN = "admin"
 
 #: bcrypt 的硬上限：超过 72 字节的部分不参与计算，必须显式拒绝
 PASSWORD_MAX_BYTES = 72
@@ -177,4 +182,20 @@ async def require_user(request: Request) -> dict[str, Any]:
     if int(user.get("token_version") or 0) != session.version:
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
 
+    return user
+
+
+async def require_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    """admin 面的入口（E2b）：角色不足一律 **403**。
+
+    **为什么是全仓第一处 403**（此前越权一律与「不存在」同响应 404）：那条 404 口径保护的是
+    「**别人的资源**是否存在」——防的是同侪之间互相探测。admin 面不属任何用户，缺的是**角色**，
+    而且它的存在本来就不是秘密（PRD 写明了要有 admin 视图）。语义不同，姿态就不同，
+    也与「超配额被拒并给出明确提示」这条验收的精神一致。
+
+    角色**不进 JWT**：`require_user` 每次都查 users 整行，角色变更立即生效；
+    塞进 payload 会引入「撤销角色要 bump token_version」的耦合，而那个字段的语义是会话撤销。
+    """
+    if str(user.get("role") or ROLE_USER) != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
     return user

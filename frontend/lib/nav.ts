@@ -37,6 +37,23 @@ export const NAV_ITEMS: readonly NavItem[] = [
 ] as const;
 
 /**
+ * 只有 admin 看得见的一项（E2b）。**刻意不放进 `NAV_ITEMS`**：首页快捷入口「9 张 = 3×3」
+ * 的不变量挂在 `NAV_ITEMS` 上（`nav.test.ts` 钉着），混进去会让那套对应关系失真。
+ *
+ * 隐藏入口**不是门**——非 admin 直接敲 `/admin` 会看到「需要管理员权限」（服务端 403）。
+ */
+export const ADMIN_NAV_ITEM: NavItem = { key: "admin", href: "/admin", label: "运维" };
+
+/** 全部可达的导航项（含 admin 那一项）。**高亮判据**用它，展示只取子集：
+ *  两处清单若分开写，admin 站在 `/admin` 上会一项都不亮。 */
+const ALL_NAV_ITEMS: readonly NavItem[] = [...NAV_ITEMS, ADMIN_NAV_ITEM];
+
+/** 页头该显示哪些项：普通人 10 项，admin 多一项。纯函数，带用例（顺序即展示顺序）。 */
+export function navItemsFor(role: string | null | undefined): readonly NavItem[] {
+  return role === "admin" ? ALL_NAV_ITEMS : NAV_ITEMS;
+}
+
+/**
  * 不在导航里、但**属于**某一项的路径（点进来时高亮它所属的模块）。
  *
  * ⚠ 这里曾有一条 `"/research": "/paper"`：M7 时研报页是模拟盘账户的产物，归过去说得通。
@@ -49,7 +66,7 @@ const ALIASES: Record<string, string> = {};
 export function activeHref(pathname: string | null): string | null {
   if (!pathname) return null;
   const path = pathname.replace(/\/+$/, "") || "/";
-  for (const item of NAV_ITEMS) {
+  for (const item of ALL_NAV_ITEMS) {
     if (item.href === "/") {
       // 根路径只有**精确**相等才算当前项——前缀匹配会让全站点亮「首页」
       if (path === "/") return "/";

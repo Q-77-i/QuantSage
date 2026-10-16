@@ -264,8 +264,8 @@ def test_rejection_is_recorded(signed_in: FakeDatabase, agent: Any, limits: Any)
         ask()
     ask()
 
-    assert len(signed_in.quota_rejections) == 1
-    row = signed_in.quota_rejections[0]
+    assert len(signed_in.quota_rejection_rows) == 1
+    row = signed_in.quota_rejection_rows[0]
     assert row["user_id"] == 1
     assert row["metric"] == "agent_calls"
     assert (row["used"], row["limit_value"]) == (2, 2)

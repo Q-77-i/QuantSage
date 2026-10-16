@@ -179,9 +179,10 @@ flowchart LR
 | GET · POST | `/api/v1/tasks` · `/api/v1/tasks/{id}` · `/api/v1/tasks/{id}/cancel` 🔒 | 任务列表 / 状态轮询 / 取消（在跑的网格走协作式中止）；`error` 带 `kind`（用户代码的运行期异常另带 `line`） |
 | GET | `/api/v1/tasks/{id}/events` 🔒 | 任务进度流（SSE）：发起与**断线重连**共用同一份帧 |
 | GET | `/api/v1/market/{symbol}/probe` | 6 位代码体检。**「本地没有」是 200 + `has_data:false`，不是 404** |
-| GET · POST | `/api/v1/etl/status` · `/api/v1/etl/run` 🔒 | 语料覆盖 / 缺口 / 调度器状态；手动触发（后台执行，已在跑 409） |
+| GET · POST | `/api/v1/etl/status` · `/api/v1/etl/run` 🔑 | 语料覆盖 / 缺口 / 调度器状态；手动触发（后台执行，已在跑 409）。**归 admin**——一次触发是全局动作 |
+| GET | `/api/v1/admin/usage` · `/api/v1/admin/rejections` 🔑 | 配额用量与拒绝记录（**只读**；授撤角色走 `scripts/grant_admin.py`） |
 
-🔒 = 需登录。**除 `market/*` 与 `events`（非用户资产）与 `/health` 外，其余一律要登录**；分享页走 `/api/v1/public/reports/{token}` 单独授权。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
+🔒 = 需登录，🔑 = 需管理员（`users.role = "admin"`，脚本改、立即生效）。**除 `market/*` 与 `events`（非用户资产）与 `/health` 外，其余一律要登录**；分享页走 `/api/v1/public/reports/{token}` 单独授权。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
 
 ---
 
@@ -225,7 +226,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 - **行情源侧的节奏不稳定，且分两条质量轨道**：`cn-daily` 按年整片发布、没有日增量可拉，刷新做的是「便宜探测 → 按需整片重下」。平台有 **canonical（complete）** 与 **available** 两条轨道——我们固定用 **canonical**（宁慢不脏：available 快但 `quality_status=partial`，有缺口，且平台明言 `fill_or_forward_fill_allowed=false`）。实测 canonical 的滞后**随发布而变**：10-12 缺当天（T+1），10-13 仍停在 10-09（连缺两个交易日）。**对外别承诺「落后一天」**——它是观测值，不是契约。事件归档按自然日发布、近期还停更过，两者本来就可能不同日，首页因此**并列显示两个「截至」**（悬停可看源侧止于哪天）
 - **无价 bar 不进定价路径**：数据源用「整行价量为空」表示某天没观测到成交，`bars()` 只返回四价齐全的行——**无价即无价，不是零价**
 - **自选股的价格取自本地行情快照**：取不到价的标的一律显示「—」，不编数；加入时价是当时最近可得**有价**交易日的收盘价，之后不随行情前移
-- **两个定时任务默认关**（`ETL_ENABLED` / `BARS_REFRESH_ENABLED`）：可显式打开或走 `POST /api/v1/etl/run` 手动触发。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**
+- **两个定时任务默认关**（`ETL_ENABLED` / `BARS_REFRESH_ENABLED`）：可显式打开或走 `POST /api/v1/etl/run` 手动触发（**需要 admin 账号**）。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**
 - **深路径是回放式的、不是实时的**：模拟盘只能回放到**本地行情末端**；深研报锁 `as_of`，可重放但不能「分析此刻」
 - **回测引擎不含组合与实盘**：模拟盘是**单账户多标的等额配额**，不是组合优化；样本不足时年化与夏普会被放大，UI 常驻提示
 - **延迟与成本的诚实读数**：深路径首问慢在冷启动（本地检索模型首次加载约 18s），实测跨进程端到端 **40.5s 冷启动 / 约 23s 预热**、10 次 LLM 调用、**$0.0156**。检索（召回 + 融合）p95 在 500ms 内达标；**含精排的完整链路是秒级**（CPU / MPS 上的 cross-encoder），口径见 [PRD](docs/PRD.md)

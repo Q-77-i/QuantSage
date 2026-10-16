@@ -229,8 +229,12 @@ def ts(text: str) -> datetime:
 
 # ── M1：鉴权夹具 ────────────────────────────────────────────
 
-#: 回归用例里的「当前用户」。真鉴权行为在 test_auth_api.py / 集成用例里验
+#: 回归用例里的「当前用户」。真鉴权行为在 test_auth_api.py / 集成用例里验。
+#: **刻意不带 `role`**——普通用例一律是 ordinary user，否则「非 admin 被拒」那条永远测不出来（E2b）。
 TEST_USER = {"id": 1, "email": "tester@example.com"}
+
+#: 管理员姿态（E2b）。与 `TEST_USER` 只差一个 `role`，读法也应当只差这一处。
+ADMIN_USER = {"id": 1, "email": "admin@example.com", "role": "admin"}
 
 
 @pytest.fixture(autouse=True)
@@ -269,6 +273,17 @@ def signed_in(jwt_secret: Any) -> Any:
     db = FakeDatabase()
     app.state.db = db
     app.dependency_overrides[require_user] = lambda: dict(TEST_USER)
+    yield db
+    app.dependency_overrides.clear()
+    app.state.db = None
+
+
+@pytest.fixture
+def signed_in_admin(jwt_secret: Any) -> Any:
+    """管理员姿态：与 `signed_in` 同法（内存库 + 只换「当前用户是谁」），用户多一个 `role`。"""
+    db = FakeDatabase()
+    app.state.db = db
+    app.dependency_overrides[require_user] = lambda: dict(ADMIN_USER)
     yield db
     app.dependency_overrides.clear()
     app.state.db = None

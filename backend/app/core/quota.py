@@ -25,6 +25,7 @@ from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.core.auth import ROLE_ADMIN, ROLE_USER
 from app.core.config import get_settings
 
 #: 自然日的时区。仓里几处调度器各写一份同名常量（`etl/scheduler.py` / `memory/scheduler.py`），
@@ -34,9 +35,6 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 #: 维度名（落库进 `usage_counters.metric` / `quota_rejections.metric`，改它等于改数据）。
 METRIC_AGENT_CALLS = "agent_calls"
 METRIC_ACTIVE_TASKS = "active_tasks"
-
-#: 免配额的角色（SPEC §3.1：运维与演示需要）。
-ROLE_ADMIN = "admin"
 
 
 class QuotaExceeded(Exception):
@@ -71,11 +69,19 @@ def period_key(now: datetime | None = None) -> str:
     return moment.astimezone(CN_TZ).date().isoformat()
 
 
+def day_start(now: datetime | None = None) -> datetime:
+    """当期（自然日）的起点：今日 00:00 +08。
+
+    `rejected_today` 这类**按事件时刻**过滤的读数用它——拒绝表记的是事件，
+    没有 `period_key` 列（它不是计数，见 SPEC §3.5）。
+    """
+    moment = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    return datetime.combine(moment.date(), time.min, tzinfo=CN_TZ)
+
+
 def reset_at(now: datetime | None = None) -> str:
     """下一次归零的时刻（次日 00:00 +08）——进拒绝体，让用户知道要等多久。"""
-    moment = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
-    midnight = datetime.combine(moment.date() + timedelta(days=1), time.min, tzinfo=CN_TZ)
-    return midnight.isoformat()
+    return (day_start(now) + timedelta(days=1)).isoformat()
 
 
 async def enforce(
@@ -88,7 +94,7 @@ async def enforce(
     写在各自的注释里；配额**不做成依赖**，因为依赖跑在 handler 之前，会挡住幂等重放
     （重复提交不建任务，也就不该被挡）与请求体校验（非法请求该拿 422 而不是 429）。
     """
-    if str(user.get("role") or "user") == ROLE_ADMIN:
+    if str(user.get("role") or ROLE_USER) == ROLE_ADMIN:
         return  # admin 不限额
 
     user_id = int(user["id"])

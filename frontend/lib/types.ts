@@ -43,6 +43,38 @@ export interface EventCoverage {
 export interface User {
   id: number;
   email: string;
+  /** 角色（E2b）：`user` / `admin`。**它不是门**——门在服务端（403），这里只决定显示什么 */
+  role: string;
+}
+
+// ── GET /api/v1/admin/usage ─────────────────────────────────────────────────
+
+/** 一个用户的当期读数。上限不在这里——它是全局配置，`limits` 在响应顶层（一份）。 */
+export interface AdminUsageRow {
+  id: number;
+  email: string;
+  role: string;
+  active_tasks: number;
+  agent_calls_today: number;
+  rejected_today: number;
+}
+
+export interface AdminUsage {
+  limits: { active_tasks: number; agent_calls_per_day: number };
+  users: AdminUsageRow[];
+}
+
+// ── GET /api/v1/admin/rejections ────────────────────────────────────────────
+
+/** 一次「超配额被拒」。字段名与原表列一致（`limit_value` 是因为 `limit` 是 SQL 关键字）。 */
+export interface QuotaRejection {
+  id: number;
+  user_id: number;
+  email: string | null;
+  metric: string;
+  used: number;
+  limit_value: number;
+  at: string;
 }
 
 // ── GET /api/v1/market/{symbol}/bars ────────────────────────────────────────

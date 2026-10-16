@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { activeHref, isActive, NAV_ITEMS, QUICK_ENTRIES } from "./nav";
+import { activeHref, ADMIN_NAV_ITEM, isActive, NAV_ITEMS, navItemsFor, QUICK_ENTRIES } from "./nav";
 
 describe("activeHref", () => {
   it("根路径只有精确相等才算（前缀匹配会让全站点亮「首页」）", () => {
@@ -83,5 +83,31 @@ describe("首页快捷入口与页头", () => {
       expect(entry.hint.length).toBeGreaterThan(8);
       expect(entry.hint).not.toBe(entry.label);
     }
+  });
+});
+
+describe("navItemsFor（E2b：admin 才看得见的第 11 项）", () => {
+  it("普通人拿到的就是 NAV_ITEMS 本身（没多也没少）", () => {
+    expect(navItemsFor("user")).toBe(NAV_ITEMS);
+    expect(navItemsFor(undefined)).toBe(NAV_ITEMS);
+    expect(navItemsFor(null)).toBe(NAV_ITEMS);
+  });
+
+  it("admin 多且只多一项：运维，挂在末尾", () => {
+    const items = navItemsFor("admin");
+
+    expect(items).toHaveLength(NAV_ITEMS.length + 1);
+    expect(items.slice(0, NAV_ITEMS.length)).toEqual([...NAV_ITEMS]);
+    expect(items[items.length - 1]).toEqual(ADMIN_NAV_ITEM);
+  });
+
+  it("admin 站在 /admin 上点得亮（高亮的判据要比「显示哪些」宽一档）", () => {
+    expect(activeHref("/admin")).toBe("/admin");
+    expect(isActive("/admin", ADMIN_NAV_ITEM.href)).toBe(true);
+  });
+
+  it("隐藏入口不是门：普通人在 /admin 上不点亮任何一项（页面自己说明权限不足）", () => {
+    // 页头不显示这一项，但 URL 敲得进来——高亮判据不区分角色，故这里只钉住「不炸」
+    expect(navItemsFor("user").some((item) => item.href === "/admin")).toBe(false);
   });
 });

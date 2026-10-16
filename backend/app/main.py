@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent.graph import build_agent
 from app.agent.tools import load_xiaoshi_tools, query_market_bars, search_events
+from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.chat import router as chat_router
@@ -233,6 +234,7 @@ app.add_middleware(SessionRenewalMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 for router in (
+    admin_router,
     auth_router,
     chat_router,
     backtest_router,

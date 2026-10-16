@@ -139,8 +139,10 @@ class FakeDatabase:
         self.tasks: dict[str, dict[str, Any]] = {}
         self._task_order: list[str] = []
         # 用户配额（E2）：(user_id, metric, period_key) → 已用；拒绝记录按插入序
+        # 拒绝记录的行存 `_rows` 后缀——`quota_rejections` 这个名字要留给方法
+        # （实例属性会盖住同名方法，同 `paper_decision_rows` 的理由）
         self.usage_counters: dict[tuple[int, str, str], int] = {}
-        self.quota_rejections: list[dict[str, Any]] = []
+        self.quota_rejection_rows: list[dict[str, Any]] = []
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -151,6 +153,7 @@ class FakeDatabase:
             "email": email,
             "password_hash": password_hash,
             "token_version": 0,
+            "role": "user",  # 与真库的列默认值同源（E2b）
         }
         self.users[self._next_id] = user
         self._next_id += 1
@@ -829,7 +832,7 @@ class FakeDatabase:
     async def record_quota_rejection(
         self, user_id: int, metric: str, used: int, limit: int
     ) -> None:
-        self.quota_rejections.append(
+        self.quota_rejection_rows.append(
             {
                 "user_id": user_id,
                 "metric": metric,
@@ -838,6 +841,52 @@ class FakeDatabase:
                 "at": datetime.now(UTC),
             }
         )
+
+    async def admin_usage(self, period_key: str, since: datetime) -> list[dict[str, Any]]:
+        """与真库同形：三列各有来源（在飞任务直查任务表、当期调用读计数、当期被拒数事件）。"""
+        rows: list[dict[str, Any]] = []
+        for user in self.users.values():
+            active = sum(
+                1
+                for row in self.tasks.values()
+                if row["user_id"] == user["id"] and row["status"] in ("queued", "running")
+            )
+            calls = self.usage_counters.get((user["id"], "agent_calls", period_key), 0)
+            rejected = sum(
+                1
+                for row in self.quota_rejection_rows
+                if row["user_id"] == user["id"] and row["at"] >= since
+            )
+            rows.append(
+                {
+                    "id": user["id"],
+                    "email": user["email"],
+                    "role": user.get("role") or "user",
+                    "active_tasks": active,
+                    "agent_calls_today": calls,
+                    "rejected_today": rejected,
+                }
+            )
+        return sorted(rows, key=lambda row: row["id"])
+
+    async def quota_rejections(self, limit: int) -> list[dict[str, Any]]:
+        """与真库同形：新的在前，邮箱随行（读它的只有 admin 面）。"""
+        rows = []
+        for index, row in enumerate(self.quota_rejection_rows):
+            user = self.users.get(row["user_id"])
+            rows.append(
+                {
+                    "id": index + 1,
+                    "user_id": row["user_id"],
+                    "email": user["email"] if user else None,
+                    "metric": row["metric"],
+                    "used": row["used"],
+                    "limit_value": row["limit_value"],
+                    "at": row["at"],
+                }
+            )
+        rows.reverse()
+        return rows[:limit]
 
     def _touch(self, thread_id: str) -> None:
         self._recent = [tid for tid in self._recent if tid != thread_id]

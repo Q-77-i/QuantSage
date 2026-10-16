@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from psycopg import errors
@@ -45,6 +45,9 @@ SCHEMA = (
     # E8a：老库补列（`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做，同 M4c 的约定）。
     # 语义：token 里的 `ver` 与它不等即视为已撤销——登出/改密把它加一。
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 0",
+    # 角色（E2b）：默认普通用户，提权走 `scripts/grant_admin.py`。**不进 JWT**——
+    # `require_user` 本来就查整行，角色变更立即生效（理由写在 `core/auth.py::require_admin`）。
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'",
     """
     CREATE TABLE IF NOT EXISTS chat_threads (
         thread_id      UUID PRIMARY KEY,
@@ -350,7 +353,7 @@ class Database:
             async with self.pool.connection() as conn:
                 cursor = await conn.execute(
                     "INSERT INTO users (email, password_hash) VALUES (%s, %s) "
-                    "RETURNING id, email, created_at",
+                    "RETURNING id, email, created_at, role",
                     (email, password_hash),
                 )
                 row = await cursor.fetchone()
@@ -368,8 +371,9 @@ class Database:
 
     async def find_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         # `token_version` 随行返回：`require_user` 用它判撤销，省一次读库（E8a）
+        # `role` 同理：`require_admin` 与配额豁免都吃这一行（E2b）
         return await self._one(
-            "SELECT id, email, token_version FROM users WHERE id = %s", (user_id,)
+            "SELECT id, email, token_version, role FROM users WHERE id = %s", (user_id,)
         )
 
     async def bump_token_version(self, user_id: int) -> None:
@@ -1200,6 +1204,36 @@ class Database:
             (user_id, metric, period_key, limit),
         )
         return None if row is None else int(row["used"])
+
+    async def admin_usage(self, period_key: str, since: datetime) -> list[dict[str, Any]]:
+        """admin 配额视图的一行一用户（E2b）：在飞任务 / 当期调用 / 当期被拒。
+
+        三列各有来源，别指望一条 join 解决：在飞任务数**直查任务表**（与 gauge 同源，
+        否则视图与判定会各说各话），当期调用读计数表，当期被拒按 `at >= since` 数事件。
+        """
+        return await self._all(
+            "SELECT u.id, u.email, u.role, "
+            "  (SELECT count(*) FROM tasks t WHERE t.user_id = u.id "
+            "     AND t.status IN ('queued', 'running')) AS active_tasks, "
+            "  COALESCE(c.used, 0) AS agent_calls_today, "
+            "  COALESCE(r.rejected, 0) AS rejected_today "
+            "FROM users u "
+            "LEFT JOIN usage_counters c ON c.user_id = u.id "
+            "  AND c.metric = 'agent_calls' AND c.period_key = %s "
+            "LEFT JOIN (SELECT user_id, count(*) AS rejected FROM quota_rejections "
+            "  WHERE at >= %s GROUP BY user_id) r ON r.user_id = u.id "
+            "ORDER BY u.id",
+            (period_key, since),
+        )
+
+    async def quota_rejections(self, limit: int) -> list[dict[str, Any]]:
+        """最近的拒绝事件（E2b，新的在前）。邮箱随行——读它的只有 admin 面。"""
+        return await self._all(
+            "SELECT r.id, r.user_id, u.email, r.metric, r.used, r.limit_value, r.at "
+            "FROM quota_rejections r JOIN users u ON u.id = r.user_id "
+            "ORDER BY r.at DESC, r.id DESC LIMIT %s",
+            (limit,),
+        )
 
     async def record_quota_rejection(
         self, user_id: int, metric: str, used: int, limit: int

@@ -46,8 +46,18 @@ def test_endpoints_require_login() -> None:
     assert client.post("/api/v1/etl/run").status_code == 401
 
 
+def test_endpoints_require_admin(signed_in: Any) -> None:
+    """E2b 的越权面修复：此前**任何登录用户**都能触发一次全局数据拉取、看系统调度状态。
+
+    现在普通用户 403（不是 404——缺的是角色，不是「资源不存在」，`require_admin` 里有理由）。
+    夹具刻意用普通用户：`signed_in_admin` 会让这条永远绿。
+    """
+    assert client.get("/api/v1/etl/status").status_code == 403
+    assert client.post("/api/v1/etl/run").status_code == 403
+
+
 @pytest.mark.usefixtures("etl_off")
-def test_status_merges_runner_and_scheduler(signed_in: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_merges_runner_and_scheduler(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(etl_api.runner, "status", lambda data_dir=None: dict(STATUS_STUB))
     monkeypatch.setattr(etl_api.runner, "is_running", lambda: False)
 
@@ -60,7 +70,7 @@ def test_status_merges_runner_and_scheduler(signed_in: Any, monkeypatch: pytest.
     assert body["scheduler"]["next_run_at"] is None
 
 
-def test_run_conflicts_when_already_running(signed_in: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_conflicts_when_already_running(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """并发跑会同时写同一批文件——必须挡在入口，不是靠「大概率不会撞上」。"""
     monkeypatch.setattr(etl_api.runner, "is_running", lambda: True)
 
@@ -71,7 +81,7 @@ def test_run_conflicts_when_already_running(signed_in: Any, monkeypatch: pytest.
 
 
 def test_run_starts_in_background_and_answers_immediately(
-    signed_in: Any, monkeypatch: pytest.MonkeyPatch
+    signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """一轮要跑几十秒到几分钟，端点只负责起跑——不能把 HTTP 请求挂在那儿。"""
     called: list[int] = []
@@ -88,7 +98,7 @@ def test_run_starts_in_background_and_answers_immediately(
     assert called, "后台线程没有跑起来"
 
 
-def test_safe_run_swallows_errors(signed_in: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_safe_run_swallows_errors(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """后台线程里的异常没人接手——必须就地记日志，不能让它冒到 asyncio 的默认钩子上。"""
 
     def boom(trailing: int) -> None:

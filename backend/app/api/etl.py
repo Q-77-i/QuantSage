@@ -16,7 +16,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from app.core.auth import require_user
+from app.core.auth import require_admin
 from app.core.config import get_settings
 from app.data import bars
 from app.etl import runner, scheduler
@@ -27,8 +27,12 @@ router = APIRouter(prefix="/api/v1/etl", tags=["etl"])
 
 
 @router.get("/status")
-async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(require_user)]) -> dict[str, Any]:
-    """语料覆盖、缺口、最近一次运行、调度器状态（含行情按需刷新那一路，M2d）。"""
+async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(require_admin)]) -> dict[str, Any]:
+    """语料覆盖、缺口、最近一次运行、调度器状态（含行情按需刷新那一路，M2d）。
+
+    **admin 门（E2b）**：这是系统级运维视图（全市场覆盖率与调度时刻），不是用户资产。
+    此前任何登录用户都能看、能触发——本轮把它归到 admin，是本段唯一的越权面修复。
+    """
     settings = get_settings()
     result = await asyncio.to_thread(runner.status)
     result["running"] = runner.is_running()
@@ -55,8 +59,11 @@ async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(requ
 
 
 @router.post("/run", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_run(_: Annotated[dict[str, Any], Depends(require_user)]) -> dict[str, Any]:
-    """手动触发一次日增量（回落窗口），后台执行、立即回话。"""
+async def trigger_run(_: Annotated[dict[str, Any], Depends(require_admin)]) -> dict[str, Any]:
+    """手动触发一次日增量（回落窗口），后台执行、立即回话。
+
+    **admin 门（E2b）**：一次触发是**全局**动作（全市场语料/行情），影响所有用户。
+    """
     if runner.is_running():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已有一次 ETL 在执行")
     settings = get_settings()

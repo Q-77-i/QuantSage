@@ -41,6 +41,7 @@ def test_register_creates_user_and_signs_in(client: TestClient) -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["email"] == "alice@example.com"  # 统一转小写入库
+    assert body["role"] == "user"  # 注册一律是普通用户（E2b）；提权走 grant_admin 脚本
     assert "password" not in response.text  # 明文不回显
     assert COOKIE_NAME in response.cookies
 
@@ -155,7 +156,8 @@ def test_me_returns_current_user(client: TestClient) -> None:
     response = client.get("/api/v1/auth/me")
 
     assert response.status_code == 200
-    assert response.json() == {"id": 1, "email": "alice@example.com"}
+    # `role` 自 E2b 起随行返回：注册出来的一律是普通用户，前端据此决定要不要显示 admin 入口
+    assert response.json() == {"id": 1, "email": "alice@example.com", "role": "user"}
 
 
 def test_me_after_logout_is_401(client: TestClient) -> None:
