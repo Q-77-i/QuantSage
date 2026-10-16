@@ -1,7 +1,7 @@
 # QuantSage Roadmap
 
 > 状态图例：✅ 已完成 · 🚧 进行中 · ⬜ 未开始 · ✂️ 已砍（后置）
-> 功能定义与验收见 `docs/PRD.md`；技术规格见 `docs/specs/`；**逐次交付的明细与实测读数见 `CHANGELOG.md`**。
+> 功能定义与验收见 `docs/PRD.md`；技术规格见 `docs/specs/`；**逐次交付的明细与实测读数**见 SPEC 的变更记录（`docs/specs/*.md` 的 §11/§13——**P3 的交付都在这里，滚动追加**）；**里程碑级总结**（含 tag）见 `CHANGELOG.md`。
 > 本文件只记**状态与待决事项**，不复述交付过程——那些在 CHANGELOG 里，不在这里写第二遍。
 
 ## 当前焦点
