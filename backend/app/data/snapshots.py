@@ -63,8 +63,11 @@ def take(
 ) -> dict[str, Any] | None:
     """把当前两份清单抄一份进 `_snapshots/`，追加索引行并顺手滚动保留份数。
 
-    两份清单都不在（新数据目录 / 还没落过盘）时返回 `None` 且**不落空快照**——空快照回滚
-    起来是灾难（它会把一个空目录当成"目标状态"）。
+    两种情形返回 `None` 且**不落任何东西**：
+
+    * 两份清单都不在（新数据目录 / 还没落过盘）——空快照回滚起来是灾难（它会把一个空目录
+      当成「目标状态」）；
+    * 两份清单与**最新那份快照逐字节相同**——状态没变，再记一份只是占窗口（见 `_same_as_newest`）。
     """
     base = _base(data_dir)
     present = {
@@ -82,6 +85,12 @@ def take(
     try:
         for channel, source in present.items():
             shutil.copy2(source, staging / MANIFEST_NAMES[channel])
+        if _same_as_newest(base, staging):
+            # 状态与上一份逐字节相同 ⇒ 再记一份只是占窗口。
+            # 实测支撑：跑一轮集成套件会触发 11 次空转 catchup（7 天进出、清单一个字节没变），
+            # 11/20 的窗口就这么没了——真快照会被挤出去。**幂等靠内容，不靠调用方自觉。**
+            shutil.rmtree(staging, ignore_errors=True)
+            return None
         os.replace(staging, dir_for(base, ts))
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
@@ -162,6 +171,25 @@ def _summarize(channel: str, path: Path) -> dict:
         "digest": fingerprint.get("digest") or None,
         "rows": int(fingerprint.get("rows") or 0),
     }
+
+
+def _same_as_newest(base: Path, staging: Path) -> bool:
+    """staging 里的两份清单与**最新那份快照**逐字节相同吗。
+
+    只比同名文件；一路有、另一路没有即视为不同（那正是「语料刚开始落盘」这类真变化）。
+    最新那份快照的目录若已被删（人手工清过），按「不同」处理——宁可多记一份，也不要
+    因为找不到参照就把一次真变化吞掉。
+    """
+    rows = read_index(base)
+    if not rows:
+        return False
+    newest = dir_for(base, rows[0]["ts"])
+    if not newest.is_dir():
+        return False
+    names = {path.name for path in staging.iterdir()}
+    if names != {path.name for path in newest.iterdir()}:
+        return False
+    return all((staging / name).read_bytes() == (newest / name).read_bytes() for name in names)
 
 
 def _stamp(at: datetime | None) -> str:

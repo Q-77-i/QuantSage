@@ -217,6 +217,10 @@ def main() -> int:  # noqa: C901
         if status != 403:
             failures.append(f"普通用户应 403，实得 {status}")
 
+        # 回滚前把当前清单抄下来——第 6 条判据要拿它比对「退路有据可依」
+        before = {
+            name: (tmp / "_meta" / name).read_bytes() for name in ("bars.json", "events.json")
+        }
         started = time.monotonic()
         status, body, _ = http(
             "POST", f"{base}/api/v1/data/rollback", body={"snapshot": ts, "confirm": ts}, cookie=cookie
@@ -242,13 +246,22 @@ def main() -> int:  # noqa: C901
         if got != want:
             failures.append("还原出来的分片 sha 与清单不符")
 
-        # ⑥ 自动留退路
+        # ⑥ 退路有据可依：回滚**前**那一版必须能在快照里找到。
+        # ⚠ 判据**不是**「多了一条 scope=rollback」——状态没变时那份会被去重（最新那份就是退路），
+        # 所以真正的不变量是「存在一份与回滚前状态逐字节相同的快照」。
         index_lines = (tmp / "_snapshots" / "index.jsonl").read_text().splitlines()
         index = [json.loads(line) for line in index_lines if line.strip()]
-        retreat = [item for item in index if item["scope"] == "rollback"]
-        say(f"6. 自动留退路：索引里出现 {len(retreat)} 条 `scope=rollback` 的快照")
+        def _matches(item) -> bool:
+            folder = tmp / "_snapshots" / item["ts"]
+            return all(
+                (folder / name).is_file() and (folder / name).read_bytes() == content
+                for name, content in before.items()
+            )
+        retreat = [item for item in index if _matches(item)]
+        scopes = {item["scope"] for item in retreat}
+        say(f"6. 退路有据可依：{len(retreat)} 份快照与回滚前状态逐字节相同（scope={sorted(scopes)}）")
         if not retreat:
-            failures.append("没有留退路快照")
+            failures.append("找不到与回滚前状态一致的快照——退路没有据可依")
     except _Bail:
         pass
     finally:

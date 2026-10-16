@@ -63,11 +63,15 @@ def test_take_copies_manifests_and_appends_an_index_row(tmp_path: Path) -> None:
 
 
 def test_take_twice_in_the_same_second_does_not_collide(tmp_path: Path) -> None:
-    """同一秒内连着打两份（refresh 之后紧跟一次 rebuild 是真实路径）不能互相覆盖。"""
+    """同一秒内连着打两份（refresh 之后紧跟一次 rebuild 是真实路径）不能互相覆盖。
+
+    两份的内容**必须不同**才成立——相同状态会被去重判据挡掉（见下一条）。
+    """
     write_meta(tmp_path, bars=bars_manifest(1), events=events_manifest(1))
     at = datetime(2026, 10, 16, 22, 15, 30)
 
     first = snapshots.take(tmp_path, scope="a", reason="一", at=at)
+    write_meta(tmp_path, bars=bars_manifest(2), events=events_manifest(1))  # 换了 2 片
     second = snapshots.take(tmp_path, scope="b", reason="二", at=at)
 
     assert first["ts"] != second["ts"]
@@ -94,8 +98,9 @@ def test_take_with_no_manifest_at_all_is_a_noop(tmp_path: Path) -> None:
 
 
 def test_prune_keeps_the_newest(tmp_path: Path) -> None:
-    write_meta(tmp_path, bars=bars_manifest(1), events=events_manifest(1))
     for minute in range(5):
+        # 每轮**换一份内容**：相同状态会被去重挡掉（见 test_take_skips_when_nothing_changed）
+        write_meta(tmp_path, bars=bars_manifest(minute + 1), events=events_manifest(1))
         snapshots.take(tmp_path, scope="daily", reason=f"第 {minute} 轮", at=datetime(2026, 10, 16, 22, minute))
 
     dropped = snapshots.prune(tmp_path, keep=2)
@@ -107,8 +112,8 @@ def test_prune_keeps_the_newest(tmp_path: Path) -> None:
 
 def test_take_prunes_automatically(tmp_path: Path) -> None:
     """保留份数是**打快照时顺手做的**，不靠人记得跑 prune（那样迟早涨到几十 GB）。"""
-    write_meta(tmp_path, bars=bars_manifest(1), events=events_manifest(1))
     for minute in range(get_settings().snapshot_keep + 3):
+        write_meta(tmp_path, bars=bars_manifest(minute + 1), events=events_manifest(1))
         snapshots.take(tmp_path, scope="daily", reason=f"第 {minute} 轮", at=datetime(2026, 10, 16, 22, minute))
 
     assert len(snapshots.read_index(tmp_path)) == get_settings().snapshot_keep
@@ -134,3 +139,40 @@ def test_write_is_atomic(tmp_path: Path) -> None:
 
     leftovers = [p.name for p in snapshots.root(tmp_path).iterdir() if ".partial" in p.name]
     assert leftovers == []
+
+
+def test_take_skips_when_nothing_changed(tmp_path: Path) -> None:
+    """状态与上一份**逐字节相同** ⇒ 不记第二份。
+
+    实测由来：跑一轮集成套件会触发 11 次空转 catchup（清单一个字节没变），11/20 的回滚
+    窗口就这么被占满了——真快照会被挤出去。**幂等靠内容，不靠调用方自觉。**
+    """
+    write_meta(tmp_path, bars=bars_manifest(1), events=events_manifest(1))
+    first = snapshots.take(tmp_path, scope="catchup", reason="7 天进出")
+
+    again = snapshots.take(tmp_path, scope="catchup", reason="7 天进出")
+    snapshots.take(tmp_path, scope="daily", reason="又一个空转")
+
+    assert first is not None
+    assert again is None
+    assert len(snapshots.read_index(tmp_path)) == 1
+
+
+def test_take_records_again_once_something_moves(tmp_path: Path) -> None:
+    """一旦有真变化就继续记——去重不能把变化吞掉。"""
+    write_meta(tmp_path, bars=bars_manifest(1), events=events_manifest(1))
+    snapshots.take(tmp_path, scope="catchup", reason="一")
+    write_meta(tmp_path, bars=bars_manifest(2), events=events_manifest(1))
+
+    assert snapshots.take(tmp_path, scope="catchup", reason="二") is not None
+    assert len(snapshots.read_index(tmp_path)) == 2
+
+
+def test_take_records_when_a_channel_appears(tmp_path: Path) -> None:
+    """从「只有行情」变成「行情 + 语料」也是变化（文件集合不同即不同）。"""
+    write_meta(tmp_path, bars=bars_manifest(1))
+    snapshots.take(tmp_path, scope="daily", reason="一")
+    write_meta(tmp_path, bars=bars_manifest(1), events=events_manifest(1))
+
+    assert snapshots.take(tmp_path, scope="daily", reason="二") is not None
+    assert len(snapshots.read_index(tmp_path)) == 2
