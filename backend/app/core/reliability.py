@@ -306,6 +306,13 @@ _DEP_DEFAULTS: dict[str, tuple[Retry, Circuit]] = {
     ),
     # 小石 MCP：工具调用是只读查询，快失败（连不上）重试一次值得；慢失败由
     # `max_total_seconds` 拦住（等不起就不等），不必另设判据。
+    # 数据层缓存（E3c）：**失败即开路**。它是纯加速件——一次连不上就该立刻停止尝试，
+    # 否则每个请求都要先付一遍连接超时（那比没有缓存还慢）。冷却 30s 到了再放一个探测。
+    # `trip()` 的 warning 只在状态**真正翻成 open** 时打一条 ⇒ 「每个冷却窗口只记一条」天然成立。
+    "redis-cache": (
+        Retry(max_attempts=1, respect_retry_after=False),
+        Circuit(threshold=1, cooldown=30.0),
+    ),
     "xiaoshi-mcp": (
         Retry(max_attempts=2, base=0.3, max_total_seconds=20.0, respect_retry_after=False),
         Circuit(threshold=5, cooldown=60.0),

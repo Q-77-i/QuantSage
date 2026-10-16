@@ -21,7 +21,7 @@
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
 | 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用 |
 | 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | 🚧 checkpointer + 四张自有表（用户 / 会话归属 / 自选股 / 回测记录）已用；Store 待用 |
-| 缓存 | Redis（E3 热点查询缓存，可降级） | ⬜ P3（P1 仅 compose 服务）；限流/熔断走进程内、不依赖 Redis（E4 定稿） |
+| 缓存 | Redis（E3c 数据层热点缓存，可降级） | ✅ 已用（代际键 + L1 进程内 + L2 Redis；**失效 = 换键**，不靠「ETL 之后记得清缓存」；Redis 挂了熔断直读。限流/熔断仍走进程内、不依赖 Redis） |
 | 向量库 | Qdrant | ⬜ P2–P3（P1 仅 compose 服务） |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | 🚧 快档已用；深度档 P2 起 |
 | LLM 网关 | LiteLLM | ✅ 已用 |

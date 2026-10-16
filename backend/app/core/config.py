@@ -91,6 +91,15 @@ class Settings(BaseSettings):
     # 启动时补一次（延后 300s：排在语料 +20s、行情 +180s 之后，三条互斥的活儿别挤一起）
     data_health_catchup_on_start: bool = True
 
+    # ── 数据层缓存（E3c）：L1 进程内 + L2 Redis，代际键 ──
+    # **默认关**（与 ETL / BARS 同约定）。⚠ 开关只管 **L2**：L1 是进程内记忆化，没有外部
+    # 依赖、收益还更大（实测 26.9× > Redis 的 8–17×），关掉它没有任何好处（SPEC §4.6）。
+    cache_enabled: bool = False
+    # TTL 是**兜底不是失效手段**：失效靠键里的数据代际（清单变了键就变了），TTL 只管
+    # 「代际算不出来时别永久读到旧值」与回收冷键
+    cache_ttl_seconds: int = 900
+    cache_key_prefix: str = "qs:cache:v1"
+
     # ── 数据快照（E3b）：清单归档的保留份数 ──
     # 快照存的是**指针**（两份 _meta 清单的副本，约 170KB/份），字节早在 data/raw/o 的
     # 内容寻址对象库里 ⇒ 20 份约 3.4MB，可忽略。**这是回滚能力的深度**：

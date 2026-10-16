@@ -85,7 +85,15 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    # `--maxmemory` + `allkeys-lru`：**业务缓存的必备前提**（E3c），不是可选优化。
+    # 默认的 `maxmemory=0` + `noeviction` 意味着**没有上限、满了也不淘汰**——缓存挂上去
+    # 就是一条涨到 OOM 的曲线（实测 2026-10-16：`maxmemory=0`、`policy=noeviction`、`DBSIZE=0`）。
+    # 256MB 的定标：单标的全史载荷约 1.2MB ⇒ 够放约 200 份该量级的载荷，而热点标的远没这么多。
+    # ⚠ `langfuse-redis` 那条**必须保持 noeviction**（BullMQ 的要求，它不能丢队列消息）——
+    # 两个实例分开正是为此（见本文件顶部与 SPEC §4.6）。
+    command:
+      ["redis-server", "--save", "60", "1", "--appendonly", "no",
+       "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:

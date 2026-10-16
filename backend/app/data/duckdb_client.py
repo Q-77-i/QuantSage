@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 
 from app.core.config import get_settings
+from app.data import cache
 from app.data.calendar import CALENDAR_FILE
 
 BARS_VIEW = "bars"
@@ -76,7 +77,8 @@ def bars(
     adjust: str = "qfq",
     data_dir: Path | None = None,
 ) -> list[dict]:
-    """单标的日线，按 trade_date 升序。`start` / `end` 为 YYYY-MM-DD（含端点）。
+    """单标的日线（**带缓存**，见 `app/data/cache.py`——加在本模块内部是 E3c 的纪律：
+    一处实现，28 个调用点不会各做一半）。，按 trade_date 升序。`start` / `end` 为 YYYY-MM-DD（含端点）。
 
     **只返回四价齐全的 bar**。数据源里 `trading_status='no_turnover_observed'` 的日子
     可能整行价量为空（全市场约 271 行/复权，全落在 2026-08-19 之后）——那是「当天没观测到
@@ -84,6 +86,25 @@ def bars(
     持仓估值当日期末权益直接塌到现金，回测静默给出 -100%。**无价即无价，不是零价**，
     故在这一层剔除（原始行仍在 Parquet 里，SQL 可查；体检脚本 M2c 会统计其数量）。
     """
+    return cache.through(
+        "bars",
+        (adjust, symbol, start, end),
+        lambda: _bars_query(symbol, start=start, end=end, adjust=adjust, data_dir=data_dir),
+        # ⚠ 传**解析后**的目录，不是入参：缓存的键必须与 `connect()` 实际读的目录一致——
+        # 两者不一致时（`data_dir=None` 走 settings、`resolve_data_dir` 被 monkeypatch 等）
+        # 缓存会按 A 目录算键、从 B 目录读数据，实测表现为「测试里所有 None 调用共用一个键」
+        data_dir=resolve_data_dir(data_dir),
+    )
+
+
+def _bars_query(
+    symbol: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    adjust: str = "qfq",
+    data_dir: Path | None = None,
+) -> list[dict]:
     con = connect(data_dir)
     try:
         sql = (
@@ -108,6 +129,18 @@ def trade_dates(adjust: str | None = None, data_dir: Path | None = None) -> list
     日历对账专用：`bars()` 是逐标的的，对账要的是「全市场有哪些交易日」。**走视图而非
     逐片 glob**——分片命名或布局变了，这里跟着视图一起变，不会留下第二份会漂移的实现。
     """
+    return cache.through(
+        "trade_dates",
+        (adjust,),
+        lambda: _trade_dates_query(adjust=adjust, data_dir=data_dir),
+        # ⚠ 传**解析后**的目录，不是入参：缓存的键必须与 `connect()` 实际读的目录一致——
+        # 两者不一致时（`data_dir=None` 走 settings、`resolve_data_dir` 被 monkeypatch 等）
+        # 缓存会按 A 目录算键、从 B 目录读数据，实测表现为「测试里所有 None 调用共用一个键」
+        data_dir=resolve_data_dir(data_dir),
+    )
+
+
+def _trade_dates_query(adjust: str | None = None, data_dir: Path | None = None) -> list[date]:
     con = connect(data_dir)
     try:
         sql = f"SELECT DISTINCT trade_date FROM {BARS_VIEW}"
@@ -134,6 +167,19 @@ def latest_closes(
     """
     if not symbols:
         return {}
+    # 键里对 symbols **排序**（结果按 symbol 索引，与入参顺序无关）——提高命中率，不改语义
+    return cache.through(
+        "latest_closes",
+        (adjust, tuple(sorted(symbols))),
+        lambda: _latest_closes_query(symbols, adjust=adjust, data_dir=data_dir),
+        # ⚠ 传**解析后**的目录，不是入参：缓存的键必须与 `connect()` 实际读的目录一致——
+        # 两者不一致时（`data_dir=None` 走 settings、`resolve_data_dir` 被 monkeypatch 等）
+        # 缓存会按 A 目录算键、从 B 目录读数据，实测表现为「测试里所有 None 调用共用一个键」
+        data_dir=resolve_data_dir(data_dir),
+    )
+
+
+def _latest_closes_query(symbols: list[str], *, adjust: str = "qfq", data_dir: Path | None = None) -> dict[str, dict]:
     con = connect(data_dir)
     try:
         placeholders = ", ".join("?" for _ in symbols)
@@ -186,6 +232,39 @@ def cross_section(
     """
     if sort not in CROSS_SECTION_SORTS:
         raise ValueError(f"不支持的排序键 {sort!r}")
+    return cache.through(
+        "cross_section",
+        (trade_date, adjust, sort, order, tuple(symbols or ()), industry, limit, offset),
+        lambda: _cross_section_query(
+            trade_date,
+            adjust=adjust,
+            sort=sort,
+            order=order,
+            symbols=symbols,
+            industry=industry,
+            limit=limit,
+            offset=offset,
+            data_dir=data_dir,
+        ),
+        # ⚠ 传**解析后**的目录，不是入参：缓存的键必须与 `connect()` 实际读的目录一致——
+        # 两者不一致时（`data_dir=None` 走 settings、`resolve_data_dir` 被 monkeypatch 等）
+        # 缓存会按 A 目录算键、从 B 目录读数据，实测表现为「测试里所有 None 调用共用一个键」
+        data_dir=resolve_data_dir(data_dir),
+    )
+
+
+def _cross_section_query(
+    trade_date: str | None = None,
+    *,
+    adjust: str = "qfq",
+    sort: str = "change_pct",
+    order: str = "desc",
+    symbols: list[str] | None = None,
+    industry: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    data_dir: Path | None = None,
+) -> dict[str, object]:
     direction = "DESC" if order == "desc" else "ASC"
 
     con = connect(data_dir)

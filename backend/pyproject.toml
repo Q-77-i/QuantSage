@@ -43,6 +43,7 @@ dependencies = [
     # 版本按 spike 实测通过的那一版钉住（macOS arm64，无 CUDA）。
     "FlagEmbedding==1.4.2",
     "torch==2.14.1",
+    "redis==7.1.0",
 ]
 
 [dependency-groups]
