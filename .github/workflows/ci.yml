@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 仓库的 uv 默认索引钉在**清华镜像**（为国内开发机）。GitHub runner 在境外，
-  # 不覆盖的话装依赖会慢到不可用。**只改 CI，不动本机配置**（SPEC §7.1）。
+  # ⚠ 这一条**只管解析、管不到 `--frozen` 的下载**（锁文件逐包记着清华镜像的地址）——
+  # 「CI 不依赖第三方镜像」实际由后端 job 里那步 sed 承担，别把它当保证。见 SPEC §7.1。
   UV_DEFAULT_INDEX: https://pypi.org/simple
   # `uv run` **默认会同步环境**——那样会把上面 `uv sync` 明确排除掉的 torch / FlagEmbedding
   # 重新装回来（约 2GB，实测首跑让后端 job 跑了 15 分钟）。同步已经在上一步做过了，
@@ -58,8 +58,15 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      # **锁文件里的主机名换成官方 PyPI**：`uv.lock` 逐包记着清华镜像的下载地址（1206 处），
+      # 而 `UV_DEFAULT_INDEX` 只管解析、管不到 `--frozen` 的下载 ⇒ 不换的话 CI 是靠第三方镜像
+      # 在装依赖，镜像一抖就红（2026-10-17 实测红过一次：nvidia-cufile 403，与当次提交无关）。
+      # 纯主机名替换，文件字节不变 ⇒ 锁里的 sha256 照样对得上；官方对 /packages/… 返
+      # 301 → files.pythonhosted.org，uv 跟随重定向（实测）。见 SPEC §7.1。
+      - name: 锁文件索引改指官方 PyPI（不依赖第三方镜像）
+        run: sed -i 's|pypi.tuna.tsinghua.edu.cn|pypi.org|g' uv.lock
       # torch / FlagEmbedding **不装**：离线套件实测完全不需要它们（用 import hook 屏蔽二者后
-      # 全绿；`app/` 全仓零模块级 torch 导入）。省约 2GB 与数分钟，`uv.lock` 不动。
+      # 全绿；`app/` 全仓零模块级 torch 导入）。省约 2GB 与数分钟，`uv.lock` 本身不动。
       - name: 装依赖
         run: uv sync --frozen --no-install-package torch --no-install-package FlagEmbedding
       - name: lint
