@@ -7,7 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Check, Input, Select } from "@/components/ui/form-controls";
 import { Pager } from "@/components/ui/pager";
 import { useDebounced } from "@/components/ui/use-debounced";
-import { orderLabel, toggleOrder, USAGE_SORT_CHOICES, type SortOrder, type UsageSortKey } from "@/lib/admin";
+import {
+  orderLabel,
+  rangeLabel,
+  toggleOrder,
+  USAGE_RANGE_CHOICES,
+  USAGE_SORT_CHOICES,
+  type SortOrder,
+  type UsageRangeDays,
+  type UsageSortKey,
+} from "@/lib/admin";
 import { api, describeError } from "@/lib/api";
 import { count } from "@/lib/format";
 import { offsetOf } from "@/lib/paging";
@@ -48,6 +57,7 @@ export function UsagePanel({
   const [typing, setTyping] = useState("");
   const [role, setRole] = useState("");
   const [activeOnly, setActiveOnly] = useState(false);
+  const [days, setDays] = useState<UsageRangeDays>(1);
   const [sort, setSort] = useState<UsageSortKey>("id");
   const [order, setOrder] = useState<SortOrder>("asc");
   const q = useDebounced(typing);
@@ -61,6 +71,7 @@ export function UsagePanel({
         offset: offsetOf(page, PAGE_SIZE),
         q,
         role,
+        days,
         // 关掉时不发这个参数（URL 干净，服务端默认也是 false）
         active_only: activeOnly || undefined,
         // 默认排序也不发（「登记顺序」是服务端的默认，URL 里不必带）
@@ -74,7 +85,7 @@ export function UsagePanel({
       if (ticket !== seq.current) return;
       setError(describeError(cause, "用量加载失败：后端未启动或网络不通。"));
     }
-  }, [page, q, role, activeOnly, sort, order]);
+  }, [page, q, role, activeOnly, days, sort, order]);
 
   useEffect(() => {
     void load();
@@ -94,7 +105,7 @@ export function UsagePanel({
     filterChanged.current();
     // 首次渲染跳过一次：不能把深链里的 `?page=` 拉回来（与标的浏览同一个做法）。
   // 排序也在这里回第 1 页——「第 7 页 + 换排序键」同样多半是空白
-  }, [q, role, activeOnly, sort, order]);
+  }, [q, role, activeOnly, days, sort, order]);
 
   const filtered = Boolean(q || role || activeOnly);
   return (
@@ -108,6 +119,18 @@ export function UsagePanel({
             checked={activeOnly}
             onChange={setActiveOnly}
           />
+          <Select
+            aria-label="时间范围"
+            className="w-28"
+            value={String(days)}
+            onChange={(event) => setDays(Number(event.target.value) as UsageRangeDays)}
+          >
+            {USAGE_RANGE_CHOICES.map((choice) => (
+              <option key={choice.days} value={choice.days}>
+                {choice.label}
+              </option>
+            ))}
+          </Select>
           <Select
             aria-label="按角色筛选"
             className="w-32"
@@ -158,23 +181,34 @@ export function UsagePanel({
       ) : null}
       {data ? (
         <>
+          {/* 两个口径必须说清：在飞任务是**此刻**，两个计数列是**区间累计** */}
           <p className="mt-1 text-xs text-ink-3" data-usage-summary>
-            在飞任务上限 {data.limits.active_tasks || "不限"} · 每日 Agent 调用上限{" "}
-            {data.limits.agent_calls_per_day || "不限"}（0 = 不限额；admin 不在限额内） ·
+            在飞任务：此刻的快照（上限 {data.limits.active_tasks || "不限"}） · Agent 调用上限{" "}
+            {data.limits.agent_calls_per_day || "不限"}/日（本视图为
+            <strong className="font-medium text-ink-2">{rangeLabel(days)}</strong>
+            累计；0 = 不限额，admin 不在限额内） ·
             {filtered ? `筛选后 ${count(data.total)} 个账号` : `共 ${count(data.total)} 个账号`}
             {q ? `（匹配「${q}」）` : ""}
           </p>
           {data.users.length === 0 ? (
             <p className="mt-3 text-sm text-ink-2">没有匹配的账号。</p>
           ) : (
-            <TableShell head={["账号", "角色", "在飞任务", "今日 Agent 调用", "今日被拒"]}>
+            <TableShell
+              head={[
+                "账号",
+                "角色",
+                "在飞任务（当前）",
+                `${rangeLabel(days)} Agent 调用`,
+                `${rangeLabel(days)}被拒`,
+              ]}
+            >
               {data.users.map((row) => (
                 <Row key={row.id}>
                   <Cell>{row.email}</Cell>
                   <Cell className="text-ink-3">{row.role}</Cell>
                   <Cell numeric>{count(row.active_tasks)}</Cell>
-                  <Cell numeric>{count(row.agent_calls_today)}</Cell>
-                  <Cell numeric>{count(row.rejected_today)}</Cell>
+                  <Cell numeric>{count(row.agent_calls)}</Cell>
+                  <Cell numeric>{count(row.rejected)}</Cell>
                 </Row>
               ))}
             </TableShell>

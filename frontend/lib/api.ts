@@ -218,6 +218,7 @@ export const api = {
       q?: string;
       role?: string;
       active_only?: boolean;
+      days?: number;
       sort?: string;
       order?: "asc" | "desc";
     } = {},

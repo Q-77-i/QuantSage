@@ -75,13 +75,13 @@ def test_usage_view_reports_each_column_from_its_own_source(signed_in_admin: Any
         "email": "alice@example.com",
         "role": "user",
         "active_tasks": 2,
-        "agent_calls_today": 3,
-        "rejected_today": 1,
+        "agent_calls": 3,
+        "rejected": 1,
     }
     # 没用量的一行是 0，不是缺列（前端不必写 if）
     assert rows["bob@example.com"]["active_tasks"] == 0
-    assert rows["bob@example.com"]["agent_calls_today"] == 0
-    assert rows["bob@example.com"]["rejected_today"] == 0
+    assert rows["bob@example.com"]["agent_calls"] == 0
+    assert rows["bob@example.com"]["rejected"] == 0
 
 
 def test_usage_view_reports_the_limits_once_at_the_top(signed_in_admin: Any) -> None:
@@ -277,8 +277,8 @@ def test_usage_view_sorts_by_readings(signed_in_admin: Any) -> None:
     seed(signed_in_admin, "busy@example.com", calls=5)
     seed(signed_in_admin, "mid@example.com", calls=2)
 
-    desc = client.get("/api/v1/admin/usage?sort=agent_calls_today&order=desc").json()
-    asc = client.get("/api/v1/admin/usage?sort=agent_calls_today&order=asc").json()
+    desc = client.get("/api/v1/admin/usage?sort=agent_calls&order=desc").json()
+    asc = client.get("/api/v1/admin/usage?sort=agent_calls&order=asc").json()
 
     assert [row["email"] for row in desc["users"]][:3] == [
         "busy@example.com",
@@ -297,9 +297,9 @@ def test_usage_view_sort_keeps_pagination_stable(signed_in_admin: Any) -> None:
     for index in range(6):
         seed(signed_in_admin, f"user{index}@example.com")
 
-    first = client.get("/api/v1/admin/usage?sort=agent_calls_today&limit=3").json()["users"]
+    first = client.get("/api/v1/admin/usage?sort=agent_calls&limit=3").json()["users"]
     second = client.get(
-        "/api/v1/admin/usage?sort=agent_calls_today&limit=3&offset=3"
+        "/api/v1/admin/usage?sort=agent_calls&limit=3&offset=3"
     ).json()["users"]
 
     assert [row["email"] for row in first] == [f"user{i}@example.com" for i in range(3)]
@@ -324,3 +324,75 @@ def test_usage_view_rejects_unknown_sort_key(signed_in_admin: Any) -> None:
     """白名单挡在 422——`ORDER BY` 拼的是标识符，绝不能把参数直接拼进去。"""
     assert client.get("/api/v1/admin/usage?sort=password_hash").status_code == 422
     assert client.get("/api/v1/admin/usage?order=sideways").status_code == 422
+
+
+# ── 时间窗（E2c 追加：今日 / 近 7 天 / 近 30 天）────────────────
+
+
+def _two_days_ago() -> str:
+    """窗内的某一天（不是今天）——用它证明「近 7 天」真的把多天加起来了。"""
+    from datetime import timedelta
+
+    from app.core import quota
+
+    return quota.period_key(quota.day_start() - timedelta(days=2))
+
+
+def test_usage_view_sums_the_window(signed_in_admin: Any) -> None:
+    user = seed(signed_in_admin, "alice@example.com", calls=3)  # 今天 3 次
+    signed_in_admin.usage_counters[(user["id"], "agent_calls", _two_days_ago())] = 4
+
+    today = client.get("/api/v1/admin/usage?days=1&q=alice").json()["users"][0]
+    week = client.get("/api/v1/admin/usage?days=7&q=alice").json()["users"][0]
+
+    assert today["agent_calls"] == 3  # 今日是窗口的 n=1 特例
+    assert week["agent_calls"] == 7  # 近 7 天把两天加起来
+    assert week["active_tasks"] == today["active_tasks"] == 0  # gauge **不随窗口变**
+
+
+def test_usage_view_window_respects_its_start(signed_in_admin: Any) -> None:
+    """窗口外的日子不算——否则「近 7 天」会把上个月的一起加进来。"""
+    from datetime import timedelta
+
+    from app.core import quota
+
+    user = seed(signed_in_admin, "alice@example.com", calls=1)
+    signed_in_admin.usage_counters[(user["id"], "agent_calls", _two_days_ago())] = 4
+    signed_in_admin.usage_counters[
+        (user["id"], "agent_calls", quota.period_key(quota.day_start() - timedelta(days=40)))
+    ] = 100
+
+    assert client.get("/api/v1/admin/usage?days=7&q=alice").json()["users"][0][
+        "agent_calls"
+    ] == 5
+    assert client.get("/api/v1/admin/usage?days=30&q=alice").json()["users"][0][
+        "agent_calls"
+    ] == 5  # 40 天前那条仍在窗外
+    assert client.get("/api/v1/admin/usage?days=7&q=alice").json()["users"][0][
+        "rejected"
+    ] == 0
+
+
+def test_usage_view_window_applies_to_rejections_too(signed_in_admin: Any) -> None:
+    """两个计数列**同一起点**（一个按 period_key、一个按 at，起点必须是同一刻）。"""
+    seed(signed_in_admin, "alice@example.com", rejections=2)
+
+    assert client.get("/api/v1/admin/usage?days=1&q=alice").json()["users"][0]["rejected"] == 2
+    assert client.get("/api/v1/admin/usage?days=7&q=alice").json()["users"][0]["rejected"] == 2
+
+
+def test_usage_view_window_only_accepts_the_three_buckets(signed_in_admin: Any) -> None:
+    assert client.get("/api/v1/admin/usage?days=3").status_code == 422
+    assert client.get("/api/v1/admin/usage?days=365").status_code == 422
+
+
+def test_usage_window_is_a_pure_function() -> None:
+    """跨月由日期运算兜住（窗口起点直接减天数，不做「同月」假设）。"""
+    from datetime import datetime
+
+    from app.core import quota
+
+    moment = datetime(2026, 11, 3, 10, 0, tzinfo=quota.CN_TZ)
+    assert quota.window(1, moment)[:2] == ("2026-11-03", "2026-11-03")
+    assert quota.window(7, moment)[:2] == ("2026-10-28", "2026-11-03")
+    assert quota.window(30, moment)[:2] == ("2026-10-05", "2026-11-03")

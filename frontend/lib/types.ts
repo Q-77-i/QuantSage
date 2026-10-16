@@ -54,9 +54,11 @@ export interface AdminUsageRow {
   id: number;
   email: string;
   role: string;
+  /** **gauge**：此刻在飞几个——**不随时间窗变** */
   active_tasks: number;
-  agent_calls_today: number;
-  rejected_today: number;
+  /** 区间量：跟随请求的 `days`（1 / 7 / 30） */
+  agent_calls: number;
+  rejected: number;
 }
 
 /** 分页三键（E2c 起两个 admin 列表都有）：`total` 是**过滤后**的命中数，分页控件靠它算总页数。 */

@@ -79,6 +79,17 @@ def day_start(now: datetime | None = None) -> datetime:
     return datetime.combine(moment.date(), time.min, tzinfo=CN_TZ)
 
 
+def window(days: int, now: datetime | None = None) -> tuple[str, str, datetime]:
+    """配额视图的时间窗（E2c 追加）：返回 `(起始 period_key, 结束 period_key, 起始时刻)`。
+
+    `days=1` 就是「今日」——与 E2a 的计数口径同一个键。跨月/跨年由日期运算兜住
+    （`period_key` 是 ISO 文本，区间比较天然按字典序正确）。
+    """
+    anchor = day_start(now)
+    since = anchor - timedelta(days=max(1, days) - 1)
+    return period_key(since), period_key(anchor), since
+
+
 def reset_at(now: datetime | None = None) -> str:
     """下一次归零的时刻（次日 00:00 +08）——进拒绝体，让用户知道要等多久。"""
     return (day_start(now) + timedelta(days=1)).isoformat()

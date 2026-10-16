@@ -11,13 +11,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core import quota
 from app.core.auth import require_admin, require_db
 from app.core.config import get_settings
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+
+#: 时间窗的三个档（用户 2026-10-16 定：固定档而不是自定义起止日期）
+BUCKETS = (1, 7, 30)
 
 
 @router.get("/usage")
@@ -29,8 +32,11 @@ async def usage(
     q: Annotated[str, Query(max_length=200)] = "",
     role: Annotated[str, Query(pattern="^(admin|user)?$")] = "",
     active_only: bool = False,
+    # 刻意**不用** `Literal[1, 7, 30]`：Pydantic 的 Literal 不会把查询串 `"7"` 当成 7
+    # （按类型比对 ⇒ 恒 422）。用 int 收窄取值范围 + 下面显式校验，顺带能给中文提示
+    days: Annotated[int, Query()] = 1,
     sort: Annotated[
-        Literal["id", "email", "active_tasks", "agent_calls_today", "rejected_today"],
+        Literal["id", "email", "active_tasks", "agent_calls", "rejected"],
         Query(),
     ] = "id",
     order: Annotated[Literal["asc", "desc"], Query()] = "asc",
@@ -45,11 +51,19 @@ async def usage(
 
     排序 `sort` / `order` 走**白名单**（`Literal` 挡在 422；`ORDER BY` 拼的是标识符、
     参数占位符在那儿没用）。分页与排序**必须同侧**：只排当前页等于没排——所以排序在 SQL 里。
+
+    **时间窗 `days`（1 / 7 / 30，默认 1 = 今日）**：两个计数列（`agent_calls` / `rejected`）
+    是区间量，跟随窗口；**`active_tasks` 是 gauge，恒为此刻**——「近 7 天的在飞任务」这个词
+    本身不成立（SPEC §3.5 写明，界面上也标了）。
     """
+    if days not in BUCKETS:
+        raise HTTPException(status_code=422, detail=f"days 只接受 {' / '.join(map(str, BUCKETS))}")
     settings = get_settings()
-    period, since = quota.period_key(), quota.day_start()
+    # 时间窗（E2c 追加）：两个计数列跟随它；`active_tasks` 是 gauge、**不随窗口变**
+    period_from, period_to, since = quota.window(days)
     rows = await db.admin_usage(
-        period,
+        period_from,
+        period_to,
         since,
         limit=limit,
         offset=offset,
@@ -65,7 +79,12 @@ async def usage(
             "agent_calls_per_day": settings.quota_agent_calls_per_day,
         },
         "total": await db.admin_usage_total(
-            period, since, q=q, role=role, active_only=active_only
+            period_from,
+            period_to,
+            since,
+            q=q,
+            role=role,
+            active_only=active_only,
         ),
         "offset": offset,
         "limit": limit,

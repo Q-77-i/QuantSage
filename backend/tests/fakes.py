@@ -842,7 +842,9 @@ class FakeDatabase:
             }
         )
 
-    def _usage_rows(self, period_key: str, since: datetime, q: str) -> list[dict[str, Any]]:
+    def _usage_rows(
+        self, period_from: str, period_to: str, since: datetime, q: str
+    ) -> list[dict[str, Any]]:
         """过滤后的**全部**行——两个方法共用它（真库那份共用的是一对 SQL 常量）。
 
         搜索按真库的 `ILIKE %q%` 语义照抄（**不区分大小写**的包含匹配）——替身若用
@@ -858,7 +860,12 @@ class FakeDatabase:
                 for row in self.tasks.values()
                 if row["user_id"] == user["id"] and row["status"] in ("queued", "running")
             )
-            calls = self.usage_counters.get((user["id"], "agent_calls", period_key), 0)
+            # 与真库同语义：调用按 `period_key` **区间求和**（`days=1` 是它的 n=1 特例）
+            calls = sum(
+                used
+                for (uid, metric, day), used in self.usage_counters.items()
+                if uid == user["id"] and metric == "agent_calls" and period_from <= day <= period_to
+            )
             rejected = sum(
                 1
                 for row in self.quota_rejection_rows
@@ -870,8 +877,8 @@ class FakeDatabase:
                     "email": user["email"],
                     "role": user.get("role") or "user",
                     "active_tasks": active,
-                    "agent_calls_today": calls,
-                    "rejected_today": rejected,
+                    "agent_calls": calls,
+                    "rejected": rejected,
                 }
             )
         return sorted(rows, key=lambda row: row["id"])
@@ -887,13 +894,14 @@ class FakeDatabase:
             rows = [
                 row
                 for row in rows
-                if row["active_tasks"] or row["agent_calls_today"] or row["rejected_today"]
+                if row["active_tasks"] or row["agent_calls"] or row["rejected"]
             ]
         return rows
 
     async def admin_usage(
         self,
-        period_key: str,
+        period_from: str,
+        period_to: str,
         since: datetime,
         *,
         limit: int,
@@ -908,20 +916,27 @@ class FakeDatabase:
 
         排序也照抄真库的语义：**按 `id` 兜底**（同值时顺序确定，否则翻页会重复或漏行）。
         """
-        rows = self._filter_usage(self._usage_rows(period_key, since, q), role, active_only)
+        rows = self._filter_usage(
+            self._usage_rows(period_from, period_to, since, q), role, active_only
+        )
         rows.sort(key=lambda row: (row[sort], row["id"]), reverse=order == "desc")
         return rows[offset : offset + limit]
 
     async def admin_usage_total(
         self,
-        period_key: str,
+        period_from: str,
+        period_to: str,
         since: datetime,
         *,
         q: str = "",
         role: str = "",
         active_only: bool = False,
     ) -> int:
-        return len(self._filter_usage(self._usage_rows(period_key, since, q), role, active_only))
+        return len(
+            self._filter_usage(
+                self._usage_rows(period_from, period_to, since, q), role, active_only
+            )
+        )
 
     async def quota_rejections(self, limit: int, offset: int = 0) -> list[dict[str, Any]]:
         """与真库同形：新的在前，邮箱随行（读它的只有 admin 面）。"""

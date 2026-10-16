@@ -40,16 +40,21 @@ def like_pattern(text: str) -> str:
 #: admin 用量视图的**行定义**（含三读数）与**过滤条件**——列表与计数**共用同一份**。
 #: 分两处写过一次就会漂：`total` 与 `rows` 用不同的 WHERE，前端的「共 N 个账号」
 #: 与实际能翻到的行数对不上，而且**不会报错**。
-#: 占位符顺序：`_USAGE_SELECT` 三个（period_key / since / 邮箱模式），`_USAGE_FILTER` 三个（role ×2 / 只看有读数）。
+#: 两个计数列是**区间量**（E2c 追加：今日 / 近 7 天 / 近 30 天），不是「今日」专用——
+#: 故列名叫 `agent_calls` / `rejected` 而非 `*_today`（名字得跟得住口径）。
+#: `active_tasks` 是 **gauge**（此刻在飞几个），**不随时间窗变**。
+#: 占位符顺序：`_USAGE_SELECT` 四个（period_key 起 / 止 / since / 邮箱模式），
+#: `_USAGE_FILTER` 三个（role ×2 / 只看有读数）。
 _USAGE_SELECT = (
     "SELECT u.id, u.email, u.role, "
     "  (SELECT count(*) FROM tasks t WHERE t.user_id = u.id "
     "     AND t.status IN ('queued', 'running')) AS active_tasks, "
-    "  COALESCE(c.used, 0) AS agent_calls_today, "
-    "  COALESCE(r.rejected, 0) AS rejected_today "
+    "  COALESCE(c.used, 0) AS agent_calls, "
+    "  COALESCE(r.rejected, 0) AS rejected "
     "FROM users u "
-    "LEFT JOIN usage_counters c ON c.user_id = u.id "
-    "  AND c.metric = 'agent_calls' AND c.period_key = %s "
+    "LEFT JOIN (SELECT user_id, sum(used) AS used FROM usage_counters "
+    "  WHERE metric = 'agent_calls' AND period_key BETWEEN %s AND %s "
+    "  GROUP BY user_id) c ON c.user_id = u.id "
     "LEFT JOIN (SELECT user_id, count(*) AS rejected FROM quota_rejections "
     "  WHERE at >= %s GROUP BY user_id) r ON r.user_id = u.id "
     "WHERE u.email ILIKE %s"
@@ -57,7 +62,7 @@ _USAGE_SELECT = (
 #: 别名只能在**外层**用（SQL 的 WHERE 看不见 SELECT 的别名），故过滤包在派生表外面
 _USAGE_FILTER = (
     "(%s = '' OR t.role = %s) "
-    "AND (NOT %s OR t.active_tasks > 0 OR t.agent_calls_today > 0 OR t.rejected_today > 0)"
+    "AND (NOT %s OR t.active_tasks > 0 OR t.agent_calls > 0 OR t.rejected > 0)"
 )
 
 #: 可排序列的白名单：**请求里的键 → 派生表里的列**。白名单而不是把参数拼进 SQL——
@@ -67,8 +72,8 @@ _USAGE_SORTS = {
     "id": "t.id",
     "email": "t.email",
     "active_tasks": "t.active_tasks",
-    "agent_calls_today": "t.agent_calls_today",
-    "rejected_today": "t.rejected_today",
+    "agent_calls": "t.agent_calls",
+    "rejected": "t.rejected",
 }
 
 #: 任务行的对外列。`user_id` 留在行里**不出接口**（与既有约定一致：归属只作过滤条件）。
@@ -1252,7 +1257,8 @@ class Database:
 
     async def admin_usage(
         self,
-        period_key: str,
+        period_from: str,
+        period_to: str,
         since: datetime,
         *,
         limit: int,
@@ -1263,10 +1269,11 @@ class Database:
         sort: str = "id",
         order: str = "asc",
     ) -> list[dict[str, Any]]:
-        """admin 配额视图的**一页**（E2b；E2c 加分页、搜索、筛选与排序）。
+        """admin 配额视图的**一页**（E2b；E2c 加分页、搜索、筛选、排序与时间窗）。
 
         三列各有来源，别指望一条 join 解决：在飞任务数**直查任务表**（与 gauge 同源，
-        否则视图与判定会各说各话），当期调用读计数表，当期被拒按 `at >= since` 数事件。
+        否则视图与判定会各说各话），调用数按 `period_key` 区间**求和**，被拒按 `at >= since` 数事件。
+        `since` 是时间窗**起点时刻**（+08 的 00:00）——两个计数列的时间轴必须同起点。
 
         ⚠ 搜索用 `ILIKE '%q%'`，**用不上 `email` 的唯一索引**（B-tree 只吃前缀）——
         本地千级规模顺序扫描无妨，真上量再引 `pg_trgm`（SPEC §3.5 记为边界）。
@@ -1279,12 +1286,23 @@ class Database:
         return await self._all(
             f"SELECT * FROM ({_USAGE_SELECT}) t WHERE {_USAGE_FILTER} "
             f"ORDER BY {column} {direction}{tiebreak} LIMIT %s OFFSET %s",
-            (period_key, since, like_pattern(q), role, role, active_only, limit, offset),
+            (
+                period_from,
+                period_to,
+                since,
+                like_pattern(q),
+                role,
+                role,
+                active_only,
+                limit,
+                offset,
+            ),
         )
 
     async def admin_usage_total(
         self,
-        period_key: str,
+        period_from: str,
+        period_to: str,
         since: datetime,
         *,
         q: str = "",
@@ -1299,7 +1317,7 @@ class Database:
         """
         row = await self._one(
             f"SELECT count(*) AS n FROM ({_USAGE_SELECT}) t WHERE {_USAGE_FILTER}",
-            (period_key, since, like_pattern(q), role, role, active_only),
+            (period_from, period_to, since, like_pattern(q), role, role, active_only),
         )
         return int(row["n"]) if row else 0
 

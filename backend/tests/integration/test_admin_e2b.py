@@ -102,8 +102,8 @@ def test_usage_view_reads_the_real_tables(real_stack: TestClient) -> None:
         row = body["users"][0]
         assert row["role"] == "admin"
         assert row["active_tasks"] == 1  # 刚提交的那件还在队列里（worker 要跑几秒）
-        assert row["agent_calls_today"] == 7
-        assert row["rejected_today"] == 2  # 两行都是今天写的
+        assert row["agent_calls"] == 7
+        assert row["rejected"] == 2  # 两行都是今天写的（窗口默认 1 天）
         assert body["limits"] == {"active_tasks": 3, "agent_calls_per_day": 200}
 
         # 筛选也打真库（E2c）：这个账号是 admin 且有读数，两个筛选都该把它留下
@@ -112,13 +112,18 @@ def test_usage_view_reads_the_real_tables(real_stack: TestClient) -> None:
         ).json()
         assert [item["email"] for item in filtered["users"]] == [address]
         assert filtered["total"] == 1  # total 与行同一份过滤（同一条派生表 + 同一个 WHERE）
+        # 时间窗也打真库（E2c 追加）：`days=7` 把今天的 7 次也算进来（区间求和走真 SQL）
+        windowed = member.get(f"/api/v1/admin/usage?days=7&q={address}").json()["users"][0]
+        assert windowed["agent_calls"] == 7
+        assert windowed["active_tasks"] == row["active_tasks"]  # gauge 不随窗口变
+
         quiet = member.get(f"/api/v1/admin/usage?role=user&active_only=true&q={address}").json()
         assert quiet["users"] == [] and quiet["total"] == 0
 
         # 排序也打真库（E2c）：`ORDER BY` 拼的是**标识符**（占位符在那儿没用），
         # 白名单键与派生表列名对不上时只有真跑才发现——离线替身按 Python 键排，看不见这层
         ordered = member.get(
-            f"/api/v1/admin/usage?sort=agent_calls_today&order=desc&q={address}"
+            f"/api/v1/admin/usage?sort=agent_calls&order=desc&q={address}"
         ).json()
         assert [item["email"] for item in ordered["users"]] == [address]
 

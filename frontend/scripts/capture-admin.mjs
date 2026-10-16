@@ -83,12 +83,23 @@ async function main() {
     py(`
 import psycopg
 from app.core.config import get_settings
+from app.core import quota
+from datetime import timedelta
 with psycopg.connect(get_settings().postgres_dsn) as conn:
     conn.execute(
         "INSERT INTO quota_rejections (user_id, metric, used, limit_value) "
         "SELECT id, 'active_tasks', 3, 3 FROM users WHERE email = %s",
         ("${ADMIN_EMAIL}",),
     )
+    uid = conn.execute("SELECT id FROM users WHERE email = %s", ("${ADMIN_EMAIL}",)).fetchone()[0]
+    # 今天 2 次、昨天 3 次：时间窗断言要钉具体数字，不能拿「0 → 0」当通过
+    for day, used in ((quota.period_key(), 2),
+                      (quota.period_key(quota.day_start() - timedelta(days=1)), 3)):
+        conn.execute(
+            "INSERT INTO usage_counters (user_id, metric, period_key, used) VALUES (%s, 'agent_calls', %s, %s) "
+            "ON CONFLICT (user_id, metric, period_key) DO UPDATE SET used = EXCLUDED.used",
+            (uid, day, used),
+        )
 `);
 
     // ── ① 页头多一项 + ② 用量表 + ⑤ 拒绝记录 ───────────────────────────
@@ -118,7 +129,10 @@ with psycopg.connect(get_settings().postgres_dsn) as conn:
       summary.includes(`共 ${total} 个账号`),
       `页面「${summary.match(/共 \d+ 个账号/)?.[0]}」 / 接口 ${total}`,
     );
-    check("② 上限行写明了两个维度的值", summary.includes("在飞任务上限 3") && summary.includes("200"));
+    check(
+      "② 说明行把两个口径分开讲（在飞任务=此刻快照；调用=区间累计）",
+      summary.includes("此刻的快照") && summary.includes("累计") && summary.includes("200"),
+    );
     const pageRows = await usage.locator("tbody tr").count();
     check("② 每页 20 条（用户 2026-10-16 定的页长）", pageRows === 20, `${pageRows} 行`);
     const pageText = await page.locator("main").innerText();
@@ -233,7 +247,7 @@ with psycopg.connect(get_settings().postgres_dsn) as conn:
 
     // ── ⑨ 排序：按「今日被拒」降序 / 升序 ──────────────────────────────
     console.log("\n[admin 账号] 排序");
-    await usage.getByLabel("排序键").selectOption("rejected_today");
+    await usage.getByLabel("排序键").selectOption("rejected");
     await usage.getByRole("button", { name: "升序" }).click(); // 切到降序
     let sortedRows = [];
     for (let i = 0; i < 40; i += 1) {
@@ -276,6 +290,40 @@ with psycopg.connect(get_settings().postgres_dsn) as conn:
     );
     await usage.getByLabel("排序键").selectOption("id");
     await page.screenshot({ path: resolve(EVIDENCE, "admin-sorted.png") });
+
+    // ── ⑩ 时间范围：今日 2 次 / 近 7 天 5 次（昨天 3 次也落在窗内）────────
+    console.log("\n[admin 账号] 时间范围");
+    await usage.getByLabel("按邮箱搜索账号").fill(`e2c-admin-${STAMP}`);
+    await page.waitForFunction(
+      (needle) => document.querySelector("[data-usage-summary]")?.textContent?.includes(needle),
+      "筛选后 1 个账号",
+      { timeout: 30_000 },
+    );
+    const callsNow = async () =>
+      Number((await usage.locator("tbody tr").first().innerText()).split("\t")[3]);
+    const todayCalls = await callsNow();
+
+    await usage.getByLabel("时间范围").selectOption("7");
+    await usage.locator("thead").filter({ hasText: "近 7 天 Agent 调用" }).waitFor({ timeout: 30_000 });
+    let weekCalls = 0;
+    for (let i = 0; i < 40 && weekCalls !== 5; i += 1) {
+      await page.waitForTimeout(250);
+      weekCalls = await callsNow();
+    }
+    check(
+      "⑩ 今日 2 / 近 7 天 5：窗口真的跨天求和（不是换了个列名）",
+      todayCalls === 2 && weekCalls === 5,
+      `${todayCalls} → ${weekCalls}`,
+    );
+    check(
+      "⑩ 列头与说明行跟着改口径",
+      (await page.locator("[data-usage-summary]").innerText()).includes("近 7 天"),
+    );
+    check(
+      "⑩ 在飞任务列标明是当前值（gauge 不随窗口变）",
+      (await usage.locator("thead").innerText()).includes("在飞任务（当前）"),
+    );
+    await page.screenshot({ path: resolve(EVIDENCE, "admin-range.png") });
 
     // ── ⑥ 普通账号：403 不当成「没登录」───────────────────────────────
     console.log("\n[普通账号] /admin");
