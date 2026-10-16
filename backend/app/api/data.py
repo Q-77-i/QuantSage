@@ -23,15 +23,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from app.core.auth import require_admin
 from app.core.config import get_settings
 from app.data import data_health as dh
 from app.data import duckdb_client as dc
-from app.data import health_log
+from app.data import health_log, rollback, snapshots
+from app.data.data_lock import Busy
 from app.etl import scheduler
 
 router = APIRouter(prefix="/api/v1/data", tags=["data"])
@@ -98,3 +100,67 @@ def _source_stall(data_dir) -> dict:
     `con` 那条参数它不用（本项走的是 `bars_sync.json`，不碰 DuckDB）。
     """
     return dict(dh.check_x7_source_stall(None, data_dir).data)
+
+
+# ── 快照与回滚（E3b）────────────────────────────────────────────────────────
+
+
+class RollbackRequest(BaseModel):
+    """回滚请求。**`confirm` 必须与 `snapshot` 逐字相等**——防手滑，比弹窗确认硬。"""
+
+    snapshot: str = Field(min_length=1, max_length=64)
+    confirm: str = Field(min_length=1, max_length=64)
+    channels: list[Literal["bars", "events"]] = Field(default_factory=lambda: ["bars", "events"])
+
+
+@router.get("/snapshots")
+async def list_snapshots(_: Annotated[dict[str, Any], Depends(require_admin)]) -> dict[str, Any]:
+    """可选的回滚目标，**新的在前**（要回滚就得先知道有哪些 ts 可选）。"""
+    rows = await asyncio.to_thread(snapshots.read_index, get_settings().data_dir)
+    return {"total": len(rows), "snapshots": rows}
+
+
+@router.post("/rollback")
+async def do_rollback(
+    payload: RollbackRequest, _: Annotated[dict[str, Any], Depends(require_admin)]
+) -> dict[str, Any]:
+    """按快照把 `data/` 换回历史状态（SPEC §4.5 的六步，**破坏性、不可撤销**）。
+
+    四种拒绝各有各的码，前端据此给不同的话：
+
+    ==================== ===== ==============================================
+    快照 ts 不认识        404   索引里没有这一份
+    对象缺片              409   **整次拒绝**（不做半截回滚），响应列出缺的 sha 前 12 位
+    已有同步在跑          409   与 ETL / 行情刷新串行，撞上就拒
+    `confirm` 不相等      422   防手滑——**界面上那个确认框不是门**
+    ==================== ===== ==============================================
+
+    **同步返回完整结论**（不像 `POST /etl/run` 那样回 202）：回滚是分钟以内的事，而调用方
+    要的正是「还回去了什么、之后的体检什么读数」，拆成两段反而要再轮询一次。
+    """
+    if payload.confirm != payload.snapshot:
+        raise HTTPException(
+            status_code=422,
+            detail="confirm 与 snapshot 不一致——请把快照 ts 原样填两遍（防手滑，不是弹窗确认）",
+        )
+    try:
+        return await asyncio.to_thread(
+            rollback.execute,
+            get_settings().data_dir,
+            ts=payload.snapshot,
+            channels=tuple(payload.channels),
+        )
+    except rollback.SnapshotUnknown as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except rollback.SnapshotIncomplete as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{exc.channel} 缺 {len(exc.missing)} 个对象，**整次拒绝、一个字节都没动**："
+                f"{[sha[:12] for sha in exc.missing[:5]]}"
+                + ("…" if len(exc.missing) > 5 else "")
+                + "。对象不在本地库里 ⇒ 这一份回不去了（`raw/o` 是回滚的底座，不做自动清理）"
+            ),
+        ) from exc
+    except Busy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

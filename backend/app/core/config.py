@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     # 启动时补一次（延后 300s：排在语料 +20s、行情 +180s 之后，三条互斥的活儿别挤一起）
     data_health_catchup_on_start: bool = True
 
+    # ── 数据快照（E3b）：清单归档的保留份数 ──
+    # 快照存的是**指针**（两份 _meta 清单的副本，约 170KB/份），字节早在 data/raw/o 的
+    # 内容寻址对象库里 ⇒ 20 份约 3.4MB，可忽略。**这是回滚能力的深度**：
+    # 更早的快照被滚掉之后，即便对象还在 raw/o 里也无从知道当时该还原成什么样。
+    snapshot_keep: int = 20
+
     # ── 研报 PDF 导出（M7d）：渲染器要打开前端的打印页 ──
     # 渲染在**子进程**里跑（`app/report/pdf_worker.py`），它需要一个能打开的前端地址。
     frontend_base_url: str = "http://127.0.0.1:3001"

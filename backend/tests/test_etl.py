@@ -690,3 +690,29 @@ def test_embed_timeout_is_reported_not_raised(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(runner.subprocess, "run", timeout)
     status = runner.refresh_index(_paths(tmp_path), _report("ok"))
     assert status.startswith("失败") and "未完成" in status
+
+
+def test_run_takes_a_snapshot_after_writing_the_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """接线点（E3b）：清单被改写后打一份快照——不接上的话旧版本指针永远找不回来。
+
+    与上面那条字典接线同形：验的是「**这两件事真的挂在一起**」，不是快照本身的机制
+    （那个在 `test_snapshot_archive.py` 里单独验）。
+    """
+    from app.data import snapshots
+
+    day = date(2026, 9, 29)
+    shard_path = write_shard(tmp_path / "src" / "news.parquet", [{"event_id": "n1"}])
+    monkeypatch.setattr(archive, "download_day", lambda d, data_dir=None: True)
+    monkeypatch.setattr(archive, "day_shards", lambda d, data_dir=None: {"news": shard_of(shard_path)})
+    monkeypatch.setattr(
+        archive, "coverage",
+        lambda data_dir=None: archive.ArchiveCoverage(last_day=day, files=1, rows=1, manifest_version="x"),
+    )
+    monkeypatch.setattr(runner, "refresh_names", lambda paths_: "桩")
+
+    runner.run("manual", days=[day], data_dir=tmp_path)
+
+    rows = snapshots.read_index(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["scope"] == "manual"
+    assert rows[0]["events"]["days"] == 1

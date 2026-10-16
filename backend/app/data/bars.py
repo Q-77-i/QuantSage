@@ -48,7 +48,7 @@ import duckdb
 
 from app.core.config import get_settings
 from app.data import calendar as cal
-from app.data import ledger, xiaoshi_cli
+from app.data import ledger, snapshots, xiaoshi_cli
 from app.data.data_lock import LOCK, Busy
 
 # cn-daily 维度为 (year, adjust)；market 服务端恒为 CN，无需传
@@ -565,6 +565,7 @@ def rebuild(
     receipt = read_receipt(raw)
     outputs = materialize(raw, bars)
     write_meta(raw, meta, receipt, verdict, outputs)
+    snapshots.take(Path(raw).parent, scope="bars-rebuild", reason=f"本地重物化 {len(outputs)} 片")
     return outputs
 
 
@@ -697,6 +698,11 @@ def refresh(
         receipt = read_receipt(paths_.raw_dir)
         outputs = materialize(paths_.raw_dir, paths_.bars_dir)
         write_meta(paths_.raw_dir, paths_.meta_dir, receipt, verdict, outputs)
+        # 清单刚被改写 ⇒ 打一份快照（E3b）。清单是单槽覆盖写的，不抄这一份，旧版本的
+        # 指针就永远找不回来了（字节还在 raw/o，但没有清单就不知道当时该是什么样）
+        snapshots.take(
+            paths_.data_dir, scope="bars-refresh", reason=f"换入 {len(outputs)} 片"
+        )
         report.status = "updated"
         report.local_last = max((item["last_date"] for item in outputs), default=report.local_last)
         report.note = f"换入 {len(outputs)} 片"

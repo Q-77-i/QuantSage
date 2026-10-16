@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.data import data_health as dh
-from app.data import health_log
+from app.data import health_log, snapshots
 from app.main import app
 
 client = TestClient(app)
@@ -154,3 +155,83 @@ def test_history_rejects_out_of_range(
     signed_in_admin: Any, data_dir: Path, params: dict[str, int]
 ) -> None:
     assert client.get("/api/v1/data/health/history", params=params).status_code == 422
+
+
+# ── 快照与回滚（E3b）────────────────────────────────────────
+
+
+def test_snapshot_endpoints_are_anonymous_401(jwt_secret: Any, data_dir: Path) -> None:
+    assert client.get("/api/v1/data/snapshots").status_code == 401
+    assert client.post("/api/v1/data/rollback", json={"snapshot": "x", "confirm": "x"}).status_code == 401
+
+
+def test_snapshot_endpoints_are_403_for_a_regular_user(signed_in: Any, data_dir: Path) -> None:
+    """回滚是**破坏性**的——普通用户连门槛都不该摸到（夹具刻意用普通用户）。"""
+    assert client.get("/api/v1/data/snapshots").status_code == 403
+    assert client.post("/api/v1/data/rollback", json={"snapshot": "x", "confirm": "x"}).status_code == 403
+
+
+def test_snapshots_list_is_newest_first(signed_in_admin: Any, data_dir: Path) -> None:
+    from tests.test_rollback import write_bars
+
+    write_bars(data_dir, 1)
+    first = snapshots.take(data_dir, scope="bars-refresh", reason="一")
+    write_bars(data_dir, 2)
+    second = snapshots.take(data_dir, scope="bars-refresh", reason="二")
+
+    body = client.get("/api/v1/data/snapshots").json()
+
+    assert body["total"] == 2
+    assert [row["ts"] for row in body["snapshots"]] == [second["ts"], first["ts"]]
+
+
+def test_rollback_refuses_a_mismatched_confirm(signed_in_admin: Any, data_dir: Path) -> None:
+    """**`confirm` 不相等即 422**——界面上那个确认框不是门，这里才是。"""
+    response = client.post(
+        "/api/v1/data/rollback", json={"snapshot": "20261016T221530Z", "confirm": "手滑了"}
+    )
+    assert response.status_code == 422
+    assert "原样填两遍" in response.json()["detail"]
+
+
+def test_rollback_rejects_an_unknown_snapshot(signed_in_admin: Any, data_dir: Path) -> None:
+    response = client.post(
+        "/api/v1/data/rollback", json={"snapshot": "20200101T000000Z", "confirm": "20200101T000000Z"}
+    )
+    assert response.status_code == 404
+
+
+def test_rollback_reports_missing_objects_as_conflict(signed_in_admin: Any, data_dir: Path) -> None:
+    """缺片 ⇒ **409 并列出缺的 sha 前 12 位**（整次拒绝，一个字节都没动）。"""
+    from tests.test_rollback import write_bars
+
+    write_bars(data_dir, 1)
+    ts = snapshots.take(data_dir, scope="bars-refresh", reason="一")["ts"]
+    for obj in (data_dir / "raw" / "o").rglob("*.parquet"):
+        obj.unlink()
+
+    response = client.post("/api/v1/data/rollback", json={"snapshot": ts, "confirm": ts})
+
+    assert response.status_code == 409
+    assert "整次拒绝" in response.json()["detail"]
+
+
+def test_rollback_restores_through_the_api(signed_in_admin: Any, data_dir: Path) -> None:
+    from tests.test_rollback import bars_bytes, write_bars
+
+    first = write_bars(data_dir, 1)
+    ts = snapshots.take(data_dir, scope="bars-refresh", reason="第一版")["ts"]
+    write_bars(data_dir, 2)
+
+    response = client.post(
+        "/api/v1/data/rollback", json={"snapshot": ts, "confirm": ts, "channels": ["bars"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True and body["snapshot"] == ts
+    assert body["restored"] == {"bars": 1}
+    assert body["health"]["status"] in {"red", "yellow", "green"}
+    assert (data_dir / "bars" / "cn-daily_CN_qfq_2026.parquet").read_bytes() == bars_bytes(1)
+    manifest = json.loads((data_dir / "_meta" / "bars.json").read_text())
+    assert manifest["fingerprint"]["shards"][0]["sha256"] == first

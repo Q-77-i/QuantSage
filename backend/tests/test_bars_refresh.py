@@ -574,3 +574,19 @@ async def test_health_catchup_is_registered_when_asked(monkeypatch: pytest.Monke
         assert active.get_job("data-health-catchup") is not None
     finally:
         active.shutdown(wait=False)
+
+
+def test_refresh_takes_a_snapshot_after_materializing(tmp_path: Path) -> None:
+    """接线点（E3b）：行情换入并写完清单之后打一份快照。
+
+    `_prime_shards` 走的正是真实刷新路径，所以这条不需要另搭夹具——它验的是「这条链上
+    真的挂了快照」，而不是快照自己的机制。
+    """
+    from app.data import snapshots
+
+    _prime_shards(tmp_path)
+
+    rows = snapshots.read_index(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["scope"] == "bars-refresh"
+    assert rows[0]["bars"]["shards"] == 21

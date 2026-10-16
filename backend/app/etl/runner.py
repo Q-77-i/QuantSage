@@ -24,7 +24,7 @@ from pathlib import Path
 
 from app.core.config import REPO_ROOT, get_settings
 from app.data import calendar as cal
-from app.data import ledger, naming
+from app.data import ledger, naming, snapshots
 from app.data.data_lock import LOCK as _LOCK
 from app.etl import archive, store
 
@@ -193,6 +193,8 @@ def run(
         store.read_day_entries(paths_.events_dir, paths_.raw_dir),
         coverage_last=report.archive_last or None,
     )
+    # 清单刚被改写 ⇒ 打一份快照（E3b），与行情那侧同规
+    snapshots.take(paths_.data_dir, scope=report.scope, reason=f"{len(report.days)} 天进出")
     return report
 
 
@@ -341,6 +343,7 @@ def rematerialize(data_dir: Path | None = None) -> RunReport:
         store.read_day_entries(paths_.events_dir, paths_.raw_dir),
         coverage_last=_archive_last_or_none(paths_),
     )
+    snapshots.take(paths_.data_dir, scope="rematerialize", reason=f"{len(report.days)} 天重物化")
     return report
 
 
