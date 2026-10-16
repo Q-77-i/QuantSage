@@ -113,6 +113,14 @@ def download_day(day: date, data_dir: Path | None = None) -> bool:
             "download",
             "--dataset",
             DATASET,
+            "--quality",
+            "complete",
+            # ⚠ `--quality complete` **必须显式传，不能吃默认值**（2026-10-17 CLI 升级当天实测）：
+            # `download` 的 `--quality` 在 2026.10.6.2 新增了 `auto` 并**成为默认**，而 auto 对
+            # **事件语料**解析成 `available`（有缺口、平台明写不喂回测的那条轨）。升级前默认是
+            # `complete`，所以不带这个 flag 的话，下一步 ETL 会**静默换轨**——实测对照：
+            # 同一命令旧版得 `quality_track=complete`、新版得 `available`。
+            # 本项目固定用 canonical（宁慢不脏），这条口径不随 CLI 版本漂移。
             "--date",
             day.isoformat(),
             "--data-dir",

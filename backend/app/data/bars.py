@@ -300,6 +300,10 @@ def download_partitions(
                 [
                     "download",
                     "--dataset", "cn-daily",
+                    # 与事件侧同规：**显式传轨，不吃默认值**。行情的 auto 默认当前解析成 complete，
+                    # 但「当前解析成什么」会随 CLI 版本变（2026.10.6.2 就改过一次默认）——写死更安全
+                    "--quality",
+                    "complete",
                     "--year", str(year),
                     "--adjust", adjust,
                     "--data-dir", str(raw_dir),
