@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+# 提交前闸门：把 CI 里最便宜、最容易漏的那一道（后端 ruff）前移到本地。
+#
+# 为什么只做这一道：E2a 那次 CI 红是「本地 ruff 跑在最后一个文件写完之前」——
+# 一个 150 字符的脚本文件推上去才被逮到。这类失败**本地一秒能拦下**，
+# 而离线套件 110 秒、集成 17 分钟都不适合每次提交跑，留给 CI。
+#
+# 启用（每个 clone 各做一次）：git config core.hooksPath .githooks
+# 跳过（明知故犯时）：git commit --no-verify
+#
+# 只认 backend/.venv 里的 ruff，**故意不回落 `uv run`**：`uv run` 会顺带同步环境，
+# 锁文件一变就可能在一次提交里装起重包（E7a 在 CI 上踩过同一条，`uv run` 把
+# `--no-install-package` 跳掉的 torch 装了回来）。没装 venv 就跳过并说一声，不假装跑过。
+
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root/backend"
+
+if [ -x .venv/bin/ruff ]; then
+    # -q：干净时不打印，提交输出不被噪音占满；有问题时照常报错并给出退出码
+    exec .venv/bin/ruff check -q .
+fi
+
+echo "pre-commit: backend/.venv 里没有 ruff，跳过本地 lint（CI 仍会拦）。" >&2
+echo "           装一次即可：cd backend && uv sync" >&2
+exit 0

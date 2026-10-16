@@ -62,6 +62,8 @@ cd ../frontend && pnpm install && pnpm dev                             # 5. 前�
 
 （3001 是因为 3000 归 Langfuse。）
 
+提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
+
 没有小石密钥也能跑通回测与前端——行情与事件已在本地落盘；只有「对话页调小石实时工具」这一步需要授权密钥。
 
 ### 测试

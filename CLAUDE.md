@@ -81,3 +81,4 @@
 - 由简到繁；困难/底层用 LangGraph 状态机，流水线用 LangChain
 - 前端设计参考 `~/.claude/skills/taste-skill`，P1 前端动手前先出 design brief；图表遵守 dataviz skill
 - 声称完成前必须运行验证命令，用输出作证据
+- **提交前闸门**：`.githooks/pre-commit` 跑 `ruff check`（启用一次：`git config core.hooksPath .githooks`，与 CI 的 lint 步骤同源）；**闸门要在最后一个文件写完之后跑**——中途的绿不作数（E2a 因此红过一次 CI：150 字符的行推上去才被逮到）
