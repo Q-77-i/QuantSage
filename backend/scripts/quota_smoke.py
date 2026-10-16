@@ -191,7 +191,12 @@ def main() -> int:
         if not args.base:
             server = start_server(port)
         wait_ready(base)
-        lines.append(f"- 服务：`{base}`" + ("（脚本自起，紧配额 " + json.dumps(TIGHT_QUOTA, ensure_ascii=False) + "）" if server else "（既有服务）"))
+        origin = (
+            "（脚本自起，紧配额 " + json.dumps(TIGHT_QUOTA, ensure_ascii=False) + "）"
+            if server
+            else "（既有服务）"
+        )
+        lines.append(f"- 服务：`{base}`{origin}")
         lines.append(f"- 冒烟账号：`{address}`")
         lines.append("")
 
