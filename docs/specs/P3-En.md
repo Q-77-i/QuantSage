@@ -1,8 +1,8 @@
 # QuantSage SPEC · P3-En（企业级思维）
 
-> 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.10）→ 本文（技术规格）→ 代码
+> 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.12）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.21 ｜ 2026-10-16 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.23 ｜ 2026-10-16 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2a 配额底座已落地**，E2b RBAC + admin 视图、E2c 隔离盘点收口待做）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -15,7 +15,8 @@
 | [§5](#5-e4-可靠性-l0l7) | E4 可靠性 L0–L7（**全节已交付**） |
 | [§7](#7-e7-工程化) | E7 工程化（E7a CI 骨架 + 静态检查 + 供应链审计 · **E7b 覆盖率门槛 + eval gate 口径** · **E7c Langfuse 字段规范化 + 补挂 handler** · **E7d 实验可复现**——全节已交付） |
 | [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**全节已交付**：E8a 服务侧加固 · E8b 对外 MCP Server · E8c 注入边界标记） |
-| §3 / §4 / §6 / §9 其余 | E2 / E3 / E5 / E9 规格（正文待滚动填写；E6 已砍不设节） |
+| [§3](#3-e2-多用户治理) | E2 多用户治理（**E2a 配额底座已交付**；E2b RBAC 简版含 ETL 门、E2c 资源隔离盘点收口 待做） |
+| §4 / §6 / §9 其余 | E3 / E5 / E9 规格（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
 | [§11](#11-变更记录) | 变更记录 |
 
@@ -228,6 +229,156 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 - **单 worker 串行**：满格网格（30s–2min）会把随后的单次回测挡在队列里——前端显示「排队中」，代价可见（E2 配额会把它显式化）。**不引多 worker**（PRD 定「单 worker」）。
 - 服务重启仍丢正在跑的网格（任务标 `failed/interrupted`，无部分结果）——与 E1a 同一条边界，不粉饰。
 - 取消的结果不落库：那是「中止」，不是「一份可以引用的记录」。
+
+## 3. E2 多用户治理
+
+> 规格底稿：`docs/private/Pn-n/P3-En/P3-E2-规划评估.md`（2026-10-16 现状核对与逐项评估，两份代码扫描逐条带 `file:line`）。
+> **拍板（2026-10-16）：全节采纳**——三处口径订正（§3.0）+ 两个配额维度（§3.1–§3.3）+ RBAC 简版含 ETL 门（§3.4–§3.5）+ 资源隔离盘点（§3.6）；两条可延项（**拒绝记录**、**`research/runs` 幂等键**）本轮一并做。
+
+### 3.0 与 PRD 假设的核对订正
+
+| PRD 原文 | 事实（本轮扫描，带出处） | 本 SPEC 的口径 |
+|---|---|---|
+| 配额管理「回测并发数」 | 队列**单 worker 串行**（`app/tasks/worker.py:7-8`）⇒ 全局并发恒 1、per-user 并发恒 ≤1——**按字面做这条配额永远不会触发**。真实会被打爆的是队列：`claim_next_task` 全局 FIFO、不按用户过滤（`core/db.py:1058-1072`），一个用户灌满队列，后面的人全在排队 | **在飞任务数上限**（`queued` + `running`），语义 = 占队列槽位，不是「同时跑」 |
+| 配额管理「Agent 调用次数」 | 深路径一次运行约 10 次 LLM 调用（E7c 实测一条 trace 10 generation）；单次成本上限已由 E4 Budget 管住（40 次调用 / $0.50 硬顶，`agent/deep/budget.py:40-46`） | **用户发起的 Agent 请求数 / 日**（chat / research create / report create），**不计**底层 LLM 调用数、不计 token |
+| RBAC「admin 仅审计与配额视图」 | `GET /api/v1/etl/status` 与 `POST /api/v1/etl/run` **只要求登录、无任何角色判断**（`api/etl.py:29,57`）——任意注册用户都能触发一次**全局**数据拉取、看系统级覆盖率与调度状态 | admin 用途**加一条「平台运维端点」**：ETL 两端点归 admin（PRD v0.12 已同步） |
+| 「资源隔离（P2 已落地）」 | 属实：13 张自有表 9 张直接带 `user_id`、3 张经 `account_id` 归属；**全仓零 403**，越权与不存在同响应 404（`core/db.py:9-10`、`core/auth.py:156-157`） | 基线，不重做；E2 只把它**盘点成 §3.6 的表** + 补漏（唯一补漏 = ETL 门） |
+
+**三层分工写死**（防重复造）：**配额管次数**（本节）、**Budget 管单次成本**（E4，§5.6）、**Langfuse 管观测**（E7，§7.6）——不引入按 token / 按成本的配额。
+
+**一处销账**：P2 SPEC M1 的「本轮不做」清单写着「多设备会话管理（**P3-E2**）」（`docs/specs/P2-Mn.md:195`），而 E8 已拍板撤销粒度按用户、不做按设备（§8.3「不做 refresh token 轮换、服务端黑名单表」）。⇒ 本轮把它改写为「不做，理由见 P3 SPEC §8.3」，挂在 E2 名下的欠账关闭。
+
+### 3.1 两个配额维度
+
+| 维度 | 语义 | 真值来源 | 释放 | 默认（settings） |
+|---|---|---|---|---|
+| 在飞任务数 | **gauge**：当前占几个队列槽位 | `SELECT count(*) FROM tasks WHERE user_id=%s AND status IN ('queued','running')` | **自动**——进终态即不计数 | `quota_active_tasks = 3` |
+| Agent 请求数 / 日 | **counter**：当天累计，跨重启持久 | 新表 `usage_counters` | 自然日切换（`period_key` 换天即归零，无需定时清理） | `quota_agent_calls_per_day = 200` |
+
+- **上限 ≤ 0 = 不限额**（跳过整条检查）——语义写死，避免 `used < 0` 这类永假条件的隐晦写法。
+- **admin 不限额**：`role = "admin"` 跳过两个维度（运维与演示需要）。
+- **默认值取演示友好档**（与 L0 的 `rate_limit_*` 同调）：正常用碰不到，灌队列 / 刷量时才拦得住。
+- **gauge 为什么不落计数器表**：计数器得在任务终结时减一，而终结有五条路径（`finish_task` / `fail_task` / `finish_task_cancelled` + 启动扫尾 `sweep_interrupted_tasks` + 进程被杀），**漏一处就是永久占额**。直查以 `tasks` 表为唯一真值，天然不漂；既有 `(user_id, created_at)` 索引覆盖谓词，**不新增索引**。
+
+**计数表**（进 `core/db.py` 的 `SCHEMA`，幂等建表，与既有 13 张表同约定）：
+
+```sql
+CREATE TABLE IF NOT EXISTS usage_counters (
+    user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    metric     TEXT        NOT NULL,          -- 'agent_calls'
+    period_key TEXT        NOT NULL,          -- 'YYYY-MM-DD'（Asia/Shanghai 自然日）
+    used       INT         NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, metric, period_key)
+);
+```
+
+**「检查 + 递增」必须是一条语句**（否则并发下超发）：
+
+```sql
+INSERT INTO usage_counters (user_id, metric, period_key, used)
+VALUES (%s, %s, %s, 1)
+ON CONFLICT (user_id, metric, period_key)
+DO UPDATE SET used = usage_counters.used + 1, updated_at = now()
+WHERE usage_counters.used < %s                 -- 上限
+RETURNING used
+```
+
+- **返回 0 行 = 超限**，且**拒绝不计数**（不会「越拒越多」）；返回 1 行 = 放行，`used` 即本次序号。
+- **计「发起」不计「成功」**：LLM 后续失败也不退额。理由：退还要么在三条失败出口各加一处回滚、要么引入对账；配额防的是刷量，计发起已经防住。**这是有意口径，不是缺陷**——免得后人当 bug 修。
+- ⚠ **`ON CONFLICT DO UPDATE … WHERE` 的语义只有真库能验**（假库会把 SQL 当 Python 语义糊过去）⇒ 原子性用例进**集成套件**（§3.8）。
+- `period_key(now)` 是**纯函数**（`Asia/Shanghai` 自然日；仓里已有 `CN_TZ`，`backtest/types.py:17`），时钟可注入（先例 `core/reliability.py:139,216`）——跨日重置可离线测。
+
+### 3.2 挂载点与顺序
+
+**配额是端点内的显式调用，不是依赖**（实施期收敛，见 §11 v2.22 落地记）：`core/quota.py::enforce(db, user, metric)` 在五个端点各调一次。**为什么不做成 `limit(bucket)` 那样的依赖**——依赖跑在 handler 体之前，既会挡住**幂等重放**（`POST /backtest` 的重复提交是在 handler 里短路的：它不建任务，也就不该被配额挡），也会跑在**请求体校验之前**（非法请求该拿 422，而不是配额话术）。
+
+位置规则一句话：**「这个请求确定要被服务」的那一刻**——客户端错误（401/404/422）已排除、服务已就绪之后，任何 LLM 调用或入队之前。
+
+| 端点 | 速率（L0，依赖） | 用量（E2）调用位置 | 维度 |
+|---|---|---|---|
+| `POST /chat` | `llm-chat` | 归属 404 与 `agent` 就绪 503 之后、落归属行与开流之前 | `agent_calls` |
+| `POST /research/runs` | `llm-research` | checkpointer 就绪 503 之后、**意图路由之前**（路由本身调模型，之后的 422 不该退额；quick 路径同样计一次） | `agent_calls` |
+| `POST /reports` | **无**（既有缺口，见 §3.7） | 账户归属 404 之后、惰性结算与综述之前 | `agent_calls` |
+| `POST /backtest` | `task-submit` | `_enqueue` 内第一件事（两条提交分支共用的收口） | 在飞任务数 |
+| `POST /optimize/{grid,batch}` | `task-submit` | 同上（`_enqueue` 收口） | 在飞任务数 |
+
+**顺序**：幂等短路（§5.5 既有——重复提交不该被配额挡）→ **L0 限流**（依赖，天然最先）→ 请求校验与业务闸门（语法错 / 参数越界仍给 422，而不是配额话术）→ **配额** → 入队 / 调模型。两类拒绝都发生在**开流之前**（chat / research 是 SSE，首字节发出就改不了状态码）。
+
+**不计数、但要写明依据的路径**（防「绕过」质疑）：
+
+| 路径 | 处置 | 依据 |
+|---|---|---|
+| `POST /research/runs/{id}/resume` | 不计数 | 同一次研究的续跑，不是新工作（计两次等于一次研究花掉两个额度） |
+| `GET /accounts/{id}/review`、`POST /accounts/{id}/settle` | 不计数 | **惰性结算**：只有新到期回合才调模型、已结算的直接复用记忆（`api/reports.py:440-460` docstring 写死），调用量**不可被用户放大**（上限 = 该账户的到期决策数，且幂等） |
+| ETL、定时结算 job、启动补跑 | 不计数 | 非用户发起 |
+
+### 3.3 拒绝契约
+
+沿用 L0 的 429 信封，只换 `kind`——`detail` 是前端 `messageFromBody` 唯一认的键，**前端零改动即可显示**：
+
+| 维度 | 体 |
+|---|---|
+| Agent 请求数 | `{"detail": "今日 Agent 调用已用满 200 次，明日 00:00 重置（Asia/Shanghai）", "kind": "quota_exceeded", "metric": "agent_calls", "limit": 200, "used": 200, "reset_at": "…"}` |
+| 在飞任务数 | `{"detail": "你已有 3 个任务在执行或排队（上限 3 个），等一个结束再提交", "kind": "quota_exceeded", "metric": "active_tasks", "limit": 3, "used": 3}`（**无 `reset_at`**——它不由时钟释放） |
+
+统一 **429**：全仓「拒绝再来」的语义已统一在 429（E4b），配额换 kind 不换码，前端与文档都少一套分支。
+
+### 3.4 RBAC
+
+- **`users.role TEXT NOT NULL DEFAULT 'user'`**：幂等 `ALTER TABLE users ADD COLUMN IF NOT EXISTS`（与 `token_version` 同约定，`db.py:47`）。
+- **`require_admin`**：`Depends(require_user)` 之后判 `user.get("role") == "admin"`，否则 **403**。`require_user` 返回 users **整行**（`core/auth.py:153-180`）⇒ **零额外查询**。
+- **角色不进 JWT**：payload 仍只有 `sub/ver/iat/exp`（`core/auth.py:86-91`）。角色变更**立即生效**；塞进 payload 会引入「撤销角色要 bump `token_version`」的耦合，而 `token_version` 的语义是**会话撤销**，两件事不该并轨。
+- **授予走脚本**：`scripts/grant_admin.py <email> [--revoke]`。角色是**数据**（进库）、不是行为参数（进 settings）——改角色不该要重启服务。
+- **非 admin 访问 admin 面 = 403「需要管理员权限」**：这是全仓**第一处 403**，刻意破例——既有 404 口径保护的是「别人的资源是否存在」（防同侪探测），admin 面缺的是角色、其存在不是秘密（语义不同），也与「明确提示」的验收精神一致。
+- **ETL 两端点归 admin**（`api/etl.py:29,57`）：本轮唯一的**越权面修复**，也是唯一的行为变更。**回归面**：`tests/test_etl_api.py`（5 例中 4 例用 `signed_in`）与 `tests/integration/test_data_t2.py:372` 需改用 admin 夹具；`TEST_USER`（`tests/conftest.py:233`）**保持 `role="user"`**，另加 `ADMIN_USER` / `signed_in_admin`——否则「非 admin 被拒」这条永远测不出来。前端无 ETL 界面（扫描 `frontend/**` 零命中），无前端回归。
+- **`/auth/me` 与 `UserOut` 增 `role`**（additive；前端 `lib/types.ts:43` 的 `User` 加一字段）。
+
+### 3.5 admin 视图
+
+- `GET /api/v1/admin/usage` → 每用户一行：`{id, email, role, active_tasks, agent_calls_today, rejected_today, limits: {active_tasks, agent_calls_per_day}}`（users × `tasks` 直查 × `usage_counters` 聚合）。
+- `GET /api/v1/admin/rejections?limit=50` → 被拒事件。PRD 说 admin 的用途是「审计与配额视图」——只有用量快照的话**审计半边没有内容**，它同时给验收「超配额被拒」留下可查证据。
+- **拒绝记录表** `quota_rejections(id BIGSERIAL, user_id, metric, used, limit_value, at TIMESTAMPTZ)`，写入点 = 两处配额的拒绝分支。
+- **前端 `/admin` 页**：一张只读表（用量 + 上限 + 今日被拒）+ 拒绝事件列表。导航项**仅 admin 可见**（`lib/nav.ts` 的 `NAV_ITEMS` 由页头按 `useAuth()` 的 role 过滤；`activeHref` 保持纯函数不动）。**前端隐藏入口不是门，门在服务端**（403）。已登录但非 admin 直接访问 → 渲染「需要管理员权限」，**不跳登录**（会话是好的，缺的是角色）。
+- **不做管理后台**（PRD 写死）：没有用户增删改、没有改配额的表单——配额是部署参数，在 settings 里。
+
+### 3.6 资源隔离盘点（基线声明 + 全量清单）
+
+**口径**：越权与不存在**同响应 404**，绝不 403（`core/db.py:9-10`、`core/auth.py:156-157`）——§3.4 的 403 是**角色不足**（缺权限），不是「别人的资源」（防探测），两回事。
+
+| 资源 | 归属真源 | 端点 | 越权响应 |
+|---|---|---|---|
+| 会话 | 自有表 `chat_threads`（**不是** checkpointer 表） | `api/chat.py` 四处 | 404「会话不存在」 |
+| 自选股 | 每条 SQL 带 `user_id` | `api/watchlist.py` 六处 | 404「该标的不在自选股中」/「分组不存在」 |
+| 策略 | `WHERE id=… AND user_id=…` | `api/strategies.py` 七处 | 404「策略不存在」 |
+| 回测 / 网格批量记录 | 同上 | `api/backtest.py`、`api/optimize.py` | 404「记录不存在」 |
+| 模拟盘 / 决策 | `get_paper_account` 判账户归属；决策走 `JOIN paper_accounts` | `api/paper.py` 七处 | 404「模拟盘会话不存在」/「决策不存在」 |
+| 研报 / 深研运行 | 带 `user_id` 的读写 | `api/reports.py`、`api/research.py` | 404「研报不存在」/「运行不存在」 |
+| 任务 | 带 `user_id` | `api/tasks.py` 四处 | 404「任务不存在」 |
+| 决策记忆（Store） | namespace `("decisions", user_id, account_id)` | `api/reports.py` `/lessons` | — |
+
+**三处「按 id 直查、不带 `user_id`」——有据，不是漏网**（上游已判归属）：`paper_positions` / `paper_decisions` / `paper_equity` 三张经 `_detail` / `_load_account` / `settle_account` 先验账户（`api/paper.py:205-214`、`api/reports.py:184-195`、`memory/service.py:99-106`）；`set_paper_decision(s)` 由端点先判（`paper.py:507,436-444`）；`claim_next_task` 及任务终态系列是 worker 专用（进程内）。
+
+**两条刻意公开面**（写明依据）：`db.list_all_paper_accounts` 是全项目唯一不带 `user_id` 的业务读，使用面收窄到定时结算 job（`memory/scheduler.py:48`）；报告导出 / 分享路径（`get_report_by_id` 靠 HMAC 一次性令牌、`get_report_by_token` token 即凭据）。公开面本身 = `/health*`、`/api/v1/market/*`、`/api/v1/events`（P2 SPEC 定）。
+
+**落地物**：一张**集中越权矩阵**用例（A/B × 代表资源 + admin 面 + ETL），把分散在各文件的归属断言收成一处可读的验收证据。
+
+### 3.7 已知边界（如实）
+
+- **四个 LLM 端点仍无限流**：`POST /research/runs/{id}/resume`、`POST /reports`、`GET /accounts/{id}/review`、`POST /accounts/{id}/settle`——**属 E4 的范围**，E2 不揽（`POST /reports` 已进配额计数，其余三个的调用量不可放大，见 §3.2）。
+- **配额按请求、不按成本**：一次深研与一次提问各占 1 个额度，尽管成本差两个数量级。按成本计费需要 token 级计量与对账，是另一个量级的事（§3.0 三层分工）。
+- **配额不改变吞吐**：在飞任务配额只是把「谁在占队列」显式化，队列仍是单 worker 串行（PRD 定死）。
+- **`grant_admin` 是本地脚本**：无操作审计（谁在何时提了谁）；admin 视图里的「审计」只覆盖**配额拒绝**，决策审计属 E5。
+- **admin 视图是当前快照**：`usage_counters` 按日留存、无清理策略（量级：每用户每天 1 行，不需要）。
+
+### 3.8 验收口径
+
+| PRD 验收 | 本 SPEC 的验收方式 |
+|---|---|
+| 「用户 A 无法访问用户 B 数据」 | ①**离线**：集中越权矩阵（§3.6 落地物）；②**真库**：`tests/integration/test_auth_m1.py` 既有 A/B 矩阵（回归）；③**真机**：冒烟脚本三账号（A / B / admin）逐一打代表端点 |
+| 「超配额被拒并给出明确提示」 | ①**离线**：配额四态（限额内放行 / 429 + `quota_exceeded` / 用户隔离 / 不限额）；②**集成**：`ON CONFLICT … WHERE` 的**并发原子性**——恰好放行上限个、其余 429、`used` 恰等于上限；③**真机**：冒烟脚本打满两个维度，留档 `logs/e2/`（含 admin 视图读到同一读数） |
+
+**测试落点**（明细进 §10，随交付回填）：离线 `tests/test_quota.py`（配额四态 + `period_key` 纯函数 + 幂等重放不被挡 + admin 豁免）、`tests/test_admin_api.py`（403 / 200 + 视图读数）、`tests/test_auth_api.py` 增补（`/me` 带 role）、ETL 用例改 admin 夹具；集成 `tests/integration/test_quota_e2.py`（并发原子性 + 真库 gauge）。
 
 ## 5. E4 可靠性 L0–L7
 
@@ -867,6 +1018,8 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.23 | 2026-10-16 | **§3（E2）E2a 配额底座交付**（落地记录 `P3-E2a.md`）。**两维度两语义落地**：在飞任务数 = 直查 `tasks` 的 gauge（`count(*) … IN ('queued','running')`，进终态自动释放、不会漏减）；Agent 请求数/日 = 新表 `usage_counters` 的 counter。**「检查+递增」一条语句**（`INSERT … ON CONFLICT DO UPDATE … WHERE used < limit RETURNING used`）：0 行即超限且**拒绝不计数**。**并发实测**（真库、进集成套件）：同一用户 12 发并发 / 上限 3 ⇒ **恰好放行 3 发**、序号 `[1,2,3]`、表里 `used=3`——离线替身是「读→判→写」三步，证明不了这条。**拒绝契约**：429 + `{detail, kind:"quota_exceeded", metric, limit, used, reset_at?}`（无 `Retry-After`：日配额等的是小时级；gauge 不带 `reset_at`——不由时钟释放）。**配额是端点内的显式调用而非依赖**（实施期收敛，§3.2 已改）：依赖跑在 handler 前会挡住**幂等重放**（重复提交不建任务）并跳过请求体校验（该 422 而非 429）；五个端点的位置逐条写进 §3.2 表。**拒绝记录** `quota_rejections` 同期落地（admin 的「审计」半边读它）。**验收**：离线 **1523**（+14）/ 集成 **119**（+5）/ `ruff` 全绿；**真机冒烟**（`scripts/quota_smoke.py`，自起紧配额实例）四条判定全绿——`/chat` 三发 `[200,200,429]`、两网格 `[202,429]`、真库两表有行、**杀进程重启后仍 429**（计数落库非进程内），证据 `logs/e2/quota-smoke.md`。**一条如实记录**：冒烟首跑逮到的是**脚本自己**的 `axes` 形状错（dict 应为 list）——而 `test_rate_limit.py` 里同一个错形状从未被校验，因为限流依赖跑在 body 校验之前。 |
+| v2.22 | 2026-10-16 | **§3（E2 多用户治理）规格定稿（待实施）**——底稿 `P3-E2-规划评估.md`（两份代码扫描 + 测试基线实测 1509/114）。**三处口径订正**：① 「回测并发数」在 E1a 单 worker 串行下**恒 ≤1、永不触发** ⇒ 改「**在飞任务数上限**」（`queued`+`running`，语义 = 占队列槽位，因为真实会被打爆的是全局 FIFO 队列）；② 「Agent 调用次数」定为**用户发起的请求数/日**（chat / research create / report create），不计 LLM 调用数与 token——**配额管次数、Budget 管单次成本、Langfuse 管观测**三层分工写死；③ RBAC 的落点不止视图：盘点逮到 `GET /etl/status` 与 `POST /etl/run` **只要求登录、无角色判断**，任意注册用户可触发全局数据拉取 ⇒ **ETL 两端点归 admin**（本轮唯一越权面修复、唯一行为变更，PRD v0.12 同步）。**设计要点**：两个维度**两种语义**（在飞任务 = 直查 `tasks` 的 gauge，进终态自动释放、不会漏减；Agent 次数 = 新表 `usage_counters` 的 counter，跨重启持久）——这是 §5.4 早写死的边界（L0 管速率、E2 管累计）；**「检查+递增」必须一条 SQL**（`ON CONFLICT DO UPDATE … WHERE used < limit RETURNING used`，0 行即超限且**拒绝不计数**），该语义**只有真库能验** ⇒ 原子性用例进集成套件；**计发起不计成功**（有意口径，防止后人当 bug 修）；上限 ≤0 = 不限额、admin 豁免；拒绝契约 = **429 + `kind:"quota_exceeded"`**（沿用 L0 信封，前端 `messageFromBody` 认 `detail` ⇒ 零改动）。**顺序**：幂等短路 → 限流 → 业务闸门 → 配额 → 入队；`resume` / 惰性结算 `review`·`settle` **不计数并写明依据**（调用量不可被用户放大）。**RBAC**：`users.role` 幂等加列 + `require_admin`（`require_user` 已返回整行 ⇒ 零额外查询）+ **角色不进 JWT**（立即生效，不与「会话撤销」并轨）+ `grant_admin` 脚本授予 + **全仓第一处 403**（角色不足 ≠ 别人的资源，破例理由写进 §3.4）。**admin 视图**：`/admin/usage` + `/admin/rejections`（**拒绝记录表**给「审计」半边提供内容）+ 前端 `/admin` 页（导航仅 admin 可见；**门在服务端**）。**资源隔离**：盘点成 §3.6 全量表（8 类资源 → 归属真源 → 端点 → 越权文案），三处「按 id 直查」逐条标注**有据**（上游已判归属）、两条刻意公开面写明依据；落地物 = 一张**集中越权矩阵**用例。**一处销账**：P2 SPEC「多设备会话管理（P3-E2）」改为「不做，理由见 §8.3」。 | 
 | v2.21 | 2026-10-16 | **§7.7（E7d 实验可复现）交付**——「配置 + 数据快照版本」两半齐了（随机种子早已订正删除）。**指纹取窗口内分片**（`window_digest()`：bars 按年×复权、events 按窗口日；events 只取窗口内保守正确——PIT 只会排除不会引入），**比全量口径更贴题**：只覆盖这次真的读到的数据。落点四处：`backtest_runs.data_digest` 列（幂等迁移）+ 报告 `meta.data_digest` + 列表/详情响应 + 前端 meta 行「数据指纹」（悬停全值；旧记录缺失显示「—」、**不回填**——回填是拿今天的数据重算是伪造）。**成本实测**：窗口指纹 **0.086s** vs 全量 `data_snapshot()` 0.692s（2025–2026 窗口：bars 1 片 + events 85 片）⇒ **不加缓存**（SPEC 的「可接受则不加缓存」条件成立）。**网格/批量整批一次**（进 `optimization_runs.summary`，SPEC 的粒度要求）。**真机验收**：同参重跑同指纹（`bbde19fe…`）/ 换窗口不同指纹（`1e6864ba…`）/ 列表列·详情列·报告 meta 三处一致。**用例 +10**（`test_snapshot_window.py` 9 条 + 执行体接线 1 条）：同数据同值、窗口外改动不影响、改窗口内分片必变、复权轴不同必变、空窗口稳定不抛。**回归**：后端全量、前端 466 + typecheck/lint/build 全绿。 |
 | v2.20 | 2026-10-15 | **§7.6（E7c Langfuse 字段规范化）交付**——四条路径的四个运行期字段全部真机核对通过，深路径/报告路径补挂 handler。**设计**：键名唯一落点 `core/langfuse.py::make_langfuse_metadata()`（三个 str + tags 必须 list 是 SDK 契约）；handler 建一次跨请求复用（构造签名不吃运行期信息），字段经 config 的 `metadata` 传；新增 `TraceConfig` 把 handler 与字段**打包同行**、`settle_trace()` 统一结算口径。**接线**：chat `thread_id`/`user_id`/`chat`；深路径 `run_id`/`user_id`/`deep-research`（`astream_deep_run` 新增 `callbacks`/`metadata`）；报告 `account_id`/`user_id`/`report`；结算 `account_id`/`user_id`/`settle`（API 三处 + 定时 job，`complete`/`ask_once` 新增 `callbacks`/`metadata`/`run_name`）。**两条否证（实测）**：① `thread_id` 不会自动成 session（同 §7.6 原记）；② **`langfuse_trace_name` 只在有 chain 父时才是 trace 名**——裸模型调用当根时名字落不上、且同会话多次裸调用被并进一条 trace（首轮实测 3 次调用合成 1 条空名 trace）⇒ `complete()` 在「挂了 handler 且有 `run_name`」时套一层**具名恒等壳**（离线不套，行为不变）；对照实验：套壳后每次调用各一条、名字正确。**真机读数**（本机自托管 Langfuse v4，走 ClickHouse `events_core` 只读面，证据 `logs/e7c/langfuse-verification.md`）：深路径一条 trace **26 span / 10 次 generation**（此前零 trace），generation 上 `provided_model_name`/`model_parameters`/token（含 reasoning 与 cache 明细）/延迟 1.25–8.26s 全在。**成本同日补齐**：默认表不含 DeepSeek ⇒ 起初 `total_cost=0` 是「没匹配上」；补两条自定义模型（公开 API 写入 + cache 档补 SQL）后逐项对账一致（含缓存命中折价）。**同日两轮订正**：① 峰谷两档在 Langfuse **结构上无法并存**（条件只吃用量阈值/静态属性，无时间维度；时段由服务端判）⇒ 取谷时档（实测 375 次调用 100% 在谷时）；② 价目改**官方英文页美元价直用、零换算**——先前误用 LiteLLM 表（停调价前旧价）与中文页人民币价（已滞后）各一轮，两个坑都记在 §7.6 尾。理由与操作在 §7.6 尾。**已知怪癖**：`POST /reports` 一次请求内的 settle 与 narrative 共享一条 trace（同会话独立请求不合并）——不修，如实登记。**用例 12 例**（离线）：四键形状 / TraceConfig 配对 / chat config 四键 / 深路径透传 / 综述与反思透传 / 具名壳开关。**回归**：离线 **1499 passed**（1487 + 12 新用例）、覆盖率满足 88 门槛。 |
 | v2.19 | 2026-10-15 | **E7b 门槛按 CI 定标 + 两端差异逐行查明**——首跑绿（`38751253731`）但读数 **89.36%** 而非本机的 90.22%，对着 89 只剩 0.36 点余量（约 38 条语句，会随机红）⇒ **门槛降到 88**（CI 余量约 145 条语句）。为查差异把 CI 报告改为 `--cov-report=term-missing:skip-covered`（日志直接给未满文件与缺行号，**长期保留**）。**逐行比对结论（两跑一致，非噪声）**：两端用例数相同（1487）、语句数相同（10695），差异是**两个方向**的——**CI 独缺 221 行**（`deep/roles/*` 四角色取数主体 / `core/db.py` 的 `init_schema` / `main.py` lifespan「库可用」分支……全是**依赖本机真实资源**的路径）、**本机独缺 17 行**（连库失败的 except、`langfuse.py` 未配置的关闭分支——**裸环境的路径**）。⇒ **不是 macOS vs Linux 的平台差异，是「本机服务齐备 vs CI 干净」的环境分叉**：同一份用例在两端各验了半边。这是 §7.10「离线隐含依赖真实环境」的**残余**（当时修完 15 条，这几处漏网），**如实登记为已知债**（§7.8），修复（相关用例显式喂合成数据/假服务）是独立一块、未排期。**门槛按 CI 定标不受影响**——CI 是干净那端，读数更接近真实部署形态。ROADMAP / README 同步。 |

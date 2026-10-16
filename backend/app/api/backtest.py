@@ -36,6 +36,7 @@ from app.api.strategies import normalize_strategy_id
 from app.backtest.costs import CostModel
 from app.backtest.report import resolve_window
 from app.backtest.strategies import EventDriven, available_strategies, validate_params
+from app.core import quota
 from app.core.auth import require_db, require_user
 from app.strategy import USER_STRATEGY, StrategyCheckFailed
 from app.strategy.api import parse_meta
@@ -183,7 +184,7 @@ async def submit_user_backtest(
     compare_pit = body.pit_mode == "both" and meta.uses_events
     return await _enqueue(
         db,
-        user_id,
+        user,
         body,
         start,
         end,
@@ -200,7 +201,7 @@ async def submit_user_backtest(
 
 async def _enqueue(
     db: Any,
-    user_id: int,
+    user: dict[str, Any],
     body: BacktestRequest,
     start: date,
     end: date,
@@ -212,7 +213,12 @@ async def _enqueue(
     """建任务行并回 `{task_id, status}`。**队列实体就是任务表**（SPEC §2.2）：
     这里只落一行 `queued`，worker 自己会来取——不往任何进程内队列里塞东西，
     因此离线用例（模块级 `TestClient`，每请求一个事件循环）不会碰到跨 loop 的队列。
+
+    **配额点放在这里**（E2）：它是所有提交路径的唯一收口，位置恰好是「闸门之后、入队之前」，
+    而幂等重放在各自的 handler 里**更早**就短路了（重复提交不建任务，也就不该被配额挡）。
     """
+    await quota.enforce(db, user, quota.METRIC_ACTIVE_TASKS)
+    user_id = int(user["id"])
     task_id = str(uuid.uuid4())
     return await idempotency.create_task(
         db,
@@ -258,7 +264,7 @@ async def run_backtest(
     compare_pit = body.pit_mode == "both" and body.strategy == EventDriven.name
     return await _enqueue(
         db,
-        user_id,
+        user,
         body,
         start,
         end,

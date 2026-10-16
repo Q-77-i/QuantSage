@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from app.backtest.benchmark import market_benchmark
+from app.core import quota
 from app.core.auth import require_db, require_user
 from app.core.langfuse import TRACE_NAME_REPORT, settle_trace, trace_config
 from app.data import duckdb_client as dc
@@ -213,6 +214,9 @@ async def create_report(
     """
     account_id = str(payload.account_id)
     row, config, decisions, equity = await _load_account(db, user["id"], account_id)
+
+    # 配额（E2）：账户归属已验，接下来才是真正花钱的两步（惰性结算 + 综述）
+    await quota.enforce(db, user, quota.METRIC_AGENT_CALLS)
 
     # E7c 观测：报告生成路径此前完全没被追踪。两个业务名分开（`report` 综述 / `settle` 反思），
     # 会话维度都取账户——同一账户的多次生成/结算在 Langfuse 里串成一条线

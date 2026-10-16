@@ -138,6 +138,9 @@ class FakeDatabase:
         # 同一微秒内建的两条分不出先后，插入序才是那个判据的忠实等价物）
         self.tasks: dict[str, dict[str, Any]] = {}
         self._task_order: list[str] = []
+        # 用户配额（E2）：(user_id, metric, period_key) → 已用；拒绝记录按插入序
+        self.usage_counters: dict[tuple[int, str, str], int] = {}
+        self.quota_rejections: list[dict[str, Any]] = []
 
     async def create_user(self, email: str, password_hash: str) -> dict[str, Any]:
         if any(user["email"] == email for user in self.users.values()):
@@ -796,6 +799,45 @@ class FakeDatabase:
                 finished_at=datetime.now(UTC),
             )
         return len(stale)
+
+    # ── 用户配额（E2）──────────────────────────────────────
+
+    async def count_active_tasks(self, user_id: int) -> int:
+        return sum(
+            1
+            for row in self.tasks.values()
+            if row["user_id"] == user_id and row["status"] in ("queued", "running")
+        )
+
+    async def bump_usage_counter(
+        self, user_id: int, metric: str, period_key: str, limit: int
+    ) -> int | None:
+        """与真库同语义：**已达上限不递增**（真库靠 `DO UPDATE … WHERE` 挡住）。
+
+        新行走「插入」分支、**不看上限**——照抄 SQL 的形状（`enforce` 保证不会用 `limit <= 0`
+        调它）。替身若在这里自作主张加判断，离线用例测的就是替身自己的想法了。
+        """
+        key = (user_id, metric, period_key)
+        if key not in self.usage_counters:
+            self.usage_counters[key] = 1
+            return 1
+        if self.usage_counters[key] >= limit:
+            return None
+        self.usage_counters[key] += 1
+        return self.usage_counters[key]
+
+    async def record_quota_rejection(
+        self, user_id: int, metric: str, used: int, limit: int
+    ) -> None:
+        self.quota_rejections.append(
+            {
+                "user_id": user_id,
+                "metric": metric,
+                "used": used,
+                "limit_value": limit,
+                "at": datetime.now(UTC),
+            }
+        )
 
     def _touch(self, thread_id: str) -> None:
         self._recent = [tid for tid in self._recent if tid != thread_id]

@@ -43,6 +43,7 @@ from app.agent.deep.runner import (
 from app.agent.deep.types import Brief
 from app.api.limits import limit
 from app.api.sse import sse_frame, sse_response
+from app.core import quota
 from app.core.auth import require_db, require_user
 from app.core.config import get_settings
 from app.core.langfuse import TRACE_NAME_DEEP, langfuse_callbacks, make_langfuse_metadata
@@ -250,6 +251,10 @@ async def create_run(
     if checkpointer is None:
         raise HTTPException(status_code=503, detail="checkpointer 不可用")
     user_id = int(user["id"])
+
+    # 配额（E2）：排在**路由之前**——路由本身就要调一次模型，之后的 422（没解析出标的）
+    # 不该退额；quick 路径同样计一次（它也是一次 Agent 请求）
+    await quota.enforce(db, user, quota.METRIC_AGENT_CALLS)
 
     decision: RouteDecision = await route_question(body.question, force=None if body.mode == "auto" else body.mode)
     if decision.path != PATH_DEEP and body.mode == "auto":

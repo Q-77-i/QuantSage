@@ -160,6 +160,12 @@ class Settings(BaseSettings):
     rate_limit_task_submit: int = 20
     rate_limit_task_submit_window: float = 60.0
 
+    # ── 用户配额（E2）：**累计用量**，跨重启持久（与上面 L0 的「速率」边界见 SPEC §3.1）──
+    # 两个维度：在飞任务数（queued + running，**排队即占额**）、每日 Agent 请求数（自然日 +08）。
+    # **0 = 不限额**；admin 恒不限额。默认仍是「演示友好」档：正常用碰不到，灌队列/刷量才拦得住。
+    quota_active_tasks: int = 3
+    quota_agent_calls_per_day: int = 200
+
     # ── 数据源（E4b）：MCP 工具调用的读超时。此前这条路径没有超时（卡住就是无限等）──
     xiaoshi_mcp_read_timeout_seconds: float = 60.0
 

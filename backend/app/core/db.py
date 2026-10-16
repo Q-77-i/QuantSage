@@ -267,6 +267,31 @@ SCHEMA = (
     "ON tasks (user_id, created_at DESC)",
     # worker 取件与启动扫尾都按 status 过滤，且任务表是**热表**（每次回测一行）
     "CREATE INDEX IF NOT EXISTS tasks_status_created_idx ON tasks (status, created_at)",
+    # ── P3-E2：用户配额（SPEC §3.1）──
+    # 计数表：跨重启持久的累计用量。主键即「一个用户一个维度一个周期一行」，
+    # 递增走 `ON CONFLICT` 的那条语句（见 `bump_usage_counter`）。
+    """
+    CREATE TABLE IF NOT EXISTS usage_counters (
+        user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        metric     TEXT        NOT NULL,
+        period_key TEXT        NOT NULL,
+        used       INT         NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, metric, period_key)
+    )
+    """,
+    # 拒绝记录：admin 的「审计」半边读它（只有用量快照的话，审计没有内容），
+    # 验收「超配额被拒并给出明确提示」的可查证据也是它。只记不判，不进任何判定路径。
+    """
+    CREATE TABLE IF NOT EXISTS quota_rejections (
+        id          BIGSERIAL   PRIMARY KEY,
+        user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        metric      TEXT        NOT NULL,
+        used        INT         NOT NULL,
+        limit_value INT         NOT NULL,
+        at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
 )
 
 
@@ -1137,6 +1162,58 @@ class Database:
             (Jsonb({"kind": "interrupted", "message": "服务重启中断"}),),
         )
         return len(rows)
+
+    # ── 用户配额（E2，SPEC §3.1）─────────────────────────────
+
+    async def count_active_tasks(self, user_id: int) -> int:
+        """在飞任务数（gauge）：`queued` + `running` 都算——**排队即占槽位**。
+
+        直查而不另立计数器，是因为计数器得在**终结**时减一，而终结有五条路径（成功 / 失败 /
+        取消 / 启动扫尾 / 进程被杀）——漏减一处就是永久占额；任务表才是那个唯一真值。
+        """
+        row = await self._one(
+            "SELECT count(*) AS n FROM tasks WHERE user_id = %s "
+            "AND status IN ('queued', 'running')",
+            (user_id,),
+        )
+        return int(row["n"]) if row else 0
+
+    async def bump_usage_counter(
+        self, user_id: int, metric: str, period_key: str, limit: int
+    ) -> int | None:
+        """**原子地**检查并递增（counter）：返回本次序号；已达上限时返回 `None` 且**不计数**。
+
+        「检查 + 递增」必须是一条语句：拆成两句的话，两个并发请求会同时读到 `used = limit - 1`
+        然后各写一次，实际放行 `limit + 1` 个。`ON CONFLICT DO UPDATE … WHERE` 里那个 `WHERE`
+        挡住的正是这一次递增——0 行回来即超限（**拒绝不计数**，也就不会「越拒越多」）。
+
+        ⚠ 新行走的是 `INSERT` 分支、**不看 `limit`**（SQL 语义如此）——调用方保证 `limit > 0`
+        （`quota.enforce` 在 `limit <= 0` 时整条跳过）。
+        """
+        row = await self._one(
+            "INSERT INTO usage_counters (user_id, metric, period_key, used) "
+            "VALUES (%s, %s, %s, 1) "
+            "ON CONFLICT (user_id, metric, period_key) DO UPDATE "
+            "SET used = usage_counters.used + 1, updated_at = now() "
+            "WHERE usage_counters.used < %s "
+            "RETURNING used",
+            (user_id, metric, period_key, limit),
+        )
+        return None if row is None else int(row["used"])
+
+    async def record_quota_rejection(
+        self, user_id: int, metric: str, used: int, limit: int
+    ) -> None:
+        """记一次拒绝（E2）。**只记不判**：超限与否完全由上面那条语句决定，这一行不参与判定。
+
+        它写在抛 429 **之前**（`quota.enforce`）——写挂了这次拒绝会变成 500，如实记在这里：
+        库都不通了，500 也是实情，不做吞异常那层纸。
+        """
+        await self._exec(
+            "INSERT INTO quota_rejections (user_id, metric, used, limit_value) "
+            "VALUES (%s, %s, %s, %s)",
+            (user_id, metric, used, limit),
+        )
 
     # ── 内部 ────────────────────────────────────────────────
 

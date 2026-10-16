@@ -55,6 +55,7 @@ from app.core.db import (
 )
 from app.core.langfuse import build_langfuse_handler
 from app.core.logging import setup_logging
+from app.core.quota import QuotaExceeded
 from app.core.security import SecurityHeadersMiddleware
 from app.core.session import SessionRenewalMiddleware
 from app.data.duckdb_client import DataNotReady
@@ -311,6 +312,27 @@ async def _rate_limited(_: Request, exc: RateLimitedError) -> JSONResponse:
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         content={"detail": str(exc), "kind": exc.kind, "retry_after": exc.retry_after},
         headers={"Retry-After": str(exc.retry_after)},
+    )
+
+
+@app.exception_handler(QuotaExceeded)
+async def _quota_exceeded(_: Request, exc: QuotaExceeded) -> JSONResponse:
+    """用户配额用尽（E2）：**429**，与 L0 限流同码、靠 `kind` 区分（SPEC §3.3）。
+
+    不给 `Retry-After` 头：日配额的等待可能是几小时，那个头是给「过几秒再来」用的；
+    计数器把归零时刻放在体内（`reset_at`），gauge 干脆没有——它不由时钟释放。
+    """
+    content: dict[str, Any] = {
+        "detail": str(exc),
+        "kind": exc.kind,
+        "metric": exc.metric,
+        "limit": exc.limit,
+        "used": exc.used,
+    }
+    if exc.reset_at:
+        content["reset_at"] = exc.reset_at
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS, content=content
     )
 
 

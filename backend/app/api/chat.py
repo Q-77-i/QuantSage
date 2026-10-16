@@ -31,7 +31,7 @@ from app.agent.graph import astream_chat
 from app.agent.history import messages_to_history
 from app.api.limits import limit
 from app.api.sse import sse_frame
-from app.core import reliability
+from app.core import quota, reliability
 from app.core.auth import require_db, require_user
 from app.core.langfuse import langfuse_callbacks
 
@@ -145,6 +145,10 @@ async def chat(
     agent = getattr(request.app.state, "agent", None)
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent 未就绪（模型或依赖不可用）")
+
+    # 配额（E2）：就绪之后记账——**计发起**，此后无论成败都不退额（SPEC §3.1 有意口径）。
+    # 排在状态码 401/404/422/503 之后、开流之前，与 L0 同一条「未开流即拒」的约束
+    await quota.enforce(db, user, quota.METRIC_AGENT_CALLS)
 
     # 归属行必须赶在首字节之前落：中途失败宁可 500，也不留一条无主会话
     if body.thread_id:

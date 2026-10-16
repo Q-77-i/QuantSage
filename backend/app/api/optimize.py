@@ -49,6 +49,7 @@ from app.backtest.report import resolve_window
 from app.backtest.strategies import EventDriven, available_strategies, known_params
 from app.backtest.strategies import validate_params as validate_builtin_params
 from app.backtest.types import Mode
+from app.core import quota
 from app.core.auth import require_db, require_user
 from app.strategy import USER_STRATEGY, StrategyCheckFailed, StrategyRejected
 from app.strategy.api import parse_meta
@@ -284,7 +285,7 @@ def streaming_headers() -> dict[str, str]:
 
 async def _enqueue(
     db: Any,
-    user_id: int,
+    user: dict[str, Any],
     *,
     kind: str,
     stored: dict[str, Any],
@@ -298,7 +299,12 @@ async def _enqueue(
 
     执行材料整块挂在 `exec` 子键下，落 `optimization_runs.request` 时由执行体剔掉——
     与 E1a 的 `_EXECUTION_ONLY` 同一手法，记录表里留的仍是用户可见的那一份。
+
+    **配额点放在这里**（E2）：网格与批量共用它，位置恰好是「闸门之后、入队之前」，
+    而幂等重放在各自的 handler 里**更早**就短路了（重复提交不建任务，也就不该被配额挡）。
     """
+    await quota.enforce(db, user, quota.METRIC_ACTIVE_TASKS)
+    user_id = int(user["id"])
     task_id = str(uuid.uuid4())
     request: dict[str, Any] = {
         **stored,
@@ -383,7 +389,7 @@ async def run_grid(
     axes = [{"param": axis.param, "values": list(axis.values)} for axis in body.axes]
     result = await _enqueue(
         require_db(request),
-        user_id,
+        user,
         kind="grid",
         key=key,
         fingerprint=fingerprint,
@@ -448,7 +454,7 @@ async def run_batch(
     )
     result = await _enqueue(
         require_db(request),
-        user_id,
+        user,
         kind="batch",
         key=key,
         fingerprint=fingerprint,
