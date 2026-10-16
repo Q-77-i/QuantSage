@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.12）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.24 ｜ 2026-10-16 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2a 配额底座 + E2b RBAC/admin 视图已落地**，E2c 隔离盘点收口待做）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.25 ｜ 2026-10-16 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -15,7 +15,7 @@
 | [§5](#5-e4-可靠性-l0l7) | E4 可靠性 L0–L7（**全节已交付**） |
 | [§7](#7-e7-工程化) | E7 工程化（E7a CI 骨架 + 静态检查 + 供应链审计 · **E7b 覆盖率门槛 + eval gate 口径** · **E7c Langfuse 字段规范化 + 补挂 handler** · **E7d 实验可复现**——全节已交付） |
 | [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**全节已交付**：E8a 服务侧加固 · E8b 对外 MCP Server · E8c 注入边界标记） |
-| [§3](#3-e2-多用户治理) | E2 多用户治理（**E2a 配额底座、E2b RBAC + admin 视图已交付**；E2c 资源隔离盘点收口 待做） |
+| [§3](#3-e2-多用户治理) | E2 多用户治理（**全节已交付**：E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 集中越权矩阵） |
 | §4 / §6 / §9 其余 | E3 / E5 / E9 规格（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
 | [§11](#11-变更记录) | 变更记录 |
@@ -338,8 +338,16 @@ RETURNING used
 
 ### 3.5 admin 视图
 
-- `GET /api/v1/admin/usage` → `{limits: {active_tasks, agent_calls_per_day}, users: [{id, email, role, active_tasks, agent_calls_today, rejected_today}]}`（users × `tasks` 直查 × `usage_counters` 聚合）。**`limits` 放顶层一份**（实施期收敛）：上限是全局配置，按用户重复一遍只是噪音。
-- `GET /api/v1/admin/rejections?limit=50` → 被拒事件。PRD 说 admin 的用途是「审计与配额视图」——只有用量快照的话**审计半边没有内容**，它同时给验收「超配额被拒」留下可查证据。
+- `GET /api/v1/admin/usage?limit=50&offset=0&q=` → `{limits: {active_tasks, agent_calls_per_day}, total, offset, limit, users: [{id, email, role, active_tasks, agent_calls_today, rejected_today}]}`（users × `tasks` 直查 × `usage_counters` 聚合）。**`limits` 放顶层一份**（实施期收敛）：上限是全局配置，按用户重复一遍只是噪音。
+- **分页 + 搜索 + 两个筛选**（2026-10-16 用户拍板 C 案，其后补两个筛选）：`limit` 1–200（默认 50）、`offset ≥ 0`、`q` 按邮箱**不区分大小写**模糊匹配、`role`（留空 = 全部；只收 `admin` / `user`，**别的值 422**——静默当成「全部」会让筛选看着生效其实没生效）、`active_only`（只看三读数**任一非零**的账号：开发库里 130+ 个账号绝大多数是历史探针，一屏全 0）；`total` = 过滤后的命中数（分页控件靠它算总页数）。**服务端分页**——129 个账号只是当下，视图规模随用户数走。
+  **列表与计数共用同一对 SQL 常量**（`_USAGE_SELECT` / `_USAGE_FILTER`）：过滤包在**派生表外面**（SQL 的 `WHERE` 看不见 `SELECT` 别名，三读数是派生列）；两处各写一份 WHERE 会让「共 N 个账号」与实际能翻到的行数悄悄对不上，且**不报错**。
+  ⚠ 边界：`users.email` 的唯一索引是 B-tree，`%q%` 这种前后缀通配**用不上它**——本地规模（千级）顺序扫描无妨，真上量再引 `pg_trgm`（记为边界，不预先优化）。
+- **排序** `sort` / `order`（用户 2026-10-16 追加）：白名单 `id`（默认，= 登记顺序）/ `email` / `active_tasks` / `agent_calls_today` / `rejected_today`，方向 `asc` / `desc`；不在表里的键由 `Literal` 挡在 **422**。
+  ⚠ **`ORDER BY` 拼的是标识符，参数占位符在那儿没用**（`ORDER BY %s` 排的是字面量）⇒ 只能白名单查表。**排序必须带 `id` 兜底**（同值行顺序不定会让翻页重复或漏行）；`sort="id"` 时它就是那个兜底。**排序与分页必须同侧**——只排当前页等于没排。
+- **前端每页 20 条**（用户 2026-10-16 定：50 太挤）；排序用「排序键下拉 + 升/降序按钮」（与标的浏览同一个交互，不另造可点列头）。搜索 300ms 防抖 + `seq` 挡回包乱序；**筛选或排序一变就回第 1 页**（否则「第 7 页的筛选结果」多半是空白），首次渲染跳过（不把深链里的 `?page=` 拉回来）。
+- **页面文案只讲产品、不讲实现**（用户 2026-10-16 反馈：副标题里写 `QUOTA_*` 与 `scripts/grant_admin.py`「感觉不专业」）⇒ 环境变量名与脚本路径留在 README / SPEC，不进界面。
+- `GET /api/v1/admin/rejections?limit=50&offset=0` → `{total, offset, limit, rejections: [...]}`。PRD 说 admin 的用途是「审计与配额视图」——只有用量快照的话**审计半边没有内容**，它同时给验收「超配额被拒」留下可查证据。
+  **同样分页**（拒绝是**事件**、只增不减，涨得比账号快）；**不做搜索**——它是日志，按时间倒序扫即可（要按人查时用 `usage` 那一列）。
 - **拒绝记录表** `quota_rejections(id BIGSERIAL, user_id, metric, used, limit_value, at TIMESTAMPTZ)`，写入点 = 两处配额的拒绝分支。
 - **前端 `/admin` 页**：一张只读表（用量三列）+ 拒绝事件列表。导航项**仅 admin 可见**（`lib/nav.ts` 新增 `ADMIN_NAV_ITEM` 与纯函数 `navItemsFor(role)`，页头据此过滤；**不动 `NAV_ITEMS` 本身**——首页快捷入口「9 张 = 3×3」的不变量挂在它上面；`activeHref` 遍历含 admin 项的合集，否则 admin 站在 `/admin` 上会一项都不亮）。**前端隐藏入口不是门，门在服务端**（403）。已登录但非 admin 直接访问 → 渲染「需要管理员权限」，**不跳登录**（会话是好的，缺的是角色）。
 - **不做管理后台**（PRD 写死）：没有用户增删改、没有改配额的表单——配额是部署参数，在 settings 里。
@@ -377,10 +385,12 @@ RETURNING used
 
 | PRD 验收 | 本 SPEC 的验收方式 |
 |---|---|
-| 「用户 A 无法访问用户 B 数据」 | ①**离线**：集中越权矩阵（§3.6 落地物）；②**真库**：`tests/integration/test_auth_m1.py` 既有 A/B 矩阵（回归）；③**真机**：冒烟脚本三账号（A / B / admin）逐一打代表端点 |
-| 「超配额被拒并给出明确提示」 | ①**离线**：配额四态（限额内放行 / 429 + `quota_exceeded` / 用户隔离 / 不限额）；②**集成**：`ON CONFLICT … WHERE` 的**并发原子性**——恰好放行上限个、其余 429、`used` 恰等于上限；③**真机**：冒烟脚本打满两个维度，留档 `logs/e2/`（含 admin 视图读到同一读数） |
+| 「用户 A 无法访问用户 B 数据」 | ①**离线**：`tests/test_isolation_matrix.py` **23 例**（§3.6 落地物：八类资源 × 两类端点，B 拿 404 且与「不存在」**同体**、A 拿 200 的对照、打完资源还在）；②**真库 + 真 HTTP**：`tests/integration/test_auth_m1.py` 既有 A/B 矩阵（回归）与 `test_admin_e2b.py`（role 列 / ETL 门随角色翻转 / `admin_usage` 三读数 SQL）；③**真机三账号**：`scripts/quota_smoke.py`（A 满额被拒与跨重启）+ `frontend/scripts/capture-admin.mjs`（admin / 普通两个账号打 `/admin`，10 条断言）。**不另写一份「三账号冒烟脚本」**——上面三轨合起来已逐条覆盖，第四份只是把同一批断言再抄一遍 |
+| 「超配额被拒并给出明确提示」 | ①**离线**：配额四态（限额内放行 / 429 + `quota_exceeded` / 用户隔离 / 不限额）；②**集成**：`ON CONFLICT … WHERE` 的**并发原子性**——恰好放行上限个、其余 429、`used` 恰等于上限；③**真机**：`quota_smoke.py` 打满两个维度（`logs/e2/quota-smoke.md`），`capture-admin.mjs` 验 admin 视图读到同一批读数（`logs/e2/admin-ui.md`） |
 
-**测试落点**（明细进 §10，随交付回填）：离线 `tests/test_quota.py`（配额四态 + `period_key` 纯函数 + 幂等重放不被挡 + admin 豁免）、`tests/test_admin_api.py`（403 / 200 + 视图读数）、`tests/test_auth_api.py` 增补（`/me` 带 role）、ETL 用例改 admin 夹具；集成 `tests/integration/test_quota_e2.py`（并发原子性 + 真库 gauge）。
+**测试落点**与实测读数见 §10 的 E2 节。
+
+**已知边界（E2c 收口时补记）**：admin 视图的两个列表**按 id / 时间正序分页**（「有读数的排前面」没做——审计视图不排序更诚实，谁在第几页是可预期的）；`q` 走 `ILIKE '%q%'` 顺序扫描（§3.5 已记）；`grant_admin.py` 无操作审计（§3.7）。
 
 ## 5. E4 可靠性 L0–L7
 
@@ -1002,6 +1012,14 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 - **Langfuse**（§7.6，E7c 已交付）：`tests/test_langfuse_metadata.py` **12 例**（离线，**不连 Langfuse**）——四键形状（三个 str、tags 是 list）/ `TraceConfig` 的两样同行与 `kwargs()` 展开 / 未挂载 handler 时降级为空 / chat 的 config 四键齐全（含无登录用户给空串）/ 深路径把 callbacks 与 metadata 送进图 config / narrative 的 trace 透传 / **裸模型调用的具名壳**（挂了 handler 且有 run_name 才套壳、离线不套）。真机逐字段核对是验收期动作（§7.9 第 5 条），不在用例里。
 - **实验可复现**（§7.7，E7d 已交付）：`tests/test_snapshot_window.py` **9 例**（全是假数据目录，不碰真实 `data/`）+ `test_task_worker.py` 的接线 1 例。**「同一份数据得同一个指纹」是核心断言**——它是「实验可复现」在测试层的唯一可验证形态；边界用例覆盖：窗口外分片改动**不影响**指纹、窗口内分片改动**必影响**、复权轴不同必不同、空窗口稳定不抛、执行体把同一个值写进记录列与报告 meta 两处。
 
+### E2（全节已交付：E2a + E2b + E2c）
+
+- **配额底座（E2a）**：离线 `tests/test_quota.py` **14 例**（`period_key` 与 `reset_at` 的纯函数与 CST 边界、配额四态、按用户隔离、`limit ≤ 0` 不限额、admin 豁免、**幂等重放不被配额挡**、未知维度名报错、拒绝记录落行）+ `tests/test_admin_api.py` 里 E2b 部分；集成 `tests/integration/test_quota_e2.py` **5 例**——**并发原子性**（12 发并发 / 上限 3 ⇒ 恰好放行 3 发、序号 1..3 不重不漏、表里 `used=3`）是这一节唯一「只有真库能证」的一条：替身是「读 → 判 → 写」三步、天然会超发。
+- **RBAC 与视图（E2b）**：离线 `tests/test_admin_api.py` **16 例**（401 / 403 / 200 三态、三读数各造数据逐列断言、`limits` 在顶层、在飞只数 `queued`+`running`、拒绝列表新的在前、`limit` 越界 422、**分页与搜索**六例含通配符转义）+ `test_etl_api.py` 增补（**普通用户 403**——夹具刻意用普通用户，`signed_in_admin` 会让它永远绿）+ `test_auth_api.py` 增补（注册默认 user、`/me` 带 role）；集成 `tests/integration/test_admin_e2b.py` **4 例**（真库验 `role` 列、ETL 门随角色翻转、**`admin_usage` 那条三读数 SQL**——假库照抄不出 join 与子查询）。
+- **隔离矩阵（E2c）**：离线 `tests/test_isolation_matrix.py` **23 例**——八类资源 × 两类端点，每行三条判据（B 拿 404 且与「不存在」**同体同文案**、A 拿 200 的对照、越权尝试后资源仍在），另加 admin 面 / ETL 的 **403**（另一种判据）与两处刻意公开面的回归钉子。**第五列「不存在的取值」必须过得了路径校验**——自选股那条的 `symbol` 有 6 位代码 pattern，拿 UUID 去比会先撞 422，比的就不是「同响应」了。
+- **真机三轨**（非 pytest）：`scripts/quota_smoke.py`（`logs/e2/quota-smoke.md`，四条判定含**杀进程重启后仍 429**）、`frontend/scripts/capture-admin.mjs`（`logs/e2/admin-ui.md`，**10 条**：页头多项 / 用量表读数与接口 `total` 一致 / 搜索收窄 / **翻页真的换页** / 拒绝记录画出种子行 / 普通账号看得到「需要管理员权限」且**不跳登录**）、`scripts/grant_admin.py` 的四条路径（提权 / 降权 / `--list` / 不存在的账号 exit 2）。
+- **测试隔离**：`FakeDatabase` 拒绝记录的行存叫 `quota_rejection_rows`——**实例属性会盖住同名方法**（`quota_rejections(limit)`），与既有 `paper_decision_rows` 同一约定。
+
 ### E8（全节已交付）
 
 - **服务侧（E8a，已交付）**：
@@ -1020,6 +1038,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.25 | 2026-10-16 | **§3（E2）E2c 收口交付——E2 全节交付完毕**（落地记录 `P3-E2c.md`）。**① admin 两视图加分页 + 搜索 + 两个筛选**（用户拍板 C 案：「129 个账号只是当下，视图规模随用户数走，分页是底线」；随后补「只看有读数的」与「按角色」两个筛选、**前端每页 50 → 20**、**排序（`sort`/`order` 白名单 + id 兜底）**，并把界面副标题里的环境变量名与脚本路径撤掉——**实现细节不进界面**）：`/admin/usage?limit=&offset=&q=&role=&active_only=` 与 `/admin/rejections?limit=&offset=`，响应带 `total/offset/limit`（前端分页控件靠 `total` 算总页数）；**列表与计数共用同一对 SQL 常量**（过滤包在派生表外——SQL 的 WHERE 看不见 SELECT 别名）；`q` 走 `ILIKE '%q%'`，**通配符被转义**（`%`/`_`/`\`——不转的话搜「a_b」会命中「aXb」），空串给 `%%` 匹配全部（`email` 非空，一条不漏）；**服务端分页**的理由与「`%q%` 用不上 B-tree 索引」的边界写进 §3.5。**② 集中越权矩阵**（§3.6 的落地物）：`tests/test_isolation_matrix.py` **23 例**——八类资源 × 两类端点，每行三条判据（B 拿 404 **且与「不存在」同体同文案**、A 拿 200 的对照、越权后资源仍在），另加 admin 面 / ETL 的 403（另一种判据）与公开面回归。**实施期逮到一处判据陷阱**：第五列「不存在的取值」必须过得了路径校验——自选股的 `symbol` 有 6 位代码 pattern，拿 UUID 去比会先撞 422。**③ 真机三轨**（不另写第四份脚本，如实点名）：`quota_smoke.py`（配额拒 + 跨重启）· `capture-admin.mjs`（**界面验证 10/10**：页头多项 / 用量读数与接口 `total` 一致 / 搜索收窄 / **翻页真的换页**（第 1 页探针账号 → 第 2 页真人账号）/ 拒绝记录画出种子行 / 普通账号「需要管理员权限」且**不跳登录**）· `grant_admin.py` 四条路径。**④ 前端复用而非新造**：分页用既有的 `lib/paging.ts` + `components/ui/pager.tsx`（M10c 建）；`useDebounced` 从 `components/stocks/` 上提到 `components/ui/use-debounced.ts`（免得 admin 去 import stocks 的模块）；两个列表**各带各的页码**（`?page=` / `?rpage=`——共用一个页码会互相翻走）。**验收**：离线 **1563**（+29）/ 集成 123（E2b 那 4 例已含）/ 前端 **470** + typecheck/lint / `ruff` 全绿 / 界面验证 **10/10**（`logs/e2/admin-ui.md` + 4 张截图）。**⚠ 实施期逮到三类问题（如实记）**：① **改完后端没重启**就跑界面验证，`total`/`q` 全是旧行为——症状「页面写着 undefined、搜索永远不收敛」⇒ **凡动服务端契约，先重启再跑界面验证**（无 `--reload` 是本仓既定形态）。② **界面验证逮到一个真 bug**：`onFilterChanged`（父组件内联箭头）进了 effect 依赖 ⇒ 每次重渲染都触发一次「筛选变了回第 1 页」，表现为「URL 停在 `?page=2`、行也换了页，页码标签却被拽回第 1 页」⇒ 改 latest-ref 写法，依赖里只留筛选值本身。③ **分页把一条既有集成用例打破**（`test_usage_view_reads_the_real_tables` 假设新账号在未过滤的第一页里——134 个账号轮不到它）⇒ 用例改用 `?q=` 钉行；这正是分页要防的那件事，用例跟着改是对的。另记一条**断言纪律**：界面验证里「等一个会立即为真的条件」等于没等（`textContent` 比 `innerText` 恒不等；「筛选后」三个字在数据回来之前就已渲染）⇒ **等真正的数据变化**（拿接口的期望值当条件），或等**稳定态**。 |
 | v2.24 | 2026-10-16 | **§3（E2）E2b RBAC + admin 视图交付**（落地记录 `P3-E2b.md`）——**治理的另一半**。① **`users.role`**（幂等加列，默认 `user`）+ `require_admin`：**全仓第一处 403**，破例理由写在该函数 docstring 里——既有 404 口径保护的是「**别人的资源**是否存在」（防同侪探测），admin 面不属任何用户、缺的是**角色**，其存在也不是秘密。**角色不进 JWT**（`require_user` 本就查整行 ⇒ 角色变更**立即生效**；塞进 payload 会与「会话撤销」并轨）；角色常量**只有一份**（`core/auth.py` 的 `ROLE_USER`/`ROLE_ADMIN`，`quota.py` 的 admin 豁免引用同一份）。② **ETL 两端点归 admin**（`/api/v1/etl/status`、`/run`）——本段**唯一的越权面修复**（此前**任何登录用户**都能触发一次全局数据拉取、看系统调度状态），也是唯一的行为变更。③ **admin 视图**：`GET /admin/usage`（每用户一行：在飞任务 / 当期调用 / 当期被拒，三列**各有来源**）+ `GET /admin/rejections?limit=`（审计半边的内容就是 E2a 的拒绝记录表）；**`limits` 上提到响应顶层**（实施期收敛：上限是全局配置，按用户重复一遍是噪音）；`rejected_today` 按 `at >= 今日 00:00（+08）` 数事件（拒绝表记的是事件、没有 `period_key`）⇒ `core/quota.py` 多一个 `day_start(now)` 纯函数（`reset_at` 由它推出来）。④ **`scripts/grant_admin.py <email> [--revoke] [--list]`**（同步 psycopg，服务不必在跑；无操作审计，§3.7 已记边界）。⑤ **前端**：`ADMIN_NAV_ITEM` + 纯函数 `navItemsFor(role)`（**不动 `NAV_ITEMS`**——首页快捷入口「9 张 = 3×3」的不变量挂在它上面；`activeHref` 遍历含 admin 项的合集，否则站在 `/admin` 上不亮）+ `/admin` 只读页（非 admin **不跳登录**：会话是好的、缺的是角色；**门在服务端**）。**验收**：离线 **1534**（+11）/ 集成 **+4**（`test_admin_e2b.py`：真库上验 `role` 列、ETL 门随角色翻转、**`admin_usage` 那条三读数 SQL**——假库照抄不出 join 与子查询）/ 前端 **470**（+4）+ typecheck / lint 全绿；`ruff` 全绿。**README 三处事实订正**（会话收尾扫出来的）：API 表新增一行 admin 视图 + 图例加 🔑（需管理员）、ETL 那行标明归 admin、「定时任务默认关」那条补「需要 admin 账号」。 |
 | v2.23 | 2026-10-16 | **§3（E2）E2a 配额底座交付**（落地记录 `P3-E2a.md`）。**两维度两语义落地**：在飞任务数 = 直查 `tasks` 的 gauge（`count(*) … IN ('queued','running')`，进终态自动释放、不会漏减）；Agent 请求数/日 = 新表 `usage_counters` 的 counter。**「检查+递增」一条语句**（`INSERT … ON CONFLICT DO UPDATE … WHERE used < limit RETURNING used`）：0 行即超限且**拒绝不计数**。**并发实测**（真库、进集成套件）：同一用户 12 发并发 / 上限 3 ⇒ **恰好放行 3 发**、序号 `[1,2,3]`、表里 `used=3`——离线替身是「读→判→写」三步，证明不了这条。**拒绝契约**：429 + `{detail, kind:"quota_exceeded", metric, limit, used, reset_at?}`（无 `Retry-After`：日配额等的是小时级；gauge 不带 `reset_at`——不由时钟释放）。**配额是端点内的显式调用而非依赖**（实施期收敛，§3.2 已改）：依赖跑在 handler 前会挡住**幂等重放**（重复提交不建任务）并跳过请求体校验（该 422 而非 429）；五个端点的位置逐条写进 §3.2 表。**拒绝记录** `quota_rejections` 同期落地（admin 的「审计」半边读它）。**验收**：离线 **1523**（+14）/ 集成 **119**（+5）/ `ruff` 全绿；**真机冒烟**（`scripts/quota_smoke.py`，自起紧配额实例）四条判定全绿——`/chat` 三发 `[200,200,429]`、两网格 `[202,429]`、真库两表有行、**杀进程重启后仍 429**（计数落库非进程内），证据 `logs/e2/quota-smoke.md`。**一条如实记录**：冒烟首跑逮到的是**脚本自己**的 `axes` 形状错（dict 应为 list）——而 `test_rate_limit.py` 里同一个错形状从未被校验，因为限流依赖跑在 body 校验之前。 |
 | v2.22 | 2026-10-16 | **§3（E2 多用户治理）规格定稿（待实施）**——底稿 `P3-E2-规划评估.md`（两份代码扫描 + 测试基线实测 1509/114）。**三处口径订正**：① 「回测并发数」在 E1a 单 worker 串行下**恒 ≤1、永不触发** ⇒ 改「**在飞任务数上限**」（`queued`+`running`，语义 = 占队列槽位，因为真实会被打爆的是全局 FIFO 队列）；② 「Agent 调用次数」定为**用户发起的请求数/日**（chat / research create / report create），不计 LLM 调用数与 token——**配额管次数、Budget 管单次成本、Langfuse 管观测**三层分工写死；③ RBAC 的落点不止视图：盘点逮到 `GET /etl/status` 与 `POST /etl/run` **只要求登录、无角色判断**，任意注册用户可触发全局数据拉取 ⇒ **ETL 两端点归 admin**（本轮唯一越权面修复、唯一行为变更，PRD v0.12 同步）。**设计要点**：两个维度**两种语义**（在飞任务 = 直查 `tasks` 的 gauge，进终态自动释放、不会漏减；Agent 次数 = 新表 `usage_counters` 的 counter，跨重启持久）——这是 §5.4 早写死的边界（L0 管速率、E2 管累计）；**「检查+递增」必须一条 SQL**（`ON CONFLICT DO UPDATE … WHERE used < limit RETURNING used`，0 行即超限且**拒绝不计数**），该语义**只有真库能验** ⇒ 原子性用例进集成套件；**计发起不计成功**（有意口径，防止后人当 bug 修）；上限 ≤0 = 不限额、admin 豁免；拒绝契约 = **429 + `kind:"quota_exceeded"`**（沿用 L0 信封，前端 `messageFromBody` 认 `detail` ⇒ 零改动）。**顺序**：幂等短路 → 限流 → 业务闸门 → 配额 → 入队；`resume` / 惰性结算 `review`·`settle` **不计数并写明依据**（调用量不可被用户放大）。**RBAC**：`users.role` 幂等加列 + `require_admin`（`require_user` 已返回整行 ⇒ 零额外查询）+ **角色不进 JWT**（立即生效，不与「会话撤销」并轨）+ `grant_admin` 脚本授予 + **全仓第一处 403**（角色不足 ≠ 别人的资源，破例理由写进 §3.4）。**admin 视图**：`/admin/usage` + `/admin/rejections`（**拒绝记录表**给「审计」半边提供内容）+ 前端 `/admin` 页（导航仅 admin 可见；**门在服务端**）。**资源隔离**：盘点成 §3.6 全量表（8 类资源 → 归属真源 → 端点 → 越权文案），三处「按 id 直查」逐条标注**有据**（上游已判归属）、两条刻意公开面写明依据；落地物 = 一张**集中越权矩阵**用例。**一处销账**：P2 SPEC「多设备会话管理（P3-E2）」改为「不做，理由见 §8.3」。 | 

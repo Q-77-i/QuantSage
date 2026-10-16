@@ -59,7 +59,14 @@ export interface AdminUsageRow {
   rejected_today: number;
 }
 
-export interface AdminUsage {
+/** 分页三键（E2c 起两个 admin 列表都有）：`total` 是**过滤后**的命中数，分页控件靠它算总页数。 */
+export interface Paged {
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface AdminUsage extends Paged {
   limits: { active_tasks: number; agent_calls_per_day: number };
   users: AdminUsageRow[];
 }
@@ -75,6 +82,10 @@ export interface QuotaRejection {
   used: number;
   limit_value: number;
   at: string;
+}
+
+export interface AdminRejections extends Paged {
+  rejections: QuotaRejection[];
 }
 
 // ── GET /api/v1/market/{symbol}/bars ────────────────────────────────────────

@@ -6,7 +6,8 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { Cell, Row, TableShell } from "@/components/backtest/table";
 import { Pager } from "@/components/ui/pager";
-import { useDebounced, useStocksList } from "@/components/stocks/use-stocks";
+import { useStocksList } from "@/components/stocks/use-stocks";
+import { useDebounced } from "@/components/ui/use-debounced";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/form-controls";
 import { toneClass } from "@/lib/market-home";

@@ -128,7 +128,13 @@ def test_rejections_view_accepts_a_limit(signed_in_admin: Any) -> None:
 
 
 def test_rejections_view_is_empty_when_nothing_was_rejected(signed_in_admin: Any) -> None:
-    assert client.get("/api/v1/admin/rejections").json() == {"rejections": []}
+    # 分页三键自 E2c 起随行（`total=0` 与空列表是同一件事，前端据此画「还没有记录」）
+    assert client.get("/api/v1/admin/rejections").json() == {
+        "total": 0,
+        "offset": 0,
+        "limit": 50,
+        "rejections": [],
+    }
 
 
 @pytest.mark.usefixtures("jwt_secret")
@@ -140,3 +146,181 @@ def test_admin_role_travels_through_the_dependency_chain(signed_in_admin: Any) -
     """
     assert signed_in_admin is not None
     assert client.get("/api/v1/admin/usage").status_code == 200
+
+
+# ── 分页与搜索（E2c，用户 2026-10-16 拍板 C 案）────────────────
+
+
+def test_usage_view_paginates(signed_in_admin: Any) -> None:
+    for index in range(7):
+        seed(signed_in_admin, f"user{index}@example.com")
+
+    first = client.get("/api/v1/admin/usage?limit=3").json()
+    second = client.get("/api/v1/admin/usage?limit=3&offset=3").json()
+
+    assert first["total"] == second["total"] == 7  # total 是**过滤后**的命中数，不随页变
+    assert (first["limit"], first["offset"]) == (3, 0)
+    assert (second["limit"], second["offset"]) == (3, 3)
+    assert [row["email"] for row in first["users"]] == [
+        "user0@example.com",
+        "user1@example.com",
+        "user2@example.com",
+    ]
+    assert [row["email"] for row in second["users"]] == [
+        "user3@example.com",
+        "user4@example.com",
+        "user5@example.com",
+    ]
+    # 页与页**不重叠**（offset 真的落到了 SQL 上，不是取回全量再切片）
+    assert not set(row["id"] for row in first["users"]) & set(
+        row["id"] for row in second["users"]
+    )
+
+
+def test_usage_view_searches_by_email_case_insensitively(signed_in_admin: Any) -> None:
+    seed(signed_in_admin, "alice@example.com")
+    seed(signed_in_admin, "bob@example.com")
+    seed(signed_in_admin, "Alice.Smith@example.com")
+
+    body = client.get("/api/v1/admin/usage?q=ALICE").json()
+
+    assert body["total"] == 2  # 不区分大小写
+    assert [row["email"] for row in body["users"]] == [
+        "alice@example.com",
+        "Alice.Smith@example.com",
+    ]
+
+
+def test_usage_view_treats_wildcards_as_literal(signed_in_admin: Any) -> None:
+    """`%` / `_` 是 LIKE 的通配符，但用户搜的是**字符**——不转义就会搜「a_b」命中「aXb」。"""
+    seed(signed_in_admin, "a_b@example.com")
+    seed(signed_in_admin, "aXb@example.com")
+
+    body = client.get("/api/v1/admin/usage?q=a_b").json()
+
+    assert [row["email"] for row in body["users"]] == ["a_b@example.com"]
+
+
+def test_usage_view_with_no_match_is_empty_not_everything(signed_in_admin: Any) -> None:
+    seed(signed_in_admin, "alice@example.com")
+
+    body = client.get("/api/v1/admin/usage?q=nobody").json()
+
+    assert body["total"] == 0
+    assert body["users"] == []
+
+
+def test_usage_view_rejects_out_of_range_params(signed_in_admin: Any) -> None:
+    assert client.get("/api/v1/admin/usage?limit=0").status_code == 422
+    assert client.get("/api/v1/admin/usage?limit=500").status_code == 422
+    assert client.get("/api/v1/admin/usage?offset=-1").status_code == 422
+
+
+def test_rejections_view_paginates(signed_in_admin: Any) -> None:
+    seed(signed_in_admin, "alice@example.com", rejections=5)
+
+    first = client.get("/api/v1/admin/rejections?limit=2").json()
+    last = client.get("/api/v1/admin/rejections?limit=2&offset=4").json()
+
+    assert first["total"] == last["total"] == 5
+    assert len(first["rejections"]) == 2
+    assert len(last["rejections"]) == 1  # 最后一页不满也是 1 条，不是补空
+    assert not set(row["id"] for row in first["rejections"]) & set(
+        row["id"] for row in last["rejections"]
+    )
+
+
+def test_usage_view_filters_by_role(signed_in_admin: Any) -> None:
+    alice = seed(signed_in_admin, "alice@example.com")
+    seed(signed_in_admin, "bob@example.com")
+    signed_in_admin.users[alice["id"]]["role"] = "admin"
+
+    body = client.get("/api/v1/admin/usage?role=admin").json()
+
+    assert body["total"] == 1  # total 与行同一份过滤，不是「先数全部再筛」
+    assert [row["email"] for row in body["users"]] == ["alice@example.com"]
+    assert client.get("/api/v1/admin/usage?role=user").json()["total"] == 1
+    assert client.get("/api/v1/admin/usage").json()["total"] == 2  # 留空 = 全部
+
+
+def test_usage_view_filters_to_accounts_with_readings(signed_in_admin: Any) -> None:
+    """一屏全 0 的那种账号（历史探针）不该占位置——三读数任一非零才算「有读数」。"""
+    seed(signed_in_admin, "busy@example.com", calls=1)
+    seed(signed_in_admin, "quiet@example.com")
+
+    body = client.get("/api/v1/admin/usage?active_only=true").json()
+
+    assert body["total"] == 1
+    assert [row["email"] for row in body["users"]] == ["busy@example.com"]
+
+
+def test_usage_view_combines_search_and_both_filters(signed_in_admin: Any) -> None:
+    """三者叠加：搜索 ∩ 角色 ∩ 有读数——`total` 与行必须来自同一次过滤。"""
+    busy = seed(signed_in_admin, "alice@example.com", calls=2)
+    seed(signed_in_admin, "alice-silent@example.com")  # 同样匹配 alice，但没有读数
+    signed_in_admin.users[busy["id"]]["role"] = "admin"
+
+    body = client.get("/api/v1/admin/usage?q=alice&role=admin&active_only=true").json()
+
+    assert body["total"] == 1
+    assert [row["email"] for row in body["users"]] == ["alice@example.com"]
+
+
+def test_usage_view_rejects_unknown_role(signed_in_admin: Any) -> None:
+    """角色只收两个值——写错该 422，而不是静默当成「全部」（那会让筛选看着生效其实没生效）。"""
+    assert client.get("/api/v1/admin/usage?role=root").status_code == 422
+
+
+def test_usage_view_sorts_by_readings(signed_in_admin: Any) -> None:
+    """按读数排序：分页与排序同侧（只排当前页等于没排）。"""
+    seed(signed_in_admin, "quiet@example.com")
+    seed(signed_in_admin, "busy@example.com", calls=5)
+    seed(signed_in_admin, "mid@example.com", calls=2)
+
+    desc = client.get("/api/v1/admin/usage?sort=agent_calls_today&order=desc").json()
+    asc = client.get("/api/v1/admin/usage?sort=agent_calls_today&order=asc").json()
+
+    assert [row["email"] for row in desc["users"]][:3] == [
+        "busy@example.com",
+        "mid@example.com",
+        "quiet@example.com",
+    ]
+    assert [row["email"] for row in asc["users"]][:3] == [
+        "quiet@example.com",
+        "mid@example.com",
+        "busy@example.com",
+    ]
+
+
+def test_usage_view_sort_keeps_pagination_stable(signed_in_admin: Any) -> None:
+    """全 0 的账号之间**顺序必须确定**（按 id 兜底）——否则翻页会看到重复或漏行。"""
+    for index in range(6):
+        seed(signed_in_admin, f"user{index}@example.com")
+
+    first = client.get("/api/v1/admin/usage?sort=agent_calls_today&limit=3").json()["users"]
+    second = client.get(
+        "/api/v1/admin/usage?sort=agent_calls_today&limit=3&offset=3"
+    ).json()["users"]
+
+    assert [row["email"] for row in first] == [f"user{i}@example.com" for i in range(3)]
+    assert [row["email"] for row in second] == [f"user{i}@example.com" for i in range(3, 6)]
+
+
+def test_usage_view_sorts_by_email(signed_in_admin: Any) -> None:
+    seed(signed_in_admin, "carol@example.com")
+    seed(signed_in_admin, "alice@example.com")
+    seed(signed_in_admin, "bob@example.com")
+
+    body = client.get("/api/v1/admin/usage?sort=email&order=desc").json()
+
+    assert [row["email"] for row in body["users"]] == [
+        "carol@example.com",
+        "bob@example.com",
+        "alice@example.com",
+    ]
+
+
+def test_usage_view_rejects_unknown_sort_key(signed_in_admin: Any) -> None:
+    """白名单挡在 422——`ORDER BY` 拼的是标识符，绝不能把参数直接拼进去。"""
+    assert client.get("/api/v1/admin/usage?sort=password_hash").status_code == 422
+    assert client.get("/api/v1/admin/usage?order=sideways").status_code == 422

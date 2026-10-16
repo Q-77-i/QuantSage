@@ -6,7 +6,11 @@
  *
  * 返回**带前导 `?`** 的串（没有参数时是空串），调用方直接拼在路径后面。
  */
-export function query(params: Record<string, string | number | undefined | null>): string {
+// boolean 也在收：查询串里 `?active_only=true` 是常态，让每个调用点各写一次
+// `value ? "true" : undefined` 只会把同一件事抄很多遍（服务端按 "true"/"false" 解析）
+export function query(
+  params: Record<string, string | number | boolean | undefined | null>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== "") search.set(key, String(value));

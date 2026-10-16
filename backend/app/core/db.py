@@ -26,6 +26,51 @@ from psycopg_pool import AsyncConnectionPool
 #: 建表默认值与它同源（下面的 DDL 由它拼出），避免两处各写一份字面量而漂移。
 DEFAULT_GROUP = "默认分组"
 
+def like_pattern(text: str) -> str:
+    """把用户输入变成 `ILIKE` 模式（admin 视图的邮箱搜索）。
+
+    转义 `\\` / `%` / `_`——不转的话搜「100%」会把 `%` 当通配符，搜 `a_b` 会命中 `aXb`。
+    **空串给 `%%`（匹配全部）**而不是另写一条无过滤的 SQL：`email` 是 NOT NULL，
+    一条都不会漏，而两条 SQL 迟早有一处忘了同步。
+    """
+    escaped = text.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+#: admin 用量视图的**行定义**（含三读数）与**过滤条件**——列表与计数**共用同一份**。
+#: 分两处写过一次就会漂：`total` 与 `rows` 用不同的 WHERE，前端的「共 N 个账号」
+#: 与实际能翻到的行数对不上，而且**不会报错**。
+#: 占位符顺序：`_USAGE_SELECT` 三个（period_key / since / 邮箱模式），`_USAGE_FILTER` 三个（role ×2 / 只看有读数）。
+_USAGE_SELECT = (
+    "SELECT u.id, u.email, u.role, "
+    "  (SELECT count(*) FROM tasks t WHERE t.user_id = u.id "
+    "     AND t.status IN ('queued', 'running')) AS active_tasks, "
+    "  COALESCE(c.used, 0) AS agent_calls_today, "
+    "  COALESCE(r.rejected, 0) AS rejected_today "
+    "FROM users u "
+    "LEFT JOIN usage_counters c ON c.user_id = u.id "
+    "  AND c.metric = 'agent_calls' AND c.period_key = %s "
+    "LEFT JOIN (SELECT user_id, count(*) AS rejected FROM quota_rejections "
+    "  WHERE at >= %s GROUP BY user_id) r ON r.user_id = u.id "
+    "WHERE u.email ILIKE %s"
+)
+#: 别名只能在**外层**用（SQL 的 WHERE 看不见 SELECT 的别名），故过滤包在派生表外面
+_USAGE_FILTER = (
+    "(%s = '' OR t.role = %s) "
+    "AND (NOT %s OR t.active_tasks > 0 OR t.agent_calls_today > 0 OR t.rejected_today > 0)"
+)
+
+#: 可排序列的白名单：**请求里的键 → 派生表里的列**。白名单而不是把参数拼进 SQL——
+#: `ORDER BY` 拼的是**标识符**，占位符在那儿会被当成常量（`ORDER BY %s` 排的是字面量），
+#: 所以只能查表；表里没有的键由端点用 `Query(pattern=...)` 挡在 422。
+_USAGE_SORTS = {
+    "id": "t.id",
+    "email": "t.email",
+    "active_tasks": "t.active_tasks",
+    "agent_calls_today": "t.agent_calls_today",
+    "rejected_today": "t.rejected_today",
+}
+
 #: 任务行的对外列。`user_id` 留在行里**不出接口**（与既有约定一致：归属只作过滤条件）。
 _TASK_COLUMNS = (
     "id, kind, status, request, progress, result, error, created_at, started_at, finished_at"
@@ -1205,35 +1250,71 @@ class Database:
         )
         return None if row is None else int(row["used"])
 
-    async def admin_usage(self, period_key: str, since: datetime) -> list[dict[str, Any]]:
-        """admin 配额视图的一行一用户（E2b）：在飞任务 / 当期调用 / 当期被拒。
+    async def admin_usage(
+        self,
+        period_key: str,
+        since: datetime,
+        *,
+        limit: int,
+        offset: int,
+        q: str = "",
+        role: str = "",
+        active_only: bool = False,
+        sort: str = "id",
+        order: str = "asc",
+    ) -> list[dict[str, Any]]:
+        """admin 配额视图的**一页**（E2b；E2c 加分页、搜索、筛选与排序）。
 
         三列各有来源，别指望一条 join 解决：在飞任务数**直查任务表**（与 gauge 同源，
         否则视图与判定会各说各话），当期调用读计数表，当期被拒按 `at >= since` 数事件。
+
+        ⚠ 搜索用 `ILIKE '%q%'`，**用不上 `email` 的唯一索引**（B-tree 只吃前缀）——
+        本地千级规模顺序扫描无妨，真上量再引 `pg_trgm`（SPEC §3.5 记为边界）。
         """
+        # 排序必须**带上 id 兜底**：同值行在两次查询里顺序不定，翻页会看到重复或漏行
+        # （`sort="id"` 本身就是那个兜底，不必再缀一次）
+        column = _USAGE_SORTS[sort]
+        tiebreak = "" if sort == "id" else ", t.id"
+        direction = "DESC" if order == "desc" else "ASC"
         return await self._all(
-            "SELECT u.id, u.email, u.role, "
-            "  (SELECT count(*) FROM tasks t WHERE t.user_id = u.id "
-            "     AND t.status IN ('queued', 'running')) AS active_tasks, "
-            "  COALESCE(c.used, 0) AS agent_calls_today, "
-            "  COALESCE(r.rejected, 0) AS rejected_today "
-            "FROM users u "
-            "LEFT JOIN usage_counters c ON c.user_id = u.id "
-            "  AND c.metric = 'agent_calls' AND c.period_key = %s "
-            "LEFT JOIN (SELECT user_id, count(*) AS rejected FROM quota_rejections "
-            "  WHERE at >= %s GROUP BY user_id) r ON r.user_id = u.id "
-            "ORDER BY u.id",
-            (period_key, since),
+            f"SELECT * FROM ({_USAGE_SELECT}) t WHERE {_USAGE_FILTER} "
+            f"ORDER BY {column} {direction}{tiebreak} LIMIT %s OFFSET %s",
+            (period_key, since, like_pattern(q), role, role, active_only, limit, offset),
         )
 
-    async def quota_rejections(self, limit: int) -> list[dict[str, Any]]:
-        """最近的拒绝事件（E2b，新的在前）。邮箱随行——读它的只有 admin 面。"""
+    async def admin_usage_total(
+        self,
+        period_key: str,
+        since: datetime,
+        *,
+        q: str = "",
+        role: str = "",
+        active_only: bool = False,
+    ) -> int:
+        """过滤后的命中数——分页控件靠它算总页数。
+
+        与上一页**共用 `_USAGE_SELECT` / `_USAGE_FILTER`**：两处各写一份 WHERE 时，
+        「共 N 个账号」与实际能翻到的行数会悄悄对不上（且不报错）。
+        计数也要 `period_key` / `since`——三读数是派生表里算出来的，计数得先把它建出来。
+        """
+        row = await self._one(
+            f"SELECT count(*) AS n FROM ({_USAGE_SELECT}) t WHERE {_USAGE_FILTER}",
+            (period_key, since, like_pattern(q), role, role, active_only),
+        )
+        return int(row["n"]) if row else 0
+
+    async def quota_rejections(self, limit: int, offset: int = 0) -> list[dict[str, Any]]:
+        """最近的拒绝事件（E2b，新的在前；E2c 加分页）。邮箱随行——读它的只有 admin 面。"""
         return await self._all(
             "SELECT r.id, r.user_id, u.email, r.metric, r.used, r.limit_value, r.at "
             "FROM quota_rejections r JOIN users u ON u.id = r.user_id "
-            "ORDER BY r.at DESC, r.id DESC LIMIT %s",
-            (limit,),
+            "ORDER BY r.at DESC, r.id DESC LIMIT %s OFFSET %s",
+            (limit, offset),
         )
+
+    async def quota_rejections_total(self) -> int:
+        row = await self._one("SELECT count(*) AS n FROM quota_rejections", ())
+        return int(row["n"]) if row else 0
 
     async def record_quota_rejection(
         self, user_id: int, metric: str, used: int, limit: int

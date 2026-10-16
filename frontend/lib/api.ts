@@ -55,8 +55,8 @@ import type {
   ResearchRunDetail,
   ResearchRunSummary,
   ReportSummary,
+  AdminRejections,
   AdminUsage,
-  QuotaRejection,
 } from "./types";
 
 /** 后端端口。只在本机联调时改（见 .env.local 说明）。 */
@@ -210,12 +210,23 @@ export const api = {
   logout: () => request<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
 
   // ── admin 视图（E2b）──────────────────────────────────────────────────
-  /** 配额视图：每用户一行（在飞任务 / 当期调用 / 当期被拒）+ 顶层一份上限。非 admin 会 403 */
-  adminUsage: () => request<AdminUsage>("/api/v1/admin/usage"),
+  /** 配额视图**一页**（在飞任务 / 当期调用 / 当期被拒）+ 顶层一份上限。非 admin 会 403 */
+  adminUsage: (
+    params: {
+      limit?: number;
+      offset?: number;
+      q?: string;
+      role?: string;
+      active_only?: boolean;
+      sort?: string;
+      order?: "asc" | "desc";
+    } = {},
+  ) =>
+    request<AdminUsage>(`/api/v1/admin/usage${query({ ...params })}`),
 
-  /** 拒绝记录（新的在前）。**审计半边的内容就是它**——只有用量快照的话没东西可看 */
-  adminRejections: (limit = 50) =>
-    request<{ rejections: QuotaRejection[] }>(`/api/v1/admin/rejections${query({ limit })}`),
+  /** 拒绝记录**一页**（新的在前）。**审计半边的内容就是它**——只有用量快照的话没东西可看 */
+  adminRejections: (params: { limit?: number; offset?: number } = {}) =>
+    request<AdminRejections>(`/api/v1/admin/rejections${query({ ...params })}`),
 
   // ── 数据 ──────────────────────────────────────────────────────────────
   /** 页头「数据截至 X」的数据源。查出来的，不是写死的 */

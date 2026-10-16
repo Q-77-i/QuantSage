@@ -7,9 +7,6 @@ import { offsetOf } from "@/lib/paging";
 import { PAGE_SIZE } from "@/lib/stocks";
 import type { CrossSection } from "@/lib/types";
 
-/** 搜索防抖。与自选股面板同值（300ms）——同一种交互用同一个手感。 */
-export const SEARCH_DEBOUNCE_MS = 300;
-
 /**
  * 全市场 / 某行业列表的状态（M10c）。
  *
@@ -68,14 +65,4 @@ export function useStocksList(params: {
   useEffect(() => () => void ++seq.current, []);
 
   return { section, loading, error, reload: () => void load(params.page) };
-}
-
-/** 搜索词防抖：边输边查会每敲一个字打一次后端，而截面的 `q` 是服务端过滤。 */
-export function useDebounced(value: string, delay = SEARCH_DEBOUNCE_MS): string {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-  return settled;
 }

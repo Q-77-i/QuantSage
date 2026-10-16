@@ -842,10 +842,17 @@ class FakeDatabase:
             }
         )
 
-    async def admin_usage(self, period_key: str, since: datetime) -> list[dict[str, Any]]:
-        """与真库同形：三列各有来源（在飞任务直查任务表、当期调用读计数、当期被拒数事件）。"""
+    def _usage_rows(self, period_key: str, since: datetime, q: str) -> list[dict[str, Any]]:
+        """过滤后的**全部**行——两个方法共用它（真库那份共用的是一对 SQL 常量）。
+
+        搜索按真库的 `ILIKE %q%` 语义照抄（**不区分大小写**的包含匹配）——替身若用
+        `==` 比，离线用例测的就是替身自己的想法了。
+        """
+        needle = q.strip().lower()
         rows: list[dict[str, Any]] = []
         for user in self.users.values():
+            if needle and needle not in str(user["email"]).lower():
+                continue
             active = sum(
                 1
                 for row in self.tasks.values()
@@ -869,7 +876,54 @@ class FakeDatabase:
             )
         return sorted(rows, key=lambda row: row["id"])
 
-    async def quota_rejections(self, limit: int) -> list[dict[str, Any]]:
+    @staticmethod
+    def _filter_usage(
+        rows: list[dict[str, Any]], role: str, active_only: bool
+    ) -> list[dict[str, Any]]:
+        """与真库 `_USAGE_FILTER` 同语义：`role=""` 不过滤；`active_only` 看**三读数任一非零**。"""
+        if role:
+            rows = [row for row in rows if row["role"] == role]
+        if active_only:
+            rows = [
+                row
+                for row in rows
+                if row["active_tasks"] or row["agent_calls_today"] or row["rejected_today"]
+            ]
+        return rows
+
+    async def admin_usage(
+        self,
+        period_key: str,
+        since: datetime,
+        *,
+        limit: int,
+        offset: int,
+        q: str = "",
+        role: str = "",
+        active_only: bool = False,
+        sort: str = "id",
+        order: str = "asc",
+    ) -> list[dict[str, Any]]:
+        """与真库同形：三列各有来源（在飞任务直查任务表、当期调用读计数、当期被拒数事件）。
+
+        排序也照抄真库的语义：**按 `id` 兜底**（同值时顺序确定，否则翻页会重复或漏行）。
+        """
+        rows = self._filter_usage(self._usage_rows(period_key, since, q), role, active_only)
+        rows.sort(key=lambda row: (row[sort], row["id"]), reverse=order == "desc")
+        return rows[offset : offset + limit]
+
+    async def admin_usage_total(
+        self,
+        period_key: str,
+        since: datetime,
+        *,
+        q: str = "",
+        role: str = "",
+        active_only: bool = False,
+    ) -> int:
+        return len(self._filter_usage(self._usage_rows(period_key, since, q), role, active_only))
+
+    async def quota_rejections(self, limit: int, offset: int = 0) -> list[dict[str, Any]]:
         """与真库同形：新的在前，邮箱随行（读它的只有 admin 面）。"""
         rows = []
         for index, row in enumerate(self.quota_rejection_rows):
@@ -886,7 +940,10 @@ class FakeDatabase:
                 }
             )
         rows.reverse()
-        return rows[:limit]
+        return rows[offset : offset + limit]
+
+    async def quota_rejections_total(self) -> int:
+        return len(self.quota_rejection_rows)
 
     def _touch(self, thread_id: str) -> None:
         self._recent = [tid for tid in self._recent if tid != thread_id]
