@@ -13,31 +13,31 @@
 
 ## 二、技术栈（定稿，勿擅自更换）
 
-| 层 | 选型 | 落地状态（P1 收尾时点） |
+| 层 | 选型 | 落地状态（2026-10-17） |
 |---|---|---|
-| 编排 | LangGraph（StateGraph） | ✅ 已用（预置 `create_agent` ReAct 图） |
-| 流水线 | LangChain LCEL（活在 LangGraph 节点内部） | ⬜ P2 起（P1 无 LCEL 构件） |
-| 前端 | Next.js 15 (App Router) + TS + Tailwind + shadcn/ui；K 线用 TradingView Lightweight Charts，其余 ECharts | ✅ 已用 |
+| 编排 | LangGraph（StateGraph） | ✅ 已用：快路径 `create_agent` ReAct 图；深路径 StateGraph（并行取证 → 归并 → 辩论 → 综合 → 风控闸门 → `interrupt()`）；Postgres checkpointer |
+| 流水线 | LangChain 组件（LCEL 管道未采用） | ✅ 工具 / 提示 / 模型经 LangChain；**LCEL 组合式管道没有落地**——节点内直接调用（E1c 的取用式接缝）。修的是口径，不为了标签硬加 |
+| 前端 | Next.js 15 (App Router) + TS + Tailwind + shadcn/ui；K 线用 TradingView Lightweight Charts，其余 ECharts | ✅ 已用（shadcn `components.json` base-nova + cva/base-ui） |
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
-| 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用 |
-| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | 🚧 checkpointer + 四张自有表（用户 / 会话归属 / 自选股 / 回测记录）已用；Store 待用 |
+| 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用（E3c 热点缓存 L1/L2） |
+| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | ✅ checkpointer + **Store（M7b 决策记忆）** + 16 张自有表（用户 / 会话 / 自选 / 回测 / 策略 / 优化 / 模拟盘 / 研报 / 任务 / 配额 / 审计等） |
 | 缓存 | Redis（E3c 数据层热点缓存，可降级） | ✅ 已用（代际键 + L1 进程内 + L2 Redis；**失效 = 换键**，不靠「ETL 之后记得清缓存」；Redis 挂了熔断直读。限流/熔断仍走进程内、不依赖 Redis） |
-| 向量库 | Qdrant | ⬜ P2–P3（P1 仅 compose 服务） |
-| 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | 🚧 快档已用；深度档 P2 起 |
-| LLM 网关 | LiteLLM | ✅ 已用 |
-| 观测 | 自托管 Langfuse + OTel | 🚧 Langfuse 已用；OTel P3 补全 |
+| 向量库 | Qdrant | ✅ **P2 起已用**：BGE-M3 双索引 + 服务端 RRF / PIT 过滤；对外 MCP Server 直连 |
+| 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | ✅ 两档均已用：辩论 / 综合用 pro，取证 / 路由 / 反思用 flash；E4 降级链 pro → flash |
+| LLM 网关 | LiteLLM | ✅ 已用（`ChatLiteLLM` 唯一构造点） |
+| 观测 | 自托管 Langfuse + Prometheus `/metrics` + JSON 日志 | ✅ Langfuse（LLM trace / token / 成本）+ **E7e**（HTTP / 任务 / 缓存指标、request id、可选 JSON 日志）；**OTel SDK 未引入**（部署层升级时再评估） |
 
 ## 三、关键设计决策
 
 1. LangGraph 只做控制流（循环/并行/持久化/HITL）；风控闸门与校验用纯 Python，LLM 不可决定合规
 2. Multi-Agent 深路径：并行取证（节点内 try/except）→ 证据归并 → Bull⇄Bear 辩论（≤3 轮）→ 单点综合 → 代码化风控 → interrupt() HITL。「读」并行「写」单点
-3. A2A 不做：单体无跨运行时需求；Agent 能力元数据做零成本预留
+3. A2A 不做：单体无跨运行时需求；**能力元数据不预留空壳**——文档与代码一致，真需要时再加（2026-10-17 订正：全仓无相关代码）
 4. MCP：消费小石 stdio MCP；内部工具用 function calling；对外暴露「新闻 PIT 检索」MCP Server（P3）
 5. RAG：文档级 + 元数据 header 分块（短摘要不切）；BGE-M3；bge-reranker-v2-m3；Qdrant 服务端 RRF，PIT 过滤写进查询
-6. GraphRAG 不做；Agentic RAG 只做自适应路由 + 一轮纠错
+6. GraphRAG 不做；Agentic RAG 只做自适应路由 + 一轮纠错（现状：工具选择是自适应的；**显式一轮纠错待收尾项 5 补齐**）
 7. 回测自研最小事件驱动引擎；验收含前视偏差两口径差异量化（方向不预设，如实呈现）；退市股覆盖确认转 M2（数据层 ETL 一并做）
 8. Harness = LangGraph；自研补齐：工具执行器、上下文预算管理器、代码执行沙箱
-9. 记忆：设计期 CLAUDE.md → AutoMemory → docs/；运行期 Checkpointer → Store → Qdrant。合规风控规则只进 Git，LLM 不可动态改写
+9. 记忆：设计期 CLAUDE.md → AutoMemory → docs/；运行期 Checkpointer → Store（Postgres，M7b 决策记忆）；Qdrant 用于 RAG 检索，不是记忆存储（2026-10-17 订正）。合规风控规则只进 Git，LLM 不可动态改写
 10. 前视偏差从数据层延伸到策略代码层：M4 内置策略代码 AST 静态检查，拦截 shift(-n)/bfill 等未来函数——护城河的第二道闸门
 
 ## 四、数据源（小石）

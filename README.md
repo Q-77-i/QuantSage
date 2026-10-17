@@ -162,7 +162,7 @@ flowchart LR
 - **「读」并行、「写」单点**：快路径是单 Agent ReAct；深路径是另一张 StateGraph（并行取证 fan-out → 归并 → 辩论 → 单点综合 → 代码化风控闸门 → 超限 `interrupt()` 人工审批），两图共用 Postgres checkpointer 但独立 thread 命名空间
 - **引擎只有一套**：回测、模拟盘、批量 / 网格共用同一个撮合与费用实现。可验证的推论：**风控关闭时，全部批准的模拟盘会话，成交逐笔等于一次回测**——不是承诺，是同一批对象的必然结果。风控开启时会按上限缩量或拦截，**不再承诺逐笔相等**（设计取舍，界面与文档都写明）
 
-**技术栈**：Next.js 15 · FastAPI + Pydantic v2 · LangGraph · Parquet + DuckDB · PostgreSQL 18 · Qdrant · BGE-M3 + bge-reranker · LiteLLM · Langfuse。权威的选型表与落地状态见 [CLAUDE.md](CLAUDE.md) §二。
+**技术栈**：Next.js 15 · FastAPI + Pydantic v2 · LangGraph · Parquet + DuckDB · PostgreSQL 18 · Qdrant · BGE-M3 + bge-reranker · LiteLLM · Langfuse · Prometheus（`/metrics`）。权威的选型表与落地状态见 [CLAUDE.md](CLAUDE.md) §二。
 
 ---
 
@@ -235,6 +235,8 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 - **网格/批量与回测一样是任务**：`POST /api/v1/optimize/{grid,batch}` 回 202 + 任务号，进度订阅 `GET /api/v1/tasks/{id}/events`。**断开订阅不影响执行**——关掉页面/刷新，任务照跑完并落库（`?task=` 刷新后自动接回）。「停止」是真取消（协作式），**中止的结果不落库**
 - **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例假设**：同一库上起第二个进程时，后起者的启动扫尾会把前者正在跑的任务标成 `failed/interrupted`；被重启打断的任务不自动重跑，如实标失败
 - **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流/熔断仍走进程内，不依赖 Redis（E4 定稿）
+- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**指标进程内、重启清零、单实例**，没有 Prometheus server / 告警，**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
+- **冻结交易日历只剩 75 天（止于 2026-12-31）**：上游 exchange-calendars 目前没有 2027 假期数据（2026-10-17 复查最新为 4.13.2），X1 体检按 90 天告警。到期前等上游更新后重生成；**不用工作日近似硬扩**（春节 / 调休会静默算错交易日）
 - **前端只对纯函数做单测**，未引组件测试框架；界面靠 Playwright 走查脚本人工核对
 
 ---
