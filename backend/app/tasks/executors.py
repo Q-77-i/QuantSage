@@ -127,6 +127,8 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
             build_report, config, compare_pit=bool(request.get("compare_pit")), data_digest=digest
         )
     report.setdefault("meta", {})["data_digest"] = digest
+    strategy_version = request.get("strategy_version") if user_strategy else None
+    report["meta"]["strategy_version"] = strategy_version
 
     await db.save_backtest_run(
         run_id,
@@ -136,6 +138,7 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
         strategy_id=request.get("strategy_id") if user_strategy else None,
         code_sha256=code_sha256(request["source"]) if user_strategy else None,
         data_digest=digest,
+        strategy_version=strategy_version,
     )
     return {"run_id": run_id}
 

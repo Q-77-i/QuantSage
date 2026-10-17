@@ -124,7 +124,16 @@ def replay(
         unfilled: list[Decision] = []
         generated: list[Decision] = []
         risk_exits: list[Decision] = []
-        pending_notional = 0.0
+        # 当日已存在的买入也要算进总仓位约束：正常 step 的当日日志为空（决策在当日收盘
+        # 才生成），这里为 0；Agent 在收盘后追加提案（收尾项 5a）时，当日已有的策略买入
+        # 必须计入，否则单独看每笔都合规、合起来越线。
+        pending_notional = sum(
+            d.est_qty * d.est_price
+            for d in book.values()
+            if d.trade_date == day
+            and d.side is Side.BUY
+            and d.status in (DecisionStatus.PENDING, DecisionStatus.APPROVED)
+        )
 
         # ① 开盘：先记回日志里已成交的，再成交已批准的、过掉仍待审批的
         for symbol in config.symbols:
@@ -342,6 +351,7 @@ def replay(
                                 decision_id=would_be,
                                 metrics=check.metrics,
                                 detail=check.detail,
+                                origin=signal.origin,
                             )
                         )
                         continue
@@ -380,6 +390,7 @@ def replay(
                                 decision_id=decision.id,
                                 metrics=check.metrics if check is not None else {},
                                 detail=check.detail if check is not None else "",
+                                origin=signal.origin,
                             )
                         )
                         if decision.status in (
@@ -403,6 +414,7 @@ def replay(
                                     "est_price": decision.est_price,
                                 },
                                 detail="卖出放行（退出不受风控拦截）",
+                                origin=signal.origin,
                             )
                         )
                 if decision.status is DecisionStatus.APPROVED:
@@ -495,6 +507,7 @@ def _propose(
         event_id=signal.event_id,
         sources=_sources_for(signal.event_id, data),
         status=auto if auto is not None else DecisionStatus.PENDING,
+        origin=signal.origin,
     )
 
 

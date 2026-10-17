@@ -474,6 +474,8 @@ export interface StrategyCheck {
 export interface StrategySummary {
   id: string;
   name: string;
+  /** 5d：head 版本号（只改名不增版；内容变一次 +1） */
+  version: number;
   created_at: string;
   updated_at: string;
 }
@@ -483,6 +485,32 @@ export interface StrategyDetail extends StrategySummary {
   params: Record<string, number | boolean>;
   /** **当前**代码的 sha256（与回测记录里那次运行的 hash 比对，得出「已非当次代码」） */
   code_sha256: string;
+}
+
+export interface StrategyVersionSummary {
+  id: string;
+  version_no: number;
+  /** 保存那一刻的名字快照（之后改名不回溯改它） */
+  name: string;
+  created_at: string;
+  current: boolean;
+}
+
+export interface StrategyVersionDetail {
+  id: string;
+  version_no: number;
+  name: string;
+  code: string;
+  params: Record<string, number | boolean>;
+  created_at: string;
+  code_sha256: string;
+}
+
+export interface StrategyVersionDiff {
+  from: number;
+  to: number;
+  diff: string;
+  params_changed: boolean;
 }
 
 /** 建 / 改的响应：策略本体 + 那次检查的 findings（**草稿也存得下**） */
@@ -503,6 +531,8 @@ export interface StrategyWriteBody {
   name?: string;
   code?: string;
   params?: Record<string, number | boolean>;
+  /** 5d：编辑器打开时的版本；与库里不一致 → 409，不覆盖别人的保存 */
+  expected_version?: number;
 }
 
 // ── 对话（SPEC §6）──────────────────────────────────────────────────────────
@@ -910,7 +940,7 @@ export interface PaperRiskEvent {
   trade_date: string;
   symbol: string | null;
   side: "buy" | "sell" | null;
-  origin: "strategy" | "risk";
+  origin: "strategy" | "risk" | "agent";
   kind: "proposal" | "exit" | "stop_loss" | "drawdown_state";
   verdict: PaperRiskVerdict;
   gate: PaperRiskGate;
@@ -938,8 +968,8 @@ export interface PaperDecision {
   fill: PaperFill | null;
   reject_code: string | null;
   reject_reason: string | null;
-  /** `strategy` / `risk`——风控止损单由系统自动批准（旧数据缺省按 strategy 读） */
-  origin?: "strategy" | "risk";
+  /** `strategy` / `risk` / `agent`——风控止损自动批准；Agent 提案必须人工裁决（旧数据缺省按 strategy 读） */
+  origin?: "strategy" | "risk" | "agent";
 }
 
 export interface PaperPosition {

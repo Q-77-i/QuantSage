@@ -77,6 +77,33 @@ async def test_empty_result_says_what_was_searched(patched) -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_result_is_rewritten_once_and_labelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """零命中才改写；工具必须把「改写过了」说出来，且 as_of 不变。"""
+    calls = []
+
+    def fake_search(spec, **kwargs):
+        calls.append(spec)
+        return [] if len(calls) == 1 else [hit()]
+
+    async def fake_rewrite(spec):
+        return "降准 银行"
+
+    monkeypatch.setattr("app.rag.retrieve.search", fake_search)
+    monkeypatch.setattr("app.rag.retrieve.coverage_window", lambda **kwargs: ("2026-07-07", "2026-09-29"))
+    monkeypatch.setattr("app.rag.correct.rewrite_query", fake_rewrite)
+
+    text = await agent_tools.search_events.ainvoke(
+        {"query": "降准这件事", "as_of": "2026-08-20"}
+    )
+
+    assert "首次检索无结果，已改写为「降准 银行」再检索" in text
+    assert "央行宣布降准" in text
+    assert len(calls) == 2
+    assert calls[0].as_of == calls[1].as_of
+    assert calls[1].query == "降准 银行"
+
+
+@pytest.mark.asyncio
 async def test_unavailable_is_not_reported_as_no_results(patched) -> None:
     """降级与「查不到」必须是两句不同的话。"""
     patched([], error=RagNotReady("Qdrant 不可用（http://127.0.0.1:6333）"))

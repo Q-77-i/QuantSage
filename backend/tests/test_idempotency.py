@@ -154,6 +154,8 @@ def test_user_strategy_branch_is_also_idempotent(signed_in: FakeDatabase) -> Non
         "user_id": 1,
         "name": "我的双均线",
         "code": template_source("ma_cross"),
+        "params": {},
+        "version": 1,
         "created_at": None,
         "updated_at": None,
     }

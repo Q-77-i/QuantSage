@@ -41,6 +41,9 @@ def config_to_payload(config: PaperConfig) -> dict[str, Any]:
         "symbols": list(config.symbols),
         "strategy": config.strategy,
         "strategy_name": config.strategy_name,
+        # 5d：用户策略锁定 id + 版本；内置策略为 None（旧 config 缺键 → None）
+        "strategy_id": config.strategy_id,
+        "strategy_version": config.strategy_version,
         "params": dict(config.params),
         "start": config.start.isoformat(),
         "end": config.end.isoformat(),
@@ -76,6 +79,10 @@ def config_from_payload(data: Mapping[str, Any]) -> PaperConfig:
         params=dict(data.get("params") or {}),
         costs=CostModel(**data["costs"]),
         strategy_name=data.get("strategy_name"),
+        strategy_id=data.get("strategy_id"),
+        strategy_version=(
+            int(data["strategy_version"]) if data.get("strategy_version") is not None else None
+        ),
         risk=RiskLimits(**data["risk"]) if data.get("risk") else None,
     )
 

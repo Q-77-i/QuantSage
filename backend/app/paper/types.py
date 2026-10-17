@@ -155,6 +155,10 @@ class PaperConfig:
     costs: CostModel = field(default_factory=CostModel)
     #: 用户策略的名字（内置策略为 None）——进报告与界面，服务端不据此做分支
     strategy_name: str | None = None
+    #: 收尾项 5d：用户策略的 id + 创建时锁定的版本。旧会话缺键 → None，按名字回落。
+    #: 锁定后改策略不影响运行中的会话；删策略 → 版本行级联删 → 续跑 409（同既有口径）。
+    strategy_id: str | None = None
+    strategy_version: int | None = None
     #: E5 风控上限；`None` = 关闭（旧会话与不填该字段的新会话都走这条，行为与 M6 一致）
     risk: RiskLimits | None = None
 

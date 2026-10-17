@@ -145,6 +145,34 @@ SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS strategies_user_updated_idx "
     "ON strategies (user_id, updated_at DESC)",
+    # 收尾项 5d：策略版本（append-only）。`strategies` 继续存「当前版本」的物化副本，
+    # `version` 是 head 计数器 + 乐观锁；旧行默认 1，启动时幂等回填一条版本行。
+    "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1",
+    """
+    CREATE TABLE IF NOT EXISTS strategy_versions (
+        id          UUID PRIMARY KEY,
+        strategy_id UUID NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+        version_no  INT  NOT NULL,
+        name        TEXT NOT NULL,
+        code        TEXT NOT NULL,
+        params      JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (strategy_id, version_no)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS strategy_versions_strategy_idx "
+    "ON strategy_versions (strategy_id, version_no DESC)",
+    # 回填：每条策略若还没有任何版本行，就用它**当前**的内容补一条（version_no = head）。
+    # 幂等：有行就跳过；`ON CONFLICT` 兜住多实例同时启动的窗口。
+    """
+    INSERT INTO strategy_versions (id, strategy_id, version_no, name, code, params, created_at)
+    SELECT gen_random_uuid(), s.id, s.version, s.name, s.code, s.params, s.updated_at
+    FROM strategies s
+    WHERE NOT EXISTS (
+        SELECT 1 FROM strategy_versions v WHERE v.strategy_id = s.id
+    )
+    ON CONFLICT DO NOTHING
+    """,
     # M4c：`backtest_runs` 增列走**另起的迁移语句**——`CREATE TABLE IF NOT EXISTS` 对已存在的表
     # 什么都不做，只改上面的 DDL 是不会生效的（见模块 docstring 第二条约定）。
     # `strategy_id` **不设外键**：策略删了记录仍在（报告 JSONB 自足，见 SPEC §5 M4c）。
@@ -153,6 +181,8 @@ SCHEMA = (
     # E7d：实验可复现的数据维度身份——**窗口内分片**的指纹（`app/report/snapshot.py::window_digest`）。
     # 旧记录为 NULL（不做回填：那要重算数据、不可信），前端按缺失显示。
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS data_digest TEXT",
+    # 收尾项 5d：用户策略当次运行绑定的版本。旧记录 NULL（不回填：没有可证明的版本）。
+    "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS strategy_version INT",
     # M5b：批量 / 网格的**汇总**（`request` + `summary`，**不落完整报告**）。
     # `summary.cells` 只有每格的 `params → metrics` 与收益矩，没有净值曲线与逐笔——
     # 一百格 × 上千点净值曲线会把这张表撑成 MB 级 JSONB，而要看某一格的完整报告，
@@ -391,6 +421,14 @@ class StrategyNameTaken(RuntimeError):
     """策略名已被本人占用（`strategies` 的 `UNIQUE(user_id, name)`）。"""
 
 
+class StrategyVersionConflict(RuntimeError):
+    """策略的 `expected_version` 与库里不一致（并发保存）→ 409。
+
+    传的是「用户打开编辑器时看到的版本」；别人先保存了，就拒绝这次写入，
+    不做事后覆盖（覆盖会静默丢掉别人的改动）。
+    """
+
+
 @asynccontextmanager
 async def open_pool(
     conn_string: str, *, min_size: int = 1, max_size: int = 8
@@ -589,7 +627,7 @@ class Database:
         刻意没取它——复用会 KeyError（真库上踩过，离线替身自己拼 dict 反而看不出来）。
         """
         rows = await self._all(
-            "SELECT id, name, created_at, updated_at FROM strategies "
+            "SELECT id, name, version, created_at, updated_at FROM strategies "
             "WHERE user_id = %s ORDER BY updated_at DESC",
             (user_id,),
         )
@@ -597,6 +635,7 @@ class Database:
             {
                 "id": str(row["id"]),
                 "name": row["name"],
+                "version": int(row["version"]),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -611,23 +650,35 @@ class Database:
         code: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """建策略。撞名抛 `StrategyNameTaken`（不返回 None，避免调用方漏判）。"""
+        """建策略（策略 + 版本 1 同一事务）。撞名抛 `StrategyNameTaken`。
+
+        `INSERT ... RETURNING` 必然有行；版本行的 id 交给 `gen_random_uuid()`（PG13+），
+        不需要把 UUID 生成搬到 Python。
+        """
         try:
-            row = await self._one(
-                "INSERT INTO strategies (id, user_id, name, code, params) "
-                "VALUES (%s::uuid, %s, %s, %s, %s) "
-                "RETURNING id, name, code, params, created_at, updated_at",
-                (strategy_id, user_id, name, code, Jsonb(params)),
-            )
+            async with self.pool.connection() as conn, conn.transaction():
+                cur = await conn.execute(
+                    "INSERT INTO strategies (id, user_id, name, code, params, version) "
+                    "VALUES (%s::uuid, %s, %s, %s, %s, 1) "
+                    "RETURNING id, name, code, params, version, created_at, updated_at",
+                    (strategy_id, user_id, name, code, Jsonb(params)),
+                )
+                row = await cur.fetchone()
+                assert row is not None
+                await conn.execute(
+                    "INSERT INTO strategy_versions "
+                    "(id, strategy_id, version_no, name, code, params) "
+                    "VALUES (gen_random_uuid(), %s::uuid, 1, %s, %s, %s)",
+                    (strategy_id, name, code, Jsonb(params)),
+                )
         except errors.UniqueViolation as exc:
             raise StrategyNameTaken(name) from exc
-        assert row is not None  # INSERT ... RETURNING 必然有行
         return _strategy_row(row)
 
     async def get_strategy(self, user_id: int, strategy_id: str) -> dict[str, Any] | None:
         """单条（含 code）。带 `user_id` 过滤，越权与不存在同为 None（由调用方翻 404）。"""
         row = await self._one(
-            "SELECT id, name, code, params, created_at, updated_at FROM strategies "
+            "SELECT id, name, code, params, version, created_at, updated_at FROM strategies "
             "WHERE id = %s::uuid AND user_id = %s",
             (strategy_id, user_id),
         )
@@ -641,23 +692,166 @@ class Database:
         name: str | None = None,
         code: str | None = None,
         params: dict[str, Any] | None = None,
+        expected_version: int | None = None,
     ) -> dict[str, Any] | None:
         """改策略（部分更新：`None` = 不动该列）。
 
-        一条 UPDATE + `COALESCE`，不做「先读再写」——那样两次请求之间会有竞态窗口。
-        `params` 的 `Jsonb(None)` 是 SQL NULL，正好落进「不动该列」的语义。
+        **版本口径**（收尾项 5d）：`SELECT ... FOR UPDATE` 锁住当前行；`expected_version`
+        给了且与库里不一致 → `StrategyVersionConflict`（409，不覆盖别人的保存）。
+        只有 `code` 或 `params` **实际变化**才 `version+1` 并追加版本行；只改名不增版
+        （名字快照留在版本行里，当前名以 `strategies.name` 为准）。
+
+        与旧实现的一条 UPDATE + COALESCE 相比，事务 + 行锁换来的是「版本号连续」与
+        「两个标签页同时保存时后写者不静默覆盖」——这正是版本管理要解决的问题。
         """
-        try:
-            row = await self._one(
-                "UPDATE strategies SET name = COALESCE(%s, name), code = COALESCE(%s, code), "
-                "params = COALESCE(%s, params), updated_at = now() "
-                "WHERE id = %s::uuid AND user_id = %s "
-                "RETURNING id, name, code, params, created_at, updated_at",
-                (name, code, Jsonb(params) if params is not None else None, strategy_id, user_id),
+        async with self.pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT id, name, code, params, version FROM strategies "
+                "WHERE id = %s::uuid AND user_id = %s FOR UPDATE",
+                (strategy_id, user_id),
             )
-        except errors.UniqueViolation as exc:  # 改名撞上本人另一条策略
-            raise StrategyNameTaken(name or "") from exc
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            current_version = int(row["version"])
+            if expected_version is not None and expected_version != current_version:
+                raise StrategyVersionConflict(
+                    f"策略已在别处更新（当前 v{current_version}）——请重新打开后再保存"
+                )
+
+            next_name = name if name is not None else row["name"]
+            next_code = code if code is not None else row["code"]
+            next_params = dict(params) if params is not None else dict(row["params"] or {})
+            changed = (code is not None and code != row["code"]) or (
+                params is not None and dict(params) != dict(row["params"] or {})
+            )
+            new_version = current_version + 1 if changed else current_version
+            try:
+                cur = await conn.execute(
+                    "UPDATE strategies SET name = %s, code = %s, params = %s, "
+                    "version = %s, updated_at = now() "
+                    "WHERE id = %s::uuid AND user_id = %s "
+                    "RETURNING id, name, code, params, version, created_at, updated_at",
+                    (next_name, next_code, Jsonb(next_params), new_version, strategy_id, user_id),
+                )
+                updated = await cur.fetchone()
+            except errors.UniqueViolation as exc:  # 改名撞上本人另一条策略
+                raise StrategyNameTaken(name or "") from exc
+            assert updated is not None
+            if changed:
+                await conn.execute(
+                    "INSERT INTO strategy_versions "
+                    "(id, strategy_id, version_no, name, code, params) "
+                    "VALUES (gen_random_uuid(), %s::uuid, %s, %s, %s, %s)",
+                    (strategy_id, new_version, next_name, next_code, Jsonb(next_params)),
+                )
+        return _strategy_row(updated)
+
+    async def list_strategy_versions(
+        self, user_id: int, strategy_id: str
+    ) -> list[dict[str, Any]] | None:
+        """版本摘要（不带 code）；策略不存在/越权返回 None（端点翻 404）。"""
+        own = await self._one(
+            "SELECT version FROM strategies WHERE id = %s::uuid AND user_id = %s",
+            (strategy_id, user_id),
+        )
+        if own is None:
+            return None
+        rows = await self._all(
+            "SELECT id, version_no, name, created_at FROM strategy_versions "
+            "WHERE strategy_id = %s::uuid ORDER BY version_no DESC",
+            (strategy_id,),
+        )
+        current = int(own["version"])
+        return [
+            {
+                "id": str(row["id"]),
+                "version_no": int(row["version_no"]),
+                "name": row["name"],
+                "created_at": row["created_at"],
+                "current": int(row["version_no"]) == current,
+            }
+            for row in rows
+        ]
+
+    async def get_strategy_version(
+        self, user_id: int, strategy_id: str, version_no: int
+    ) -> dict[str, Any] | None:
+        """某一版的完整内容（含 code/params）；归属经 `strategies` 判。"""
+        row = await self._one(
+            "SELECT v.id, v.version_no, v.name, v.code, v.params, v.created_at "
+            "FROM strategy_versions v JOIN strategies s ON s.id = v.strategy_id "
+            "WHERE v.strategy_id = %s::uuid AND v.version_no = %s AND s.user_id = %s",
+            (strategy_id, version_no, user_id),
+        )
         return _strategy_row(row) if row is not None else None
+
+    async def rollback_strategy(
+        self,
+        user_id: int,
+        strategy_id: str,
+        version_no: int,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any] | None:
+        """把目标版本的内容作为**新版本**追加（append-only，不物理回退）。
+
+        只回滚 `code` / `params`，**保留当前名字**（改名可能与本人另一条策略撞唯一约束，
+        且「版本」按内容计）；目标内容与当前一致时不新建版本。策略/版本不存在或越权 → None。
+        """
+        async with self.pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT id, name, code, params, version FROM strategies "
+                "WHERE id = %s::uuid AND user_id = %s FOR UPDATE",
+                (strategy_id, user_id),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            current_version = int(row["version"])
+            if expected_version is not None and expected_version != current_version:
+                raise StrategyVersionConflict(
+                    f"策略已在别处更新（当前 v{current_version}）——请重新打开后再回滚"
+                )
+            cur = await conn.execute(
+                "SELECT name, code, params FROM strategy_versions "
+                "WHERE strategy_id = %s::uuid AND version_no = %s",
+                (strategy_id, version_no),
+            )
+            target = await cur.fetchone()
+            if target is None:
+                return None
+            same = target["code"] == row["code"] and dict(target["params"] or {}) == dict(
+                row["params"] or {}
+            )
+            if same:
+                cur = await conn.execute(
+                    "SELECT id, name, code, params, version, created_at, updated_at "
+                    "FROM strategies WHERE id = %s::uuid",
+                    (strategy_id,),
+                )
+                unchanged = await cur.fetchone()
+                assert unchanged is not None
+                return _strategy_row(unchanged)
+
+            new_version = current_version + 1
+            cur = await conn.execute(
+                "UPDATE strategies SET code = %s, params = %s, version = %s, "
+                "updated_at = now() WHERE id = %s::uuid AND user_id = %s "
+                "RETURNING id, name, code, params, version, created_at, updated_at",
+                (target["code"], Jsonb(dict(target["params"] or {})), new_version,
+                 strategy_id, user_id),
+            )
+            updated = await cur.fetchone()
+            assert updated is not None
+            await conn.execute(
+                "INSERT INTO strategy_versions "
+                "(id, strategy_id, version_no, name, code, params) "
+                "VALUES (gen_random_uuid(), %s::uuid, %s, %s, %s, %s)",
+                (strategy_id, new_version, updated["name"], target["code"],
+                 Jsonb(dict(target["params"] or {}))),
+            )
+        return _strategy_row(updated)
 
     async def drop_strategy(self, user_id: int, strategy_id: str) -> bool:
         """删策略。返回是否命中（回测记录**不级联删**：`strategy_id` 悬空即可）。"""
@@ -681,6 +875,7 @@ class Database:
         strategy_id: str | None = None,
         code_sha256: str | None = None,
         data_digest: str | None = None,
+        strategy_version: int | None = None,
     ) -> None:
         """落一次回测。`request` 与 `report` 都是普通 dict，必须显式包 `Jsonb`——
         psycopg 不会把 dict 自动转 jsonb，而 `list` 会被适配成数组。
@@ -691,9 +886,10 @@ class Database:
         """
         await self._exec(
             "INSERT INTO backtest_runs "
-            "(id, user_id, request, report, strategy_id, code_sha256, data_digest) "
-            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s, %s)",
-            (run_id, user_id, Jsonb(request), Jsonb(report), strategy_id, code_sha256, data_digest),
+            "(id, user_id, request, report, strategy_id, code_sha256, data_digest, strategy_version) "
+            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s, %s, %s)",
+            (run_id, user_id, Jsonb(request), Jsonb(report), strategy_id, code_sha256,
+             data_digest, strategy_version),
         )
 
     async def list_backtest_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
@@ -963,13 +1159,61 @@ class Database:
         )
 
     async def set_paper_decisions_bulk(self, account_id: str, status: str) -> int:
-        """一键全批 / 全驳：把该会话所有待审批决策改成 `status`，返回改了几条。"""
+        """一键全批 / 全驳：把该会话所有**策略**待审批决策改成 `status`。
+
+        `origin='agent'` 的提案**排除在外**（收尾项 5a 拍板：Agent 提案必须逐条人工裁决）；
+        `run_account` 在调用前还会显式检查 pending Agent 数量并 409，这里是双保险。
+        """
         rows = await self._all(
             "UPDATE paper_decisions SET status = %s, decided_at = now() "
-            "WHERE account_id = %s::uuid AND status = 'pending' RETURNING id",
+            "WHERE account_id = %s::uuid AND status = 'pending' AND origin <> 'agent' "
+            "RETURNING id",
             (status, account_id),
         )
         return len(rows)
+
+    async def paper_pending_agent_count(self, account_id: str) -> int:
+        """该会话还有几条待审批的 Agent 提案（`run` 的 HITL 守卫）。"""
+        row = await self._one(
+            "SELECT count(*) AS n FROM paper_decisions "
+            "WHERE account_id = %s::uuid AND status = 'pending' AND origin = 'agent'",
+            (account_id,),
+        )
+        return int(row["n"]) if row is not None else 0
+
+    async def add_paper_decision(
+        self,
+        *,
+        account_id: str,
+        user_id: int,
+        expected_as_of: Any,
+        decision: dict[str, Any] | None,
+        risk_events: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    ) -> bool:
+        """**单条**写入 Agent 提案（决策 + 审计，同一事务）。
+
+        与 `paper_advance` 的区别：不推进 `as_of`、不重写持仓/净值；只写这一条决策与
+        当日该标的的审计。守卫 `status='active' AND as_of=expected_as_of` 且 `FOR UPDATE`：
+        提案生成期间账户若被推进，返回 False（端点/工具翻 409），不把决策写到错的日子。
+        决策走 `ON CONFLICT DO NOTHING`，绝不用 upsert 覆盖同 id 的策略/风控决策。
+        """
+        async with self.pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT id FROM paper_accounts "
+                "WHERE id = %s::uuid AND user_id = %s AND status = 'active' AND as_of = %s "
+                "FOR UPDATE",
+                (account_id, user_id, expected_as_of),
+            )
+            if await cur.fetchone() is None:
+                return False
+            if decision is not None:
+                if str(decision.get("account_id")) != str(account_id):
+                    raise ValueError("决策行的 account_id 与目标账户不一致")
+                if not await _insert_paper_decision_once(conn, decision):
+                    return False
+            if risk_events:
+                await _write_paper_state(conn, account_id, [], [], [], list(risk_events))
+            return True
 
     # ── 绩效研报（M7）───────────────────────────────────────
 
@@ -1442,6 +1686,56 @@ class Database:
             await conn.execute(sql, params)
 
 
+_PAPER_DECISION_COLUMNS = (
+    "id, account_id, trade_date, symbol, side, est_qty, est_price, reason, event_id, "
+    "sources, origin, status, decided_at, fill_date, fill_qty, fill_price, "
+    "fill_ref_price, commission, stamp_tax, cash_delta, reject_code, reject_reason"
+)
+_PAPER_DECISION_VALUES = (
+    "(%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+    "%s, %s, %s, %s, %s, %s, %s, %s)"
+)
+_PAPER_DECISION_INSERT = (
+    f"INSERT INTO paper_decisions ({_PAPER_DECISION_COLUMNS}) VALUES {_PAPER_DECISION_VALUES}"
+)
+
+
+def _paper_decision_params(d: dict[str, Any]) -> tuple:
+    return (
+        d["id"],
+        d["account_id"],
+        d["trade_date"],
+        d["symbol"],
+        d["side"],
+        d["est_qty"],
+        d["est_price"],
+        d["reason"],
+        d["event_id"],
+        Jsonb(d["sources"]) if d["sources"] else None,
+        d["origin"],
+        d["status"],
+        d["decided_at"],
+        d["fill_date"],
+        d["fill_qty"],
+        d["fill_price"],
+        d["fill_ref_price"],
+        d["commission"],
+        d["stamp_tax"],
+        d["cash_delta"],
+        d["reject_code"],
+        d["reject_reason"],
+    )
+
+
+async def _insert_paper_decision_once(conn: Any, decision: dict[str, Any]) -> bool:
+    """单条决策，`ON CONFLICT DO NOTHING`：冲突 = 同 id 已有策略/风控决策，返回 False。"""
+    cur = await conn.execute(
+        f"{_PAPER_DECISION_INSERT} ON CONFLICT DO NOTHING RETURNING id",
+        _paper_decision_params(decision),
+    )
+    return await cur.fetchone() is not None
+
+
 async def _write_paper_state(
     conn: Any,
     account_id: str,
@@ -1479,13 +1773,7 @@ async def _write_paper_state(
     if decisions:
         await _executemany(
             conn,
-            "INSERT INTO paper_decisions "
-            "(id, account_id, trade_date, symbol, side, est_qty, est_price, reason, event_id, "
-            " sources, origin, status, decided_at, fill_date, fill_qty, fill_price, "
-            " fill_ref_price, commission, stamp_tax, cash_delta, reject_code, reject_reason) "
-            "VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-            "        %s, %s, %s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT (id) DO UPDATE SET "
+            f"{_PAPER_DECISION_INSERT} ON CONFLICT (id) DO UPDATE SET "
             " origin = EXCLUDED.origin, status = EXCLUDED.status, "
             " decided_at = EXCLUDED.decided_at, "
             " est_qty = EXCLUDED.est_qty, est_price = EXCLUDED.est_price, "
@@ -1495,33 +1783,7 @@ async def _write_paper_state(
             " commission = EXCLUDED.commission, stamp_tax = EXCLUDED.stamp_tax, "
             " cash_delta = EXCLUDED.cash_delta, reject_code = EXCLUDED.reject_code, "
             " reject_reason = EXCLUDED.reject_reason",
-            [
-                (
-                    d["id"],
-                    d["account_id"],
-                    d["trade_date"],
-                    d["symbol"],
-                    d["side"],
-                    d["est_qty"],
-                    d["est_price"],
-                    d["reason"],
-                    d["event_id"],
-                    Jsonb(d["sources"]) if d["sources"] else None,
-                    d["origin"],
-                    d["status"],
-                    d["decided_at"],
-                    d["fill_date"],
-                    d["fill_qty"],
-                    d["fill_price"],
-                    d["fill_ref_price"],
-                    d["commission"],
-                    d["stamp_tax"],
-                    d["cash_delta"],
-                    d["reject_code"],
-                    d["reject_reason"],
-                )
-                for d in decisions
-            ],
+            [_paper_decision_params(d) for d in decisions],
         )
     if risk_events:
         await _executemany(

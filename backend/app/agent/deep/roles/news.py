@@ -7,11 +7,12 @@
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import replace
 
 from app.agent.deep.roles.base import RoleContext, interpret
 from app.agent.deep.types import EvidenceRef, RoleResult
 from app.rag import RagNotReady
+from app.rag.correct import correction_note, search_with_correction
 from app.rag.retrieve import SearchQuery, search
 
 ROLE = "news"
@@ -51,21 +52,26 @@ def evidence_from_hits(hits) -> tuple[EvidenceRef, ...]:
 
 async def run(ctx: RoleContext) -> RoleResult:
     try:
-        # 检索是阻塞的（torch 精排 + Qdrant），扔线程池——MPS 那把进程锁让并发检索排队，
-        # 但排队不该把事件循环也按住（其余角色与 SSE 心跳都要继续跑）
-        hits = await asyncio.to_thread(
-            search, SearchQuery(query=news_query(ctx), as_of=ctx.brief.as_of, top_k=TOP_K)
+        # 检索是阻塞的（torch 精排 + Qdrant），`search_with_correction` 内部会卸到线程；
+        # 零命中时才改写一次查询（as_of 逐字不变）。`search` 仍从模块全局取，
+        # 离线用例 monkeypatch 的正是 `news_mod.search`。
+        corrected = await search_with_correction(
+            SearchQuery(query=news_query(ctx), as_of=ctx.brief.as_of, top_k=TOP_K),
+            search_fn=search,
         )
     except RagNotReady as exc:
         return RoleResult(ROLE, errors=(f"检索不可用：{exc}",))
 
-    evidence = evidence_from_hits(hits)
+    note = correction_note(corrected.correction)
+    evidence = evidence_from_hits(corrected.hits)
     if not evidence:
-        return RoleResult(ROLE, errors=("该时点之前没有检索到相关事件",))
+        message = "该时点之前没有检索到相关事件"
+        return RoleResult(ROLE, errors=(f"{message}（{note}）" if note else message,))
 
     material = "按相关度排序的事件（每条带事发与平台可得两个时间）：\n" + "\n".join(
         f"- [{e.key}] {e.event_time}（可得 {e.available_at}）{e.title}"
         + (f"：{e.summary}" if e.summary else "")
         for e in evidence
     )
-    return await interpret(ROLE, ctx, material=material, evidence=evidence)
+    result = await interpret(ROLE, ctx, material=material, evidence=evidence)
+    return replace(result, notes=(*result.notes, note)) if note else result

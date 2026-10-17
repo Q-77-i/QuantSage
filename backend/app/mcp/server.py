@@ -26,6 +26,7 @@ from mcp.server.fastmcp import FastMCP
 
 from app.core.logging import setup_logging
 from app.rag import RagNotReady, retrieve
+from app.rag.correct import correction_note, search_with_correction
 
 log = logging.getLogger(__name__)
 
@@ -138,8 +139,8 @@ async def search_events(
         top_k: 返回条数，默认 5，上限 10
 
     返回 JSON：`ok` / `as_of` / `coverage` / `score_kind`（`rrf` = 未精排）/ `count` /
-    `hits[]`（标题、双时间戳、方向、重要度、摘要、标的、来源三元组、得分）。
-    检索不可用时返回 `{"ok": false, "error": ...}`，不抛异常。
+    `query`（原查询、实际查询、是否改写）/ `hits[]`（标题、双时间戳、方向、重要度、摘要、
+    标的、来源三元组、得分）。检索不可用时返回 `{"ok": false, "error": ...}`，不抛异常。
     """
     text = _clean(query)
     if text is None:
@@ -159,9 +160,9 @@ async def search_events(
     size = max(1, min(int(top_k), MAX_TOP_K))
 
     try:
-        # 检索是同步 IO + 模型推理，卸到线程，别占着事件循环
-        hits = await asyncio.to_thread(
-            retrieve.search,
+        # 检索是同步 IO + 模型推理，`search_with_correction` 内部卸到线程；
+        # 零命中时才改写一次查询，as_of / symbol / event_type / top_k 逐字保留。
+        corrected = await search_with_correction(
             retrieve.SearchQuery(
                 query=text,
                 as_of=moment,
@@ -171,6 +172,7 @@ async def search_events(
             ),
             mode=retrieve.MODE_HYBRID,
         )
+        hits = corrected.hits
         start, end = await asyncio.to_thread(retrieve.coverage_window)
     except RagNotReady as exc:
         # 降级要说人话，且**不能说成「查不到」**——那是两回事
@@ -179,6 +181,12 @@ async def search_events(
         log.warning("对外 MCP 检索失败 (%s)", type(exc).__name__)
         return _error("search_failed", f"{type(exc).__name__}: {exc}")
 
+    rewritten = bool(corrected.correction and corrected.correction.retried)
+    effective_query = (
+        corrected.correction.rewritten
+        if rewritten and corrected.correction is not None
+        else text
+    )
     return _fit(
         {
             "ok": True,
@@ -186,6 +194,12 @@ async def search_events(
             "coverage": {"start": start, "end": end},
             "score_kind": hits[0].score_kind if hits else None,
             "count": len(hits),
+            "query": {
+                "original": text,
+                "effective": effective_query,
+                "rewritten": rewritten,
+                "note": correction_note(corrected.correction),
+            },
             "truncated": False,
             "hits": [_hit(event) for event in hits],
         }

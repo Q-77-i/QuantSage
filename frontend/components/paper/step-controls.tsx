@@ -40,6 +40,8 @@ export function StepControls({
   const [confirming, setConfirming] = useState(false);
   const [approve, setApprove] = useState<"all" | "none">("all");
   const finished = detail.account.status === "finished";
+  // 收尾项 5a：Agent 提案必须逐条裁决——批量路径在后端会 409，这里先禁掉并说明
+  const pendingAgent = (detail.pending ?? []).some((decision) => decision.origin === "agent");
   const lines = stepLines(detail.this_step);
 
   return (
@@ -64,7 +66,7 @@ export function StepControls({
             <Select
               aria-label="跑到结束时怎么处理新生成的决策"
               value={approve}
-              disabled={busy || confirming}
+              disabled={busy || confirming || pendingAgent}
               onChange={(event) => setApprove(event.target.value as "all" | "none")}
               className="w-[8.5rem]"
             >
@@ -96,7 +98,7 @@ export function StepControls({
             ) : (
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || pendingAgent}
                 onClick={() => setConfirming(true)}
                 className="h-8 rounded-[var(--radius)] border border-border px-3 text-sm hover:bg-muted disabled:opacity-50"
               >
@@ -106,6 +108,12 @@ export function StepControls({
           </div>
         )}
       </div>
+
+      {pendingAgent ? (
+        <p className="mt-2 text-xs text-warn">
+          有 Agent 提案待审批——请先在决策闸门逐条批准/驳回，再一键跑到底。
+        </p>
+      ) : null}
 
       {confirming ? (
         <p className="mt-2 text-xs text-ink-3">

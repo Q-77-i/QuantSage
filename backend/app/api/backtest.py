@@ -193,6 +193,7 @@ async def submit_user_backtest(
         # 冻结：源码全文与参数校验结果一起进任务行，执行体照它跑（SPEC §2.1）
         source=code,
         strategy_name=row["name"],
+        strategy_version=row["version"],  # 5d：提交时冻结，执行时不再查当前版本
         uses_events=meta.uses_events,
         compare_pit=compare_pit,
         params=params,

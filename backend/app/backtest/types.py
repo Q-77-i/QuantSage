@@ -104,11 +104,16 @@ class EventView:
 
 @dataclass(frozen=True, slots=True)
 class Signal:
-    """策略在 bar 收盘产出的意图；实际股数与成交价由 broker 在下一根开盘决定。"""
+    """策略在 bar 收盘产出的意图；实际股数与成交价由 broker 在下一根开盘决定。
+
+    `origin` 默认 `strategy`；模拟盘的 Agent 提案用 `agent`（P3 收尾项 5a），
+    风控退出用 `risk`（由 replay 直接构造 `Decision`，不走 `Signal`）。
+    """
 
     side: Side
     reason: str = ""
     event_id: str | None = None
+    origin: str = "strategy"
 
 
 @dataclass(frozen=True, slots=True)

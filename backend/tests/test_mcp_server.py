@@ -194,3 +194,37 @@ async def test_empty_result_says_ok_but_zero(rag: dict[str, Any]) -> None:
     assert result["count"] == 0
     assert result["hits"] == []
     assert result["score_kind"] is None
+    # 离线套件默认关改写（conftest），如实标「没有真正改写」而不是假装试过
+    assert result["query"]["rewritten"] is False
+    assert result["query"]["effective"] == "降准"
+    assert "未成功" in result["query"]["note"]
+
+
+async def test_empty_result_is_rewritten_once_with_same_as_of(
+    rag: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """零命中 → 改写一次；对外如实回显原查询/实际查询，as_of 不变。"""
+    calls: list[tuple[str, object]] = []
+
+    def fake_search(spec, *, mode=None, **_kwargs):
+        calls.append((spec.query, spec.as_of))
+        return [] if len(calls) == 1 else [make_event()]
+
+    async def fake_rewrite(spec):
+        return "降准 银行股"
+
+    monkeypatch.setattr(server.retrieve, "search", fake_search)
+    monkeypatch.setattr("app.rag.correct.rewrite_query", fake_rewrite)
+
+    result = await server.search_events("降准", as_of="2026-08-20")
+
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert result["query"] == {
+        "original": "降准",
+        "effective": "降准 银行股",
+        "rewritten": True,
+        "note": "首次检索无结果，已改写为「降准 银行股」再检索（同一 as_of）",
+    }
+    assert len(calls) == 2
+    assert calls[0][1] == calls[1][1]  # PIT：as_of 逐字不变

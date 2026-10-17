@@ -16,10 +16,11 @@
 
 from __future__ import annotations
 
+import difflib
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.auth import require_db, require_user
@@ -85,13 +86,18 @@ class StrategyCreate(BaseModel):
 
 
 class StrategyUpdate(BaseModel):
-    """部分更新：三个字段都可缺省，缺省即「不动这一列」。"""
+    """部分更新：三个字段都可缺省，缺省即「不动这一列」。
+
+    `expected_version` 是乐观并发：编辑器打开时的版本若与库里不一致 → 409（5d）。
+    不传则保持旧的 last-write-wins（向后兼容）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
     code: str | None = None
     params: dict[str, Any] | None = None
+    expected_version: int | None = Field(default=None, ge=1)
 
     @field_validator("name")
     @classmethod
@@ -113,6 +119,15 @@ class CheckRequest(BaseModel):
     @classmethod
     def _code(cls, value: str) -> str:
         return clean_code(value)
+
+
+class StrategyRollback(BaseModel):
+    """回滚 = 把目标版本内容作为**新版本**追加（append-only）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version_no: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 def meta_of(code: str) -> dict[str, Any] | None:
@@ -218,9 +233,108 @@ async def update_strategy(
         name=body.name,
         code=body.code,
         params=body.params,
+        expected_version=body.expected_version,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="策略不存在")
+    return public_row(row)
+
+
+@router.get("/{strategy_id}/versions")
+async def list_versions(
+    request: Request, strategy_id: str, user: dict[str, Any] = Depends(require_user)
+) -> list[dict[str, Any]]:
+    """当前策略的版本摘要（新在前；`current` 标出 head）。越权/不存在 404。"""
+    rows = await require_db(request).list_strategy_versions(
+        int(user["id"]), normalize_strategy_id(strategy_id)
+    )
+    if rows is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return rows
+
+
+@router.get("/{strategy_id}/versions/{version_no}")
+async def get_version(
+    request: Request,
+    strategy_id: str,
+    version_no: int,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """某一版的完整源码与参数（含 `code_sha256`，前端比对用）。"""
+    row = await require_db(request).get_strategy_version(
+        int(user["id"]), normalize_strategy_id(strategy_id), version_no
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="策略版本不存在")
+    return {**row, "code_sha256": code_sha256(row["code"])}
+
+
+@router.get("/{strategy_id}/versions/{version_no}/diff")
+async def diff_version(
+    request: Request,
+    strategy_id: str,
+    version_no: int,
+    against: int | None = Query(default=None, ge=1),
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """统一 diff。缺省 `against` = 当前 head（比较「选中版本 → 当前」）。
+
+    顺序固定为 `from=against`、`to=version_no`；`params_changed` 单独给（参数是 JSON，
+    不塞进代码 diff 里假装成文本行）。
+    """
+    normalized = normalize_strategy_id(strategy_id)
+    db = require_db(request)
+    user_id = int(user["id"])
+    target = await db.get_strategy_version(user_id, normalized, version_no)
+    if target is None:
+        raise HTTPException(status_code=404, detail="策略版本不存在")
+    if against is None:
+        current = await db.get_strategy(user_id, normalized)
+        if current is None:
+            raise HTTPException(status_code=404, detail="策略不存在")
+        other = {
+            "version_no": current["version"],
+            "code": current["code"],
+            "params": current["params"],
+        }
+    else:
+        other = await db.get_strategy_version(user_id, normalized, against)
+        if other is None:
+            raise HTTPException(status_code=404, detail="对比版本不存在")
+
+    diff = "\n".join(
+        difflib.unified_diff(
+            other["code"].splitlines(),
+            target["code"].splitlines(),
+            fromfile=f"v{other['version_no']}",
+            tofile=f"v{target['version_no']}",
+            lineterm="",
+        )
+    )
+    return {
+        "from": other["version_no"],
+        "to": target["version_no"],
+        "diff": diff,
+        "params_changed": dict(other["params"] or {}) != dict(target["params"] or {}),
+    }
+
+
+@router.post("/{strategy_id}/rollback")
+async def rollback_strategy(
+    request: Request,
+    strategy_id: str,
+    body: StrategyRollback,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """把目标版本内容作为新版本追加；只回滚 code/params，保留当前名字。"""
+    row = await require_db(request).rollback_strategy(
+        int(user["id"]),
+        normalize_strategy_id(strategy_id),
+        body.version_no,
+        expected_version=body.expected_version,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="策略或版本不存在")
     return public_row(row)
 
 

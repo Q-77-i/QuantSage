@@ -164,13 +164,14 @@ def normalize_decision_id(raw: str) -> str:
 
 async def _strategy_source(
     request: Request, user_id: int, body: PaperAccountRequest
-) -> tuple[str | None, str | None]:
-    """用户策略的闸门（同 `POST /backtest` 的顺序）：返回 `(源码, 策略名)`。
+) -> tuple[str | None, str | None, str | None, int | None]:
+    """用户策略的闸门（同 `POST /backtest` 的顺序）：返回 `(源码, 策略名, id, 版本)`。
 
-    内置策略返回 `(None, None)`。静态检查必须在 spawn 之前——那正是「运行前带行号给话术」成立的前提。
+    内置策略返回四个 None。静态检查必须在 spawn 之前——那正是「运行前带行号给话术」成立的前提。
+    5d 起把 id + 当前版本一起带回，冻结进 `PaperConfig`：续跑按版本读源码，改策略不影响本会话。
     """
     if body.strategy != USER_STRATEGY:
-        return None, None
+        return None, None, None, None
     db = require_db(request)
     strategy_id = normalize_strategy_id(body.strategy_id or "")
     row = await db.get_strategy(user_id, strategy_id)
@@ -181,7 +182,7 @@ async def _strategy_source(
         raise StrategyCheckFailed(findings)  # main.py 翻 422 + findings
     meta = parse_meta(row["code"])  # error=0 时不该抛；真抛了由既有处理器兜成 422
     validate_user_params(meta.params, body.params)  # 越界抛 StrategyRejected → 422
-    return row["code"], row["name"]
+    return row["code"], row["name"], row["id"], int(row["version"])
 
 
 async def _run_replay(
@@ -212,11 +213,25 @@ async def _run_replay(
 async def _source_for_account(
     request: Request, user_id: int, account_row: dict[str, Any]
 ) -> str | None:
-    """老会话继续推进时把源码取回来——**策略被删了就没法重放**，如实 409 而不是静默换策略。"""
+    """老会话继续推进时把源码取回来——**策略被删了就没法重放**，如实 409 而不是静默换策略。
+
+    5d 起优先按 `strategy_id + strategy_version` 读**锁定版本**：之后改策略不影响运行中的
+    会话（可复现）。旧会话的 config 没有这两个键 → 按名字找当前源码（既有兼容口径）。
+    """
     config = config_from_payload(account_row["config"])
     if config.strategy != USER_STRATEGY:
         return None
     db = require_db(request)
+    if config.strategy_id and config.strategy_version is not None:
+        row = await db.get_strategy_version(
+            user_id, config.strategy_id, config.strategy_version
+        )
+        if row is None:
+            raise PaperConflict(
+                f"会话锁定的策略版本（v{config.strategy_version}）已不存在——"
+                f"策略「{config.strategy_name}」可能已被删除，请先恢复这条策略"
+            )
+        return row["code"]
     strategies = await db.list_strategies(user_id)
     match = next((s for s in strategies if s["name"] == config.strategy_name), None)
     row = await db.get_strategy(user_id, match["id"]) if match else None
@@ -286,7 +301,9 @@ async def create_account(
 ) -> dict[str, Any]:
     """建会话：校验 → 定窗口 → 重放第一天 → 落库（一个事务）。"""
     user_id = int(user["id"])
-    source, strategy_name = await _strategy_source(request, user_id, body)
+    source, strategy_name, strategy_id, strategy_version = await _strategy_source(
+        request, user_id, body
+    )
 
     latest = await asyncio.to_thread(dc.latest_closes, list(body.symbols))
     missing = [s for s in body.symbols if s not in latest]
@@ -369,6 +386,8 @@ async def create_account(
         params=dict(body.params),
         costs=body.costs.to_model(),
         strategy_name=strategy_name,
+        strategy_id=strategy_id,
+        strategy_version=strategy_version,
         risk=risk_limits,
     )
     account_id = str(uuid.uuid4())
@@ -508,6 +527,10 @@ async def run_account(
         raise HTTPException(status_code=404, detail="模拟盘会话不存在")
     if row["status"] != ACTIVE:
         raise PaperConflict("会话已跑到区间末端")
+    # Agent 提案必须逐条裁决（收尾项 5a 拍板）：批量路径直接拒绝，避免「一键全批」
+    # 把模型提的单子悄悄放过去；`set_paper_decisions_bulk` 也排除了 origin='agent'（双保险）。
+    if await db.paper_pending_agent_count(normalized) > 0:
+        raise PaperConflict("有 Agent 提案待审批——请逐条批准/驳回后再一键跑到底")
 
     auto = DecisionStatus.APPROVED if body.approve == "all" else DecisionStatus.REJECTED
     # 手上这批待审批的先按同一口径定掉——它们已经生成，只等一个裁决

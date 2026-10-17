@@ -142,6 +142,45 @@ def test_user_strategy_keeps_running_after_saving(
     assert client.get(f"/api/v1/paper/accounts/{account_id}").json()["progress"]["days_done"] == 4
 
 
+def test_paper_pins_the_strategy_version_at_creation(
+    signed_in: FakeDatabase, data_dir: list[date], limits: dict[str, SandboxLimits]
+) -> None:
+    """5d：建会话时锁定版本——之后改策略，旧会话仍按旧版本跑；新会话用新版本。"""
+    days = data_dir
+    created = make_strategy(template_source("ma_cross"), name="版本锁定")
+    assert created["version"] == 1
+    old = client.post(
+        "/api/v1/paper/accounts",
+        json=session_body(days, strategy="user", strategy_id=created["id"]),
+    ).json()
+    assert old["account"]["config"]["strategy_version"] == 1
+
+    noop = "def on_bar(ctx, p):\n    return []\n"
+    updated = client.put(
+        f"/api/v1/strategies/{created['id']}",
+        json={"code": noop, "expected_version": 1},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["version"] == 2
+
+    # 先用旧会话跑完：锁定 v1（ma_cross），应当有决策
+    old_final = run_to_end(old["account"]["id"])
+    assert old_final["decisions"], "锁定版本应当仍按 ma_cross 产生决策"
+
+    # 新会话锁定 v2（无信号），同样跑完不出决策
+    new_response = client.post(
+        "/api/v1/paper/accounts",
+        json=session_body(
+            days, name="新版本会话", strategy="user", strategy_id=created["id"], params={}
+        ),
+    )
+    assert new_response.status_code == 201, new_response.text
+    new = new_response.json()
+    assert new["account"]["config"]["strategy_version"] == 2
+    new_final = run_to_end(new["account"]["id"])
+    assert new_final["decisions"] == []
+
+
 def test_deleted_strategy_conflicts_instead_of_silently_switching(
     signed_in: FakeDatabase, data_dir: list[date], limits: dict[str, SandboxLimits]
 ) -> None:

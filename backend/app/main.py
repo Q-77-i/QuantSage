@@ -24,10 +24,17 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent.graph import build_agent
-from app.agent.tools import load_xiaoshi_tools, query_market_bars, search_events
+from app.agent.tools import (
+    list_paper_accounts,
+    load_xiaoshi_tools,
+    propose_paper_order,
+    query_market_bars,
+    search_events,
+)
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
+from app.api.capabilities import router as capabilities_router
 from app.api.chat import router as chat_router
 from app.api.data import router as data_router
 from app.api.etl import router as etl_router
@@ -52,6 +59,7 @@ from app.core.db import (
     Database,
     EmailTaken,
     StrategyNameTaken,
+    StrategyVersionConflict,
     SymbolTracked,
     init_schema,
     open_pool,
@@ -141,7 +149,7 @@ async def lifespan(app: FastAPI):
                 "业务库不可用（%s），登录鉴权与会话归属将返回 503", type(exc).__name__
             )
 
-        tools = [query_market_bars, search_events]
+        tools = [query_market_bars, search_events, list_paper_accounts, propose_paper_order]
         try:
             async with asyncio.timeout(MCP_BOOT_TIMEOUT):
                 xiaoshi_tools, missing = await load_xiaoshi_tools()
@@ -256,6 +264,7 @@ for router in (
     reports_router,
     research_router,
     tasks_router,
+    capabilities_router,
 ):
     app.include_router(router)
 
@@ -298,6 +307,15 @@ async def _strategy_name_taken(_: Request, exc: StrategyNameTaken) -> JSONRespon
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": f"已有一条名为「{exc.args[0]}」的策略，换个名字"},
+    )
+
+
+@app.exception_handler(StrategyVersionConflict)
+async def _strategy_version_conflict(_: Request, exc: StrategyVersionConflict) -> JSONResponse:
+    """5d：`expected_version` 与库里不一致（并发保存/回滚）→ 409，不覆盖别人的改动。"""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc.args[0]) if exc.args else "策略版本已变化，请重新打开"},
     )
 
 

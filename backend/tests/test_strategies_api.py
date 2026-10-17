@@ -118,6 +118,7 @@ def seed_foreign(db: FakeDatabase, user_id: int, strategy_id: str, name: str) ->
         "name": name,
         "code": GOOD_CODE,
         "params": {},
+        "version": 1,
         "created_at": now,
         "updated_at": now,
     }
@@ -137,7 +138,7 @@ def test_list_returns_summaries_without_code(signed_in: FakeDatabase) -> None:
     create(name="第二条")
     rows = client.get("/api/v1/strategies").json()
     assert [row["name"] for row in rows][:2] == ["第二条", "第一条"]  # updated_at 倒序
-    assert set(rows[0]) == {"id", "name", "created_at", "updated_at"}  # 列表不带 code
+    assert set(rows[0]) == {"id", "name", "version", "created_at", "updated_at"}  # 列表不带 code
 
 
 def test_list_only_returns_own(signed_in: FakeDatabase) -> None:
@@ -265,3 +266,73 @@ def test_fake_database_mirrors_unique_constraint(signed_in: FakeDatabase) -> Non
     except StrategyNameTaken:
         return
     raise AssertionError("替身没有照抄 UNIQUE(user_id, name)")
+
+
+# ── 5d 版本管理 ─────────────────────────────────────────────
+
+
+def test_version_history_diff_and_rollback(signed_in: FakeDatabase) -> None:
+    created = create()
+    strategy_id = created["id"]
+    assert created["version"] == 1
+
+    versions = client.get(f"/api/v1/strategies/{strategy_id}/versions").json()
+    assert [row["version_no"] for row in versions] == [1]
+    assert versions[0]["current"] is True
+
+    updated = client.put(
+        f"/api/v1/strategies/{strategy_id}",
+        json={"code": GOOD_CODE + "\n# v2\n", "expected_version": 1},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["version"] == 2
+
+    versions = client.get(f"/api/v1/strategies/{strategy_id}/versions").json()
+    assert [row["version_no"] for row in versions] == [2, 1]
+    assert [row["current"] for row in versions] == [True, False]
+
+    first = client.get(f"/api/v1/strategies/{strategy_id}/versions/1").json()
+    assert first["code"] == GOOD_CODE
+    assert len(first["code_sha256"]) == 64
+
+    diff = client.get(f"/api/v1/strategies/{strategy_id}/versions/1/diff").json()
+    assert diff["from"] == 2 and diff["to"] == 1
+    assert "# v2" in diff["diff"]
+    assert diff["params_changed"] is False
+
+    stale = client.put(
+        f"/api/v1/strategies/{strategy_id}",
+        json={"code": GOOD_CODE + "\n# stale\n", "expected_version": 1},
+    )
+    assert stale.status_code == 409
+    assert "v2" in stale.json()["detail"]
+
+    rolled = client.post(
+        f"/api/v1/strategies/{strategy_id}/rollback",
+        json={"version_no": 1, "expected_version": 2},
+    )
+    assert rolled.status_code == 200, rolled.text
+    assert rolled.json()["version"] == 3
+    assert rolled.json()["code"] == GOOD_CODE
+
+    # 目标内容与当前一致 → 不新建版本
+    same = client.post(
+        f"/api/v1/strategies/{strategy_id}/rollback",
+        json={"version_no": 3, "expected_version": 3},
+    )
+    assert same.json()["version"] == 3
+
+    assert client.get(f"/api/v1/strategies/{strategy_id}/versions/99").status_code == 404
+
+
+def test_rename_does_not_create_a_version(signed_in: FakeDatabase) -> None:
+    created = create()
+    strategy_id = created["id"]
+    renamed = client.put(
+        f"/api/v1/strategies/{strategy_id}",
+        json={"name": "改个名字", "expected_version": 1},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["version"] == 1
+    versions = client.get(f"/api/v1/strategies/{strategy_id}/versions").json()
+    assert [row["version_no"] for row in versions] == [1]

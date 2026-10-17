@@ -86,7 +86,9 @@ function DecisionCardItem({
         <StatusBadge status={decision.status} label={decision.status_label} />
         {card.originLabel ? (
           <span
-            data-risk-badge
+            {...(decision.origin === "risk"
+              ? { "data-risk-badge": true }
+              : { "data-agent-badge": true })}
             className="inline-flex items-center rounded-[var(--radius)] border border-warn/40 px-1.5 py-0.5 text-xs whitespace-nowrap text-warn"
           >
             {card.originLabel}

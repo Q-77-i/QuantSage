@@ -121,7 +121,8 @@ async def search_events(
         top_k: 返回条数，默认 5，上限 10
     """
     from app.rag import RagNotReady
-    from app.rag.retrieve import SearchQuery, coverage_window, search
+    from app.rag.correct import correction_note, search_with_correction
+    from app.rag.retrieve import SearchQuery, coverage_window
 
     moment = _parse_as_of(as_of)
     if moment is _INVALID:
@@ -129,9 +130,9 @@ async def search_events(
 
     size = max(1, min(int(top_k), 10))
     try:
-        # 检索是同步 IO + 模型推理，卸到线程避免阻塞事件循环
-        hits = await asyncio.to_thread(
-            search,
+        # 检索是同步 IO + 模型推理，卸到线程（在 `search_with_correction` 内做）；
+        # 零命中时它会改写一次查询，但 as_of / symbol / event_type / top_k 逐字保留
+        corrected = await search_with_correction(
             SearchQuery(
                 query=query,
                 as_of=moment,
@@ -140,6 +141,8 @@ async def search_events(
                 top_k=size,
             ),
         )
+        hits = corrected.hits
+        note = correction_note(corrected.correction)
         start, end = await asyncio.to_thread(coverage_window)
     except RagNotReady as exc:
         # 降级要说人话，且**不能说成「查不到」**——那是两回事
@@ -150,8 +153,9 @@ async def search_events(
 
     window = f"本地语料覆盖 {start} ~ {end}" if start else "本地语料为空"
     if not hits:
+        extra = f"{note}；" if note else ""
         return (
-            f"{window}。该条件下没有检索到事件（可能是时点太早、标的无事件，"
+            f"{window}。{extra}该条件下没有检索到事件（可能是时点太早、标的无事件，"
             f"或语料窗口外的历史）。"
         )
 
@@ -169,8 +173,95 @@ async def search_events(
         targets = "/".join(hit.symbols[:6]) if hit.symbols else "—"
         lines.append(f"   来源：{sources or '—'}｜标的：{targets}")
     # 语料是**外部数据**，进 prompt 前打上不可信边界（E8c，SPEC §8.5）。
-    # 只包命中的清单，不包上面那些「查不到 / 不可用」的话——那是我们自己的说明。
-    return wrap_untrusted("\n".join(lines), source="本地事件语料")
+    # 只包命中的清单，不包上面那些「查不到 / 不可用 / 已改写」的话——那是我们自己的说明。
+    body = wrap_untrusted("\n".join(lines), source="本地事件语料")
+    return f"{note}\n{body}" if note else body
+
+
+@tool
+async def list_paper_accounts() -> str:
+    """列出**当前登录用户**的模拟盘会话（id / 名称 / 状态 / 截至日 / 现金 / 标的池）。
+
+    Agent 在提案前先用它找到 `account_id`。只读；没有会话时返回一句人话，
+    不要把「还没有会话」说成「查询失败」。
+    """
+    from app.agent.context import current_agent_context
+    from app.paper.store import account_summary_from_row
+
+    ctx = current_agent_context()
+    if ctx is None:
+        return "模拟盘不可用：当前不是登录用户发起的对话。"
+    try:
+        rows = await ctx.db.list_paper_accounts(ctx.user_id, 20)
+    except Exception as exc:  # noqa: BLE001 —— 工具失败要让模型能自纠，不炸整条流
+        log.warning("模拟盘会话列表失败 (%s)", type(exc).__name__)
+        return "模拟盘会话查询失败，请稍后再试。"
+
+    if not rows:
+        return "你还没有模拟盘会话。先到模拟盘页新建一个会话，再让我提案。"
+    lines = ["你的模拟盘会话（新在前）："]
+    for row in rows:
+        summary = account_summary_from_row(row)
+        lines.append(
+            f"- {summary['name']}（id={summary['id']}）｜状态 {summary['status']}｜"
+            f"截至 {summary['as_of']}｜现金 {summary['cash']:,.0f}｜"
+            f"池子 {'、'.join(summary['symbols'])}"
+        )
+    return "\n".join(lines)
+
+
+@tool
+async def propose_paper_order(account_id: str, symbol: str, side: str, reason: str) -> str:
+    """为**当前登录用户**的模拟盘创建一条**待审批**决策（买/卖），不成交、不批准。
+
+    这是写提案，不是下单：决策会以「待审批」出现在模拟盘页，用户必须逐条批准/驳回；
+    批准后下一次「推进一天」才按 T+1 开盘价成交。Agent 不能批准、不能改数量、不能改风控。
+    只支持会话池子里的标的；买入按等额配额、卖出全仓（M6 不支持部分成交）。
+
+    Args:
+        account_id: 模拟盘会话 id（先用 list_paper_accounts 查）
+        symbol: 六位股票代码，且必须在该会话的标的池里
+        side: `buy` 或 `sell`
+        reason: 一句话理由（≤200 字），会显示在决策卡与审计里
+    """
+    from app.agent.context import current_agent_context
+    from app.backtest.types import Side
+    from app.paper import PaperError
+    from app.paper.proposal import propose_agent_decision
+
+    ctx = current_agent_context()
+    if ctx is None:
+        return "模拟盘不可用：当前不是登录用户发起的对话。"
+    wanted = side.strip().lower()
+    if wanted not in {"buy", "sell"}:
+        return "side 只能是 buy 或 sell。"
+    try:
+        outcome = await propose_agent_decision(
+            ctx.db,
+            user_id=ctx.user_id,
+            account_id=account_id.strip(),
+            symbol=symbol.strip(),
+            side=Side.BUY if wanted == "buy" else Side.SELL,
+            reason=reason,
+        )
+    except PaperError as exc:
+        return f"提案未创建：{exc}"
+    except Exception as exc:  # noqa: BLE001 —— 提案失败不能让整条对话断掉
+        log.warning("Agent 提案失败 (%s)", type(exc).__name__)
+        return f"提案失败（{type(exc).__name__}），请稍后再试。"
+
+    if outcome.decision is not None:
+        d = outcome.decision
+        action = "买入" if d["side"] == "buy" else "卖出"
+        return (
+            f"已创建待审批的 Agent 提案：{d['symbol']} {action} {d['est_qty']} 股，"
+            f"决策日 {d['trade_date']}（按当日收盘价预估，实际成交价在 T+1 开盘才知道）。"
+            f"请到模拟盘页（会话 {outcome.account_id}）批准或驳回；"
+            "批准后点「推进一天」才成交。Agent 不能批准或成交。"
+        )
+    if outcome.blocked:
+        return f"提案被风控拦截：{outcome.detail}。未生成决策；详情见模拟盘风控日志。"
+    return "提案未生成：该标的已有挂单或资金买不起一手。"
 
 
 class _Invalid:

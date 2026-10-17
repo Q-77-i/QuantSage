@@ -36,6 +36,9 @@ import type {
   StrategySaved,
   StrategySummary,
   StrategyTemplate,
+  StrategyVersionDetail,
+  StrategyVersionDiff,
+  StrategyVersionSummary,
   TaskDetail,
   TaskSummary,
   FactorReport,
@@ -348,6 +351,33 @@ export const api = {
     request<StrategyCheck>("/api/v1/strategies/check", jsonInit("POST", { code })),
 
   strategyTemplates: () => request<StrategyTemplate[]>("/api/v1/strategies/templates"),
+
+  // ── 5d 策略版本 ────────────────────────────────────────────────────────
+  strategyVersions: (id: string) =>
+    request<StrategyVersionSummary[]>(
+      `/api/v1/strategies/${encodeURIComponent(id)}/versions`,
+    ),
+
+  strategyVersion: (id: string, versionNo: number) =>
+    request<StrategyVersionDetail>(
+      `/api/v1/strategies/${encodeURIComponent(id)}/versions/${versionNo}`,
+    ),
+
+  strategyVersionDiff: (id: string, versionNo: number, against?: number) =>
+    request<StrategyVersionDiff>(
+      `/api/v1/strategies/${encodeURIComponent(id)}/versions/${versionNo}/diff${
+        against === undefined ? "" : `?against=${against}`
+      }`,
+    ),
+
+  rollbackStrategy: (id: string, versionNo: number, expectedVersion?: number) =>
+    request<StrategySaved>(
+      `/api/v1/strategies/${encodeURIComponent(id)}/rollback`,
+      jsonInit("POST", {
+        version_no: versionNo,
+        ...(expectedVersion === undefined ? {} : { expected_version: expectedVersion }),
+      }),
+    ),
 
   threads: () => request<ThreadSummary[]>("/api/v1/chat/threads"),
 

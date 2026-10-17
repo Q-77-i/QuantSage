@@ -151,23 +151,28 @@ export function PaperForm({ onCreated }: { onCreated: (detail: PaperAccountDetai
         </Field>
 
         {form.strategy === "user" ? (
-          <Field
-            label="选一条已保存的策略（用它保存的参数）"
-            htmlFor="paper-strategy-id"
-          >
-            <Select
-              id="paper-strategy-id"
-              value={form.strategyId}
-              onChange={(event) => setForm({ ...form, strategyId: event.target.value })}
+          <>
+            <Field
+              label="选一条已保存的策略（用它保存的参数）"
+              htmlFor="paper-strategy-id"
             >
-              <option value="">（选一条）</option>
-              {strategies.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+              <Select
+                id="paper-strategy-id"
+                value={form.strategyId}
+                onChange={(event) => setForm({ ...form, strategyId: event.target.value })}
+              >
+                <option value="">（选一条）</option>
+                {strategies.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <p className="text-xs text-ink-3">
+              建会话时锁定该策略的当前版本；之后修改策略不影响本会话。
+            </p>
+          </>
         ) : (
           <Field label="区间终点（留空 = 用本地行情末端）" htmlFor="paper-end">
             <Input

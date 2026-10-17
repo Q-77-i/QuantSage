@@ -64,6 +64,11 @@ export function DecisionTable({
                     风控
                   </span>
                 ) : null}
+                {decision.origin === "agent" ? (
+                  <span data-agent-badge className="ml-1 text-xs whitespace-nowrap text-warn">
+                    Agent
+                  </span>
+                ) : null}
               </Cell>
               <Cell className="num whitespace-nowrap">
                 {fill ? (

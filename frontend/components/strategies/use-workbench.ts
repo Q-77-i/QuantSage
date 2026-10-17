@@ -42,7 +42,7 @@ const CHECK_DEBOUNCE_MS = 400;
 
 /** 编辑器里当前打开的是什么 */
 export type CurrentDoc =
-  | { kind: "strategy"; id: string; name: string; updatedAt: string }
+  | { kind: "strategy"; id: string; name: string; updatedAt: string; version: number }
   | { kind: "template"; key: string; name: string }
   | { kind: "new"; name: string };
 
@@ -149,6 +149,7 @@ export function useWorkbench() {
           id: detail.id,
           name: detail.name,
           updatedAt: detail.updated_at,
+          version: detail.version,
         });
         setCode(detail.code);
         setDirty(false);
@@ -216,7 +217,11 @@ export function useWorkbench() {
       return null;
     }
     const params = paramsFromForm(check?.meta ?? null, values);
-    const body = { name, code, params };
+    // 5d：带上打开时的版本，别人先保存过就 409，而不是静默覆盖
+    const body =
+      current.kind === "strategy"
+        ? { name, code, params, expected_version: current.version }
+        : { name, code, params };
     const saved =
       current.kind === "strategy"
         ? await api.updateStrategy(current.id, body)
@@ -226,7 +231,13 @@ export function useWorkbench() {
     // 不清的话切回去还是旧 schema——这次改的若是 `PARAMS` 声明就会对不上）
     clearDescriptorCache();
     savedParams.current = saved.params;
-    setCurrent({ kind: "strategy", id: saved.id, name: saved.name, updatedAt: saved.updated_at });
+    setCurrent({
+      kind: "strategy",
+      id: saved.id,
+      name: saved.name,
+      updatedAt: saved.updated_at,
+      version: saved.version,
+    });
     setDirty(false);
     lastOpenRef.current = saved.id; // 新建落库后 id 归位：这次 URL 变更不该再触发一次打开
     router.replace(`/strategies?id=${saved.id}`, { scroll: false });

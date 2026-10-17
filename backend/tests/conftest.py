@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
+# 离线套件不调真模型：空命中用例默认不走「查询改写」这一轮（SPEC 附录 A.2）。
+# 要验改写本身的用例注入 `rewrite_fn`，与这个开关无关。
+os.environ.setdefault("RAG_QUERY_REWRITE", "false")
 
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402

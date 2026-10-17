@@ -91,6 +91,7 @@ export function StrategyList({
                     >
                       {strategy.name}
                     </button>
+                    <span className="num shrink-0 text-xs text-ink-3">v{strategy.version}</span>
                     <button
                       type="button"
                       aria-label={`删除 ${strategy.name}`}

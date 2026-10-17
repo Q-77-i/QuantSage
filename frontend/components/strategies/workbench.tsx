@@ -1,13 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { FindingsPanel } from "@/components/strategies/findings-panel";
 import { ParamsForm } from "@/components/strategies/params-form";
 import { RunBar } from "@/components/strategies/run-bar";
 import { StrategyList } from "@/components/strategies/strategy-list";
 import { useWorkbench } from "@/components/strategies/use-workbench";
+import { VersionHistory } from "@/components/strategies/version-history";
 import { Button } from "@/components/ui/button";
 import type { CodeEditorHandle } from "@/components/strategies/code-editor";
 import { dayStamp } from "@/lib/format";
@@ -35,6 +36,7 @@ export function Workbench({ initialId }: { initialId: string | null }) {
   const workbench = useWorkbench();
   const editorRef = useRef<CodeEditorHandle>(null);
   const { current, openStrategy, lastOpenRef } = workbench;
+  const [versionOpen, setVersionOpen] = useState(false);
 
   // 深链 ?id=：只认「还没主动打开过」的那个 id。用「当前载入的 id」去重是不够的——
   // 从列表点选时 URL 才刚开始换，那个空档里旧的 ?id= 会把刚选的策略拽回去（实测踩过）
@@ -86,7 +88,18 @@ export function Workbench({ initialId }: { initialId: string | null }) {
                   <span className="text-xs text-ink-3">● 未保存</span>
                 ) : null}
                 {!workbench.dirty && current.kind === "strategy" ? (
-                  <span className="text-xs text-ink-3">已保存 · {dayStamp(current.updatedAt)}</span>
+                  <span className="text-xs text-ink-3">
+                    已保存 · v{current.version} · {dayStamp(current.updatedAt)}
+                  </span>
+                ) : null}
+                {current.kind === "strategy" ? (
+                  <button
+                    type="button"
+                    onClick={() => setVersionOpen(true)}
+                    className="h-7 rounded-[var(--radius)] border border-border px-2.5 text-xs hover:bg-muted"
+                  >
+                    版本历史
+                  </button>
                 ) : null}
                 {isTemplate ? (
                   <span className="text-xs text-ink-3">
@@ -165,6 +178,18 @@ export function Workbench({ initialId }: { initialId: string | null }) {
           )}
         </section>
       </div>
+
+      {versionOpen && current?.kind === "strategy" ? (
+        <VersionHistory
+          strategyId={current.id}
+          currentVersion={current.version}
+          onClose={() => setVersionOpen(false)}
+          onRolledBack={() => {
+            setVersionOpen(false);
+            void openStrategy(current.id);
+          }}
+        />
+      ) : null}
     </main>
   );
 }

@@ -219,6 +219,12 @@ describe("decisionCard", () => {
     expect(card.reason).toBe("风控 · 止损触发（浮亏 12.0% ≥ 6.0%）");
   });
 
+  it("Agent 提案带「Agent 提案」标识，但不是自动退出", () => {
+    const card = decisionCard(decision({ origin: "agent" }));
+    expect(card.originLabel).toBe("Agent 提案");
+    expect(card.autoExit).toBe(false);
+  });
+
   it("普通策略单没有风控标识", () => {
     const card = decisionCard(decision());
     expect(card.originLabel).toBeNull();

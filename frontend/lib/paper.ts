@@ -139,8 +139,13 @@ export function decisionCard(decision: PaperDecision) {
     reason: reasonText(decision.reason),
     sources: sourceRows(decision),
     reject: decision.reject_reason,
-    /** 风控止损单：系统自动批准，界面加徽章、不可驳回（`canDecide` 仍只看 pending） */
-    originLabel: decision.origin === "risk" ? "风控自动" : null,
+    /** 风控止损单：系统自动批准；Agent 提案：只到待审批，必须人工裁决 */
+    originLabel:
+      decision.origin === "risk"
+        ? "风控自动"
+        : decision.origin === "agent"
+          ? "Agent 提案"
+          : null,
     autoExit: decision.origin === "risk" && decision.status === "approved",
   };
 }

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, date, datetime
 from typing import Any
@@ -26,7 +27,13 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import BaseTool
 
-from app.core.db import DEFAULT_GROUP, EmailTaken, StrategyNameTaken, SymbolTracked
+from app.core.db import (
+    DEFAULT_GROUP,
+    EmailTaken,
+    StrategyNameTaken,
+    StrategyVersionConflict,
+    SymbolTracked,
+)
 
 
 class ToolCallingFakeModel(FakeMessagesListChatModel):
@@ -118,6 +125,8 @@ class FakeDatabase:
         self._run_order: list[str] = []  # 插入序，列表按它倒序给「最新在前」
         # 策略：(user_id, strategy_id) → 行（名字唯一性另按 user 判，见 create_strategy）
         self.strategies: dict[tuple[int, str], dict[str, Any]] = {}
+        #: 5d：`(strategy_id, version_no) -> 版本行`。与真库同语义的 append-only。
+        self.strategy_versions: dict[tuple[str, int], dict[str, Any]] = {}
         # 批量/网格汇总：run_id → 行（顺序另记，列表倒序给「最新在前」）
         self.optimizations: dict[str, dict[str, Any]] = {}
         self._optimization_order: list[str] = []
@@ -249,7 +258,8 @@ class FakeDatabase:
         rows = [row for (uid, _), row in self.strategies.items() if uid == user_id]
         rows.sort(key=lambda row: row["updated_at"], reverse=True)
         return [
-            {key: row[key] for key in ("id", "name", "created_at", "updated_at")} for row in rows
+            {key: row[key] for key in ("id", "name", "version", "created_at", "updated_at")}
+            for row in rows
         ]
 
     async def create_strategy(
@@ -263,10 +273,20 @@ class FakeDatabase:
             "name": name,
             "code": code,
             "params": dict(params),
+            "version": 1,
             "created_at": now,
             "updated_at": now,
         }
         self.strategies[(user_id, strategy_id)] = row
+        self.strategy_versions[(strategy_id, 1)] = {
+            "id": str(uuid.uuid4()),
+            "strategy_id": strategy_id,
+            "version_no": 1,
+            "name": name,
+            "code": code,
+            "params": dict(params),
+            "created_at": now,
+        }
         return dict(row)
 
     async def get_strategy(self, user_id: int, strategy_id: str) -> dict[str, Any] | None:
@@ -281,10 +301,19 @@ class FakeDatabase:
         name: str | None = None,
         code: str | None = None,
         params: dict[str, Any] | None = None,
+        expected_version: int | None = None,
     ) -> dict[str, Any] | None:
         row = self.strategies.get((user_id, strategy_id))
         if row is None:
             return None
+        current = int(row["version"])
+        if expected_version is not None and expected_version != current:
+            raise StrategyVersionConflict(
+                f"策略已在别处更新（当前 v{current}）——请重新打开后再保存"
+            )
+        changed = (code is not None and code != row["code"]) or (
+            params is not None and dict(params) != row["params"]
+        )
         if name is not None:
             if self._name_taken(user_id, name, exclude=strategy_id):
                 raise StrategyNameTaken(name)
@@ -293,7 +322,83 @@ class FakeDatabase:
             row["code"] = code
         if params is not None:
             row["params"] = dict(params)
+        if changed:
+            row["version"] = current + 1
+            self.strategy_versions[(strategy_id, current + 1)] = {
+                "id": str(uuid.uuid4()),
+                "strategy_id": strategy_id,
+                "version_no": current + 1,
+                "name": row["name"],
+                "code": row["code"],
+                "params": dict(row["params"]),
+                "created_at": datetime.now(UTC),
+            }
         row["updated_at"] = datetime.now(UTC)
+        return dict(row)
+
+    async def list_strategy_versions(
+        self, user_id: int, strategy_id: str
+    ) -> list[dict[str, Any]] | None:
+        row = self.strategies.get((user_id, strategy_id))
+        if row is None:
+            return None
+        versions = [
+            v for (sid, _), v in self.strategy_versions.items() if sid == strategy_id
+        ]
+        versions.sort(key=lambda v: v["version_no"], reverse=True)
+        return [
+            {
+                "id": v["id"],
+                "version_no": v["version_no"],
+                "name": v["name"],
+                "created_at": v["created_at"],
+                "current": v["version_no"] == row["version"],
+            }
+            for v in versions
+        ]
+
+    async def get_strategy_version(
+        self, user_id: int, strategy_id: str, version_no: int
+    ) -> dict[str, Any] | None:
+        if (user_id, strategy_id) not in self.strategies:
+            return None
+        version = self.strategy_versions.get((strategy_id, version_no))
+        return dict(version) if version is not None else None
+
+    async def rollback_strategy(
+        self,
+        user_id: int,
+        strategy_id: str,
+        version_no: int,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any] | None:
+        row = self.strategies.get((user_id, strategy_id))
+        if row is None:
+            return None
+        current = int(row["version"])
+        if expected_version is not None and expected_version != current:
+            raise StrategyVersionConflict(
+                f"策略已在别处更新（当前 v{current}）——请重新打开后再回滚"
+            )
+        target = self.strategy_versions.get((strategy_id, version_no))
+        if target is None:
+            return None
+        if target["code"] == row["code"] and dict(target["params"]) == dict(row["params"]):
+            return dict(row)
+        row["code"] = target["code"]
+        row["params"] = dict(target["params"])
+        row["version"] = current + 1
+        row["updated_at"] = datetime.now(UTC)
+        self.strategy_versions[(strategy_id, current + 1)] = {
+            "id": str(uuid.uuid4()),
+            "strategy_id": strategy_id,
+            "version_no": current + 1,
+            "name": row["name"],
+            "code": target["code"],
+            "params": dict(target["params"]),
+            "created_at": datetime.now(UTC),
+        }
         return dict(row)
 
     async def drop_strategy(self, user_id: int, strategy_id: str) -> bool:
@@ -317,6 +422,7 @@ class FakeDatabase:
         strategy_id: str | None = None,
         code_sha256: str | None = None,
         data_digest: str | None = None,
+        strategy_version: int | None = None,
     ) -> None:
         self.runs[run_id] = {
             "id": run_id,
@@ -327,6 +433,7 @@ class FakeDatabase:
             "strategy_id": strategy_id,
             "code_sha256": code_sha256,
             "data_digest": data_digest,
+            "strategy_version": strategy_version,
         }
         self._run_order.append(run_id)
 
@@ -566,11 +673,47 @@ class FakeDatabase:
         hits = [
             r
             for r in self.paper_decision_rows.values()
-            if r["account_id"] == account_id and r["status"] == "pending"
+            if r["account_id"] == account_id
+            and r["status"] == "pending"
+            and r.get("origin") != "agent"  # 与真库一致：Agent 提案必须逐条裁决
         ]
         for row in hits:
             row.update({"status": status, "decided_at": datetime.now(UTC)})
         return len(hits)
+
+    async def paper_pending_agent_count(self, account_id: str) -> int:
+        return sum(
+            1
+            for r in self.paper_decision_rows.values()
+            if r["account_id"] == account_id
+            and r["status"] == "pending"
+            and r.get("origin") == "agent"
+        )
+
+    async def add_paper_decision(
+        self,
+        *,
+        account_id: str,
+        user_id: int,
+        expected_as_of: Any,
+        decision: dict[str, Any] | None,
+        risk_events: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    ) -> bool:
+        account = self.paper_accounts.get(account_id)
+        if (
+            account is None
+            or account["user_id"] != user_id
+            or account.get("status") != "active"
+            or account.get("as_of") != expected_as_of
+        ):
+            return False
+        if decision is not None:
+            if decision["id"] in self.paper_decision_rows:
+                return False  # 照抄真库的 ON CONFLICT DO NOTHING：绝不覆盖已有决策
+            self.paper_decision_rows[decision["id"]] = dict(decision)
+        for event in risk_events:
+            self.paper_audit_rows.setdefault(event["id"], dict(event))
+        return True
 
     # ── 绩效研报（M7）──────────────────────────────────────
 

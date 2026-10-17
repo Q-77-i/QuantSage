@@ -119,8 +119,8 @@ describe("strategyOptions —— 下拉的分组（M4c-3）", () => {
 
   it("有用户策略时多一组，取值是 `user:<id>`（一页可能有多条，只写 user 分不出是哪条）", () => {
     const groups = strategyOptions([
-      { id: "s1", name: "我的动量", created_at: "", updated_at: "" },
-      { id: "s2", name: "我的反转", created_at: "", updated_at: "" },
+      { id: "s1", name: "我的动量", version: 1, created_at: "", updated_at: "" },
+      { id: "s2", name: "我的反转", version: 1, created_at: "", updated_at: "" },
     ]);
     expect(groups.map((group) => group.label)).toEqual(["内置", "我的策略"]);
     expect(groups[1].items).toEqual([

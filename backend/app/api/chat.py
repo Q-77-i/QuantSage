@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.agent.context import AgentContext, reset_agent_context, set_agent_context
 from app.agent.graph import astream_chat
 from app.agent.history import messages_to_history
 from app.api.limits import limit
@@ -167,6 +168,9 @@ async def chat(
             # 同一会话排队跑（理由见 `_run_lock`）：等锁期间客户端可能已经走了，
             # 但那一轮仍会跑完并落 checkpoint——与断连的处理一致
             async with _run_lock(thread_id):
+                # 工具拿「当前用户 + 业务库」的唯一来源（收尾项 5a）；user_id 绝不
+                # 作为 LLM 可传参数。ContextVar 随 pump 任务走，finally 复位。
+                token = set_agent_context(AgentContext(user_id=int(user["id"]), db=db))
                 try:
                     async for item in astream_chat(
                         agent,
@@ -181,6 +185,7 @@ async def chat(
                 except Exception as exc:  # noqa: BLE001 —— 在流内转成 error 帧
                     queue.put_nowait(("error", exc))
                 finally:
+                    reset_agent_context(token)
                     queue.put_nowait(("end", None))
 
         task = asyncio.create_task(pump())

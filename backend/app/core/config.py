@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     rag_rerank_max_length: int = 256
     rag_rerank_candidates: int = 50  # 进精排的候选数，由延迟实测定档（M3c）
     rag_top_k: int = 5
+    # 零命中后的一轮查询改写（SPEC 附录 A.2）。**离线套件在 conftest 里默认关掉**：
+    # 空结果用例不该去调真模型；生产默认开启。关掉时工具仍会说「首次无结果，改写未启用」。
+    rag_query_rewrite: bool = True
     # collection 名可配：集成用例必须能指向测试库，**绝不能拿生产索引当试验场**
     rag_collection: str = "cn_events_v1"
 

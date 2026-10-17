@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -13,9 +14,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.backtest.types import Side
 from app.data import calendar as cal
 from app.data import duckdb_client
 from app.main import app
+from app.paper.store import decision_to_row
+from app.paper.types import Decision, decision_id
 from tests.conftest import make_backtest_dir, ts, write_bars_parquet
 
 client = TestClient(app)
@@ -390,3 +394,37 @@ def test_run_with_risk_keeps_audit(paper_env: list[date]) -> None:
     assert final["account"]["status"] == "finished"
     assert final["risk_state"]["equity"] > 0
     assert any(event["verdict"] == "cap" for event in final["risk_events"])
+
+
+def test_run_refuses_while_an_agent_proposal_is_pending(paper_env: list[date]) -> None:
+    """收尾项 5a 拍板：Agent 提案逐条审批，批量路径直接拒绝（不是静默跳过）。"""
+    detail = create(strategy="ma_cross", params={}).json()
+    account_id = detail["account"]["id"]
+    db = app.state.db
+    as_of = db.paper_accounts[account_id]["as_of"]
+    decision = Decision(
+        id=decision_id(account_id, as_of, SYMBOL, Side.BUY),
+        account_id=account_id,
+        symbol=SYMBOL,
+        trade_date=as_of,
+        side=Side.BUY,
+        est_qty=100,
+        est_price=100.0,
+        reason="Agent 测试提案",
+        origin="agent",
+    )
+    assert asyncio.run(
+        db.add_paper_decision(
+            account_id=account_id,
+            user_id=int(db.paper_accounts[account_id]["user_id"]),
+            expected_as_of=as_of,
+            decision=decision_to_row(decision),
+        )
+    )
+
+    response = client.post(
+        f"/api/v1/paper/accounts/{account_id}/run", json={"approve": "all"}
+    )
+
+    assert response.status_code == 409
+    assert "Agent 提案" in response.text
