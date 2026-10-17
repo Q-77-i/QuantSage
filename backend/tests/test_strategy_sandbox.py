@@ -18,7 +18,7 @@ import pytest
 from app.backtest.engine import BacktestConfig
 from app.backtest.report import build_report
 from app.backtest.types import Mode
-from app.strategy import SandboxError, SandboxLimits, StrategyRejected
+from app.strategy import SandboxError, SandboxLimits, StrategyRejected, isolation
 from app.strategy.sandbox import (
     EXIT_MEMORY,
     config_from_payload,
@@ -30,6 +30,7 @@ from tests.conftest import NO_MEMORY_LIMIT, make_backtest_dir
 SYMBOL = "600519"
 START = date(2026, 1, 5)
 BARS = 60
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _waves() -> list[dict[str, object]]:
@@ -187,6 +188,31 @@ def test_rejects_forbidden_import(data_dir: Path) -> None:
     with pytest.raises(StrategyRejected) as info:
         run_source(source, data_dir)
     assert "不允许 import" in str(info.value) and info.value.line == 1
+
+
+@pytest.mark.skipif(
+    isolation.sandbox_kind() is None,
+    reason="需要 OS 沙箱（macOS sandbox-exec / Linux bwrap）",
+)
+def test_os_sandbox_blocks_namespace_escape_to_repo_files(data_dir: Path) -> None:
+    """命名空间逃逸仍能拿到 `os`，但 OS 沙箱让读仓库根文件变成 PermissionError。
+
+    这是「沙箱不是命名空间」的回归用例：只收紧 `_SAFE_BUILTINS` 挡不住
+    `object.__subclasses__()`，真正的边界在 isolation.py。
+    """
+    source = f'''
+def on_bar(ctx):
+    subs = ().__class__.__base__.__subclasses__()
+    cw = [c for c in subs if c.__name__ == "catch_warnings"][0]
+    builtins = cw.__init__.__globals__["__builtins__"]
+    imp = builtins["__import__"] if isinstance(builtins, dict) else builtins.__import__
+    os = imp("os")
+    os.open({str(REPO_ROOT / "README.md")!r}, os.O_RDONLY)
+    return []
+'''
+    with pytest.raises(StrategyRejected) as info:
+        run_source(source, data_dir)
+    assert "PermissionError" in str(info.value)
 
 
 def test_user_validate_params_hook_blocks_run(data_dir: Path) -> None:

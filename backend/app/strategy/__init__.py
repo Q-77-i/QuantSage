@@ -5,8 +5,11 @@
 不可达，与内置策略是同一份保证。此处的 import 白名单是**正确性闸门**：它拦的是唯一真实的
 泄漏路径「读全量 Parquet 自己索引未来」，不是可选加固。
 
-**它不是安全边界**：同机同用户、无容器，恶意作者仍可绕（`object.__subclasses__()` 一类）。
-目标是可用性（坏代码不拖垮服务）与阻断无意 / 半有意的绕行；容器级隔离留 P3-E8（SPEC §5）。
+**安全边界在 OS 层，不在命名空间**：`build_namespace()` 只挡手滑与无意绕行——属性访问本身
+不受限，`object.__subclasses__()` 就能拿到 `os`。真正的隔离由 `isolation.py` 完成：
+macOS 用 `sandbox-exec`、Linux 用 `bubblewrap`，只读挂载代码与数据、拒绝网络与任意 exec、
+写只允许本次运行的临时目录，并用清洗过的环境启动 worker（不继承宿主密钥、不读仓库根
+`.env`）。没有可用沙箱时默认 `STRATEGY_ISOLATION=require` **拒绝执行**用户策略。
 
 分层：
 

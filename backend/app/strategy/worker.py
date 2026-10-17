@@ -32,6 +32,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from app.backtest.report import build_report
@@ -164,6 +165,7 @@ def _execute_paper(payload: dict[str, Any]) -> dict[str, Any]:
             auto=DecisionStatus(payload["auto"]) if payload.get("auto") else None,
             strategy=strategy,
             account_id=str(payload.get("account_id") or ""),
+            data_dir=Path(payload["data_dir"]) if payload.get("data_dir") else None,
         )
         return {"ok": True, "result": result_to_payload(result)}
     except StrategyRejected as exc:

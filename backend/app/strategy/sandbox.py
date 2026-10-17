@@ -24,9 +24,10 @@ import json
 import os
 import signal
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,7 @@ from app.paper.store import (
     result_from_payload,
 )
 from app.paper.types import Decision, PaperConfig, ReplayResult
-from app.strategy import SandboxError, SandboxLimits, StrategyRejected
+from app.strategy import SandboxError, SandboxLimits, StrategyRejected, isolation
 
 #: 子进程内存看门狗触发时的退出码（128 + SIGKILL，沿用惯例）
 EXIT_MEMORY = 137
@@ -176,6 +177,9 @@ async def run_user_strategy(
     `SandboxError`（带 `kind`）。调用方负责把 `StrategyRejected` 里的 `line` 交给编辑器。
     """
     limits = limits or default_limits()
+    # 沙箱 profile 需要确定的数据目录；子进程在沙箱里读不到 .env，不能靠它再解析一次
+    data_dir = (config.data_dir or get_settings().data_dir).resolve()
+    config = replace(config, data_dir=data_dir)
     payload = json.dumps(
         {
             "source": source,
@@ -192,98 +196,110 @@ async def run_user_strategy(
             },
         }
     ).encode("utf-8")
-    envelope, duration, tail = await _run_worker(payload, limits)
+    envelope, duration, tail = await _run_worker(payload, limits, data_dir=data_dir)
     return SandboxOutcome(report=envelope["report"], duration_s=duration, stderr_tail=tail)
 
 
-async def _run_worker(payload: bytes, limits: SandboxLimits) -> tuple[dict[str, Any], float, str]:
+async def _run_worker(
+    payload: bytes, limits: SandboxLimits, *, data_dir: Path
+) -> tuple[dict[str, Any], float, str]:
     """跑一次沙箱子进程，返回 `(信封, 耗时秒, stderr 尾巴)`。
 
     错误映射集中在这里（原样搬自 M4a 的 `run_user_strategy`，行为未变）：用户要改的问题抛
     `StrategyRejected`（4xx），配额与执行层问题抛 `SandboxError`（带 `kind`）。
     回测（M4c）与模拟盘（M6）两条任务共用这一份——配额、杀进程组、信封解析只有一处实现。
+
+    **OS 隔离在 `isolation.wrap_command` 里完成**：命令可能被 `sandbox-exec` / `bwrap` 包一层，
+    环境变量总是清洗过的。临时目录只给子进程写（也放 sandbox profile）。
     """
     started = time.monotonic()
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "app.strategy.worker",
-            cwd=str(BACKEND_DIR),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # 自成进程组：超时后能连子孙一起收
+    with tempfile.TemporaryDirectory(prefix="quantsage-strategy-") as tmp:
+        work_dir = Path(tmp)
+        command, env = isolation.wrap_command(
+            [sys.executable, "-B", "-s", "-m", "app.strategy.worker"],
+            backend_dir=BACKEND_DIR,
+            data_dir=data_dir,
+            work_dir=work_dir,
         )
-    except OSError as exc:  # pragma: no cover - 解释器缺失一类
-        raise SandboxError(f"沙箱子进程启动失败：{exc}", kind="crash") from exc
-
-    stdout, stderr = bytearray(), bytearray()
-    killed_for_output = False
-
-    def on_output_overflow() -> None:
-        nonlocal killed_for_output
-        killed_for_output = True
-        _kill(proc)
-
-    pumps = asyncio.gather(
-        _pump(proc.stdout, limits.output_bytes, stdout, on_output_overflow),  # type: ignore[arg-type]
-        _pump(proc.stderr, limits.stderr_bytes, stderr),  # type: ignore[arg-type]
-    )
-    try:
-        assert proc.stdin is not None
-        proc.stdin.write(payload)
-        await proc.stdin.drain()
-        proc.stdin.close()
-    except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 子进程早退
-        pass
-
-    try:
-        await asyncio.wait_for(pumps, timeout=limits.wall_seconds)
-        await proc.wait()
-    except TimeoutError:
-        _kill(proc)
-        await proc.wait()
-        raise SandboxError(
-            f"策略执行超过墙钟上限 {limits.wall_seconds:g}s，已终止（死循环或超长计算）",
-            kind="wall",
-        ) from None
-
-    duration = time.monotonic() - started
-    tail = stderr.decode("utf-8", "replace").strip()
-    returncode = proc.returncode
-
-    if killed_for_output:
-        raise SandboxError(
-            f"策略的 stdout 输出超过 {limits.output_bytes} 字节上限，已终止"
-            "（stdout 是沙箱协议通道，调试信息请用 print——它默认走 stderr）",
-            kind="output",
-        )
-    if returncode == EXIT_MEMORY:
-        raise SandboxError(
-            f"策略内存峰值超过 {limits.memory_mb}MB 上限，已终止", kind="memory"
-        )
-
-    envelope = _parse_envelope(stdout)
-    if envelope is None:
-        if returncode == -signal.SIGXCPU:
-            raise SandboxError(
-                f"策略 CPU 时间超过 {limits.cpu_seconds}s 上限，已终止", kind="cpu"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(BACKEND_DIR),
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # 自成进程组：超时后能连子孙一起收
             )
-        detail = f"：{tail[-400:]}" if tail else ""
-        raise SandboxError(
-            f"沙箱子进程异常退出（code={returncode}）{detail}", kind="crash"
+        except OSError as exc:  # pragma: no cover - 解释器/沙箱工具缺失一类
+            raise SandboxError(f"沙箱子进程启动失败：{exc}", kind="crash") from exc
+
+        stdout, stderr = bytearray(), bytearray()
+        killed_for_output = False
+
+        def on_output_overflow() -> None:
+            nonlocal killed_for_output
+            killed_for_output = True
+            _kill(proc)
+
+        pumps = asyncio.gather(
+            _pump(proc.stdout, limits.output_bytes, stdout, on_output_overflow),  # type: ignore[arg-type]
+            _pump(proc.stderr, limits.stderr_bytes, stderr),  # type: ignore[arg-type]
         )
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(payload)
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 子进程早退
+            pass
 
-    if not envelope.get("ok"):
-        error = envelope.get("error") or {}
-        message = str(error.get("message") or "策略执行失败")
-        if error.get("kind") == "rejected":
-            line = error.get("line")
-            raise StrategyRejected(message, line=int(line) if line else None)
-        raise SandboxError(message, kind=str(error.get("kind") or "crash"))
+        try:
+            await asyncio.wait_for(pumps, timeout=limits.wall_seconds)
+            await proc.wait()
+        except TimeoutError:
+            _kill(proc)
+            await proc.wait()
+            raise SandboxError(
+                f"策略执行超过墙钟上限 {limits.wall_seconds:g}s，已终止（死循环或超长计算）",
+                kind="wall",
+            ) from None
 
-    return envelope, duration, tail[-2000:]
+        duration = time.monotonic() - started
+        tail = stderr.decode("utf-8", "replace").strip()
+        returncode = proc.returncode
+
+        if killed_for_output:
+            raise SandboxError(
+                f"策略的 stdout 输出超过 {limits.output_bytes} 字节上限，已终止"
+                "（stdout 是沙箱协议通道，调试信息请用 print——它默认走 stderr）",
+                kind="output",
+            )
+        if returncode == EXIT_MEMORY:
+            raise SandboxError(
+                f"策略内存峰值超过 {limits.memory_mb}MB 上限，已终止", kind="memory"
+            )
+
+        envelope = _parse_envelope(stdout)
+        if envelope is None:
+            if returncode == -signal.SIGXCPU:
+                raise SandboxError(
+                    f"策略 CPU 时间超过 {limits.cpu_seconds}s 上限，已终止", kind="cpu"
+                )
+            detail = f"：{tail[-400:]}" if tail else ""
+            raise SandboxError(
+                f"沙箱子进程异常退出（code={returncode}）{detail}", kind="crash"
+            )
+
+        if not envelope.get("ok"):
+            error = envelope.get("error") or {}
+            message = str(error.get("message") or "策略执行失败")
+            if error.get("kind") == "rejected":
+                line = error.get("line")
+                raise StrategyRejected(message, line=int(line) if line else None)
+            raise SandboxError(message, kind=str(error.get("kind") or "crash"))
+
+        return envelope, duration, tail[-2000:]
 
 
 def run_user_strategy_sync(
@@ -317,6 +333,7 @@ async def run_user_paper(
     through: date | None = None,
     auto: str | None = None,
     strategy_name: str | None = None,
+    data_dir: Path | None = None,
     limits: SandboxLimits | None = None,
 ) -> ReplayResult:
     """把用户策略放进沙箱子进程跑一次**模拟盘重放**（M6，SPEC §7 D5）。
@@ -326,6 +343,7 @@ async def run_user_paper(
     **零 IPC 协议改造**，三层配额照旧生效。
     """
     limits = limits or default_limits()
+    resolved_data_dir = (data_dir or get_settings().data_dir).resolve()
     payload = json.dumps(
         {
             "kind": "paper",
@@ -334,6 +352,7 @@ async def run_user_paper(
             "account_id": account_id,
             "through": through.isoformat() if through else None,
             "auto": auto,
+            "data_dir": str(resolved_data_dir),
             "config": paper_config_to_payload(config),
             "decisions": [decision_to_payload(d) for d in decisions],
             "limits": {
@@ -345,7 +364,7 @@ async def run_user_paper(
             },
         }
     ).encode("utf-8")
-    envelope, _, _ = await _run_worker(payload, limits)
+    envelope, _, _ = await _run_worker(payload, limits, data_dir=resolved_data_dir)
     return result_from_payload(envelope["result"])
 
 

@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,10 +16,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # backend/app/core/config.py → 仓库根；按文件位置回溯，不依赖运行时 cwd
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+#: `.env` 路径。`QS_ENV_FILE` 是**沙箱子进程**的逃生口：父进程把它指向 `/dev/null`，
+#: 让用户策略代码读不到仓库根的密钥；正常进程不设该变量，行为与原先一致。
+ENV_FILE = Path(os.environ.get("QS_ENV_FILE") or (REPO_ROOT / ".env"))
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=REPO_ROOT / ".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -152,6 +158,9 @@ class Settings(BaseSettings):
     # 改子进程内 ru_maxrss 峰值看门狗；墙钟由父进程兜底。
     # 阈值定档依据：全期 1,636 bars 的 build_report 仅 0.25s（含解释器启动整次 1.0s），
     # 20s 墙钟不误杀正常策略，又能兜住死循环。
+    # OS 级隔离（安全修复）：require = 没有 sandbox-exec / bwrap 就拒绝执行用户策略；
+    # auto = 无沙箱时降级并告警；off = 显式关闭（仅可信环境）。环境变量在所有模式下都会清洗。
+    strategy_isolation: Literal["require", "auto", "off"] = "require"
     strategy_wall_seconds: float = 20.0
     strategy_cpu_seconds: int = 15
     # 内存上限是**子进程总 RSS**，含引擎自己读全市场 Parquet 的开销——真数据实测峰值
