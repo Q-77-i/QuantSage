@@ -432,6 +432,17 @@ def test_limiter_forgets_idle_keys() -> None:
     assert len(lim._tokens) < reliability._LIMITER_KEYS_MAX + 10
 
 
+def test_limiter_hard_caps_high_cardinality_keys() -> None:
+    """大量键都在冷却（没有可删的“已回满”键）时，仍必须有硬上限。"""
+    lim, clock = make_limiter(capacity=1000, window=3600.0)  # 窗口内不会回满
+    for key in range(reliability._LIMITER_KEYS_MAX + 100):
+        clock.advance(1.0)  # 让最后访问时间可区分
+        lim.take(key)
+
+    assert len(lim._tokens) <= reliability._LIMITER_KEYS_MAX
+    assert reliability._LIMITER_KEYS_MAX + 99 in lim._tokens  # 最近的键保留
+
+
 def test_registry_returns_the_installed_limiter() -> None:
     lim, _ = make_limiter(capacity=1, window=60.0)
     assert reliability.get_limiter("test:bucket") is lim

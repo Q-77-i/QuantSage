@@ -203,7 +203,8 @@ class Bucket:
         return self.capacity / self.window
 
 
-#: 桶的键（用户）超过这个数量才触发一次清理——单人项目远够，但它不该无限涨
+#: 每个桶的键数硬上限：超过才触发清理，清完仍超限就按最后访问时间淘汰。
+#: 单人项目远够；它防的是匿名高基数键（如大量不同客户端地址）把 dict 撑大。
 _LIMITER_KEYS_MAX = 256
 
 
@@ -243,6 +244,13 @@ class Limiter:
             for key, value in self._tokens.items()
             if value[0] + max(0.0, now - value[1]) * rate < capacity
         }
+        if len(self._tokens) > _LIMITER_KEYS_MAX:
+            # 高基数键都在冷却、没有“已回满”的可删：按最后访问时间保留最近的。
+            # 不这样做，dict 会按「一个回满窗口内出现过的不同键数」增长，而不是硬上限。
+            recent = sorted(
+                self._tokens.items(), key=lambda item: item[1][1], reverse=True
+            )
+            self._tokens = dict(recent[:_LIMITER_KEYS_MAX])
 
 
 #: 进程级注册表。单机单进程的既定形态（同 E1a 的单实例假设）。
