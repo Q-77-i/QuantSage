@@ -1261,9 +1261,9 @@ E8 对清单主体的动作是**核验与订正**，不是再加固一遍。四�
 | `Referrer-Policy` | `no-referrer` | API |
 | `Permissions-Policy` | `geolocation=(), camera=(), microphone=()` | API |
 | `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` | API（JSON 响应无子资源，一行即成立） |
-| 前四条（**不含 CSP**） | — | 前端 `next.config.ts::headers()` |
+| 前四条 + CSP | 见 §8.10（2026-10-17 收尾加固） | 前端 `next.config.ts::headers()` |
 
-**不做**：HSTS（本地 http 无意义——与 `set_session_cookie(secure=False)` 同一处口径，上线置 https 时两处一起改）；**前端 CSP**（Next 15 + Monaco + ECharts 需 nonce/hash 铺开，易裂且收益低）。
+**不做**：HSTS（本地 http 无意义——与 `SESSION_COOKIE_SECURE=false` 同一处口径，上线置 https 时两处一起改）。前端 CSP 已在收尾加固中落地（§8.10）；它是 `'unsafe-inline' 'unsafe-eval'` 的折中版，完整 nonce 方案仍留后续。
 
 ### 8.3 会话策略（续期 + 撤销）
 
@@ -1381,7 +1381,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 2. **撤销粒度是按用户**，不是按会话/设备（无服务端会话表）；token 轮换与黑名单不做（§8.3）。
 3. **MCP Server 无鉴权**（§8.6 的多用户边界）。
 4. **注入防护是纵深的一层**，不等于「解决了注入」（§8.5）。
-5. **前端 CSP 不做、HSTS 不做**（§8.2）。
+5. **前端 CSP 已加（§8.10）、HSTS 仍不做**（§8.2）。
 6. **依赖审计是一次性证据**，持续化在 E7（§8.4）。
 
 ### 8.9 验收口径
@@ -1390,6 +1390,23 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 |---|---|
 | 「Claude Desktop 能调我们的 MCP 完成一次 PIT 检索」 | ①**自动**：`verify_quantsage_mcp.py` 真 stdio 握手 + PIT 双断言（进回归、留档 `logs/e8/`）；②**人工**：项目 `.mcp.json` 挂到 **Claude Code** 完成一次历史时点 PIT 问答。**本机未装 Claude Desktop**——对外与记录一律如实写明用的是哪个客户端，不假称 Desktop |
 | 「安全清单逐项核验」 | §8.1 的核验表逐行有状态 + 依据 + 证据；「不适用」同样给依据；`STRICT_MSGPACK_ENFORCED` 有断言兜底 |
+
+### 8.10 收尾安全加固（2026-10-17）
+
+按安全审查的 A–D 批次落地，均有对应离线用例；CI 每次推送全量回归。**行为变更**如下（新开关都有默认值，本地行为尽量不变）：
+
+| 面 | 变更 | 开关 / 落点 |
+|---|---|---|
+| 用户策略 | OS 级隔离（sandbox-exec / bwrap）：只读代码与数据、禁网络与任意 exec、写仅临时目录；子进程环境清洗且不读仓库根 `.env`；无沙箱默认拒绝执行 | `STRATEGY_ISOLATION=require`（`strategy/isolation.py`）；CI 安装 bubblewrap 后真跑 Linux 路径 |
+| 登出 | 续期只对通过 `require_user` 的请求生效；响应已写 `qs_session` 不再追加；撤销只认当前 `token_version`，旧票不能反复踢人 | `core/session.py`、`api/auth.py` |
+| 登录/注册 | 按客户端地址限流（默认 10/min），共用一个桶 | `RATE_LIMIT_AUTH` |
+| JWT | 非空密钥至少 32 字节；`JWT_SECRET` / `DATABASE_URL` / `METRICS_TOKEN` 进日志脱敏（含异常栈）；`database_url` 改 SecretStr | `core/config.py`、`core/logging.py` |
+| 研究 | `resume` 条件抢占（并发只放行一个）；`run_id` 畸形返回 422；`_default_as_of` 的 DuckDB 取数走线程 | `claim_research_resume`、`normalize_run_id` |
+| 结算 | 手动 `review`/`settle` 在调反思模型前按次计 Agent 配额；`settle_account` 的 DuckDB 取数全部走线程；账户遍历改 keyset 分页（不再漏 500 之后） | `memory/service.py`、`memory/scheduler.py` |
+| 输入 | 请求体 1MB 硬上限（chunked 同限）；`axes[].values` / `params` 等集合字段上限 50；NaN/Infinity 在模型层拒绝，422 错误体不再序列化失败 | `core/body_limit.py`、`MAX_REQUEST_BYTES` |
+| 前端/部署 | `safeNextPath` 拦反斜杠开放重定向；`source_url` 服务端只放行 http(s)；前端加 CSP（折中版，见 §8.2）；Cookie 支持 `Secure`；能力卡用 `PUBLIC_BASE_URL`，支持 `TRUSTED_HOSTS`；`/metrics` 按 token/回环访问；chat 锁表改弱引用 | `SESSION_COOKIE_SECURE`、`PUBLIC_BASE_URL`、`TRUSTED_HOSTS`、`METRICS_TOKEN` |
+
+**仍未做**：完整容器化 / 独立低权限用户；多 worker 下的限流/熔断/取消/指标仍是进程内状态（第 3 批只修了任务扫尾与 chat checkpoint 串行，见 §8.7 与 §2.4 的单实例假设）。
 
 ## 10. 测试策略
 
