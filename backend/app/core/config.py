@@ -202,6 +202,12 @@ class Settings(BaseSettings):
     rate_limit_research_window: float = 600.0
     rate_limit_task_submit: int = 20
     rate_limit_task_submit_window: float = 60.0
+    # 模拟盘推进/创建会跑整段 replay（用户策略还要 spawn 子进程），单独一桶
+    rate_limit_paper: int = 60
+    rate_limit_paper_window: float = 60.0
+    # 同时跑几段模拟盘 replay。与网格共用「进程级闸门」的理由相同：一个用户不能
+    # 用并发请求把 CPU/内存打满；单段 replay 本身有沙箱墙钟/CPU/内存上限。
+    paper_concurrency: int = 2
 
     # ── 用户配额（E2）：**累计用量**，跨重启持久（与上面 L0 的「速率」边界见 SPEC §3.1）──
     # 两个维度：在飞任务数（queued + running，**排队即占额**）、每日 Agent 请求数（自然日 +08）。

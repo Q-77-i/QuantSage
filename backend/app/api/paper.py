@@ -23,9 +23,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.backtest import CostOptions
+from app.api.limits import limit
 from app.api.strategies import normalize_strategy_id
 from app.backtest.strategies import available_strategies, validate_params
 from app.core.auth import require_db, require_user
+from app.core.config import get_settings
 from app.data import calendar as cal
 from app.data import duckdb_client as dc
 from app.paper import MAX_SESSIONS, MAX_SYMBOLS, PaperConflict
@@ -74,6 +76,22 @@ RISK_EVENT_LIMIT = 200
 #: 会话状态：`active` 可继续推进；`finished` 已跑到区间末端。
 ACTIVE = "active"
 FINISHED = "finished"
+
+#: 并发闸门按事件循环缓存：`asyncio.Semaphore` 首次使用会绑定循环，跨循环复用会抛
+#: 「bound to a different event loop」。生产只有一个循环（真全局闸门）；离线用例每个
+#: `TestClient` 请求各一个循环，各自独立即可。
+_REPLAY_GATE: asyncio.Semaphore | None = None
+_REPLAY_GATE_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def replay_gate() -> asyncio.Semaphore:
+    """模拟盘 replay 的进程级并发上限（用户策略 spawn 子进程，必须有全局闸门）。"""
+    global _REPLAY_GATE, _REPLAY_GATE_LOOP
+    loop = asyncio.get_running_loop()
+    if _REPLAY_GATE is None or _REPLAY_GATE_LOOP is not loop:
+        _REPLAY_GATE = asyncio.Semaphore(max(1, get_settings().paper_concurrency))
+        _REPLAY_GATE_LOOP = loop
+    return _REPLAY_GATE
 
 
 class RiskOptions(BaseModel):
@@ -194,20 +212,26 @@ async def _run_replay(
     through: date | None = None,
     auto: DecisionStatus | None = None,
 ) -> ReplayResult:
-    """跑一次重放。内置策略在**线程**里跑，用户策略整段丢进**沙箱子进程**（D5）。"""
-    if source is not None:
-        return await run_user_paper(
-            source,
-            config=config,
-            account_id=account_id,
-            decisions=decisions,
-            through=through,
-            auto=auto.value if auto else None,
-            strategy_name=config.strategy_name,
+    """跑一次重放。内置策略在**线程**里跑，用户策略整段丢进**沙箱子进程**（D5）。
+
+    **进程级并发闸门**：每个请求都会跑整段 replay；用户策略还会 spawn 子进程。
+    没有闸门时，几十个并发 `step` 就是几十个子进程/线程，单个沙箱的 CPU/内存配额
+    只是 per-process，挡不住整体打爆。与网格的 `concurrency_gate()` 同一姿态。
+    """
+    async with replay_gate():
+        if source is not None:
+            return await run_user_paper(
+                source,
+                config=config,
+                account_id=account_id,
+                decisions=decisions,
+                through=through,
+                auto=auto.value if auto else None,
+                strategy_name=config.strategy_name,
+            )
+        return await asyncio.to_thread(
+            replay, config, decisions, through=through, auto=auto, account_id=account_id
         )
-    return await asyncio.to_thread(
-        replay, config, decisions, through=through, auto=auto, account_id=account_id
-    )
 
 
 async def _source_for_account(
@@ -298,6 +322,7 @@ async def create_account(
     request: Request,
     body: PaperAccountRequest,
     user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("paper-run")),
 ) -> dict[str, Any]:
     """建会话：校验 → 定窗口 → 重放第一天 → 落库（一个事务）。"""
     user_id = int(user["id"])
@@ -445,6 +470,7 @@ async def step_account(
     request: Request,
     account_id: str,
     user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("paper-run")),
 ) -> dict[str, Any]:
     """推进**一个**交易日：成交上一日的批准单 → 结算 → 生成本日决策（待审批）。"""
     user_id = int(user["id"])
@@ -517,6 +543,7 @@ async def run_account(
     account_id: str,
     body: PaperRunRequest,
     user: dict[str, Any] = Depends(require_user),
+    _: None = Depends(limit("paper-run")),
 ) -> dict[str, Any]:
     """一键跑到区间末端。`approve="all"` 等价于回测（用于出完整净值曲线）。"""
     user_id = int(user["id"])
