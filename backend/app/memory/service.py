@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -107,7 +108,11 @@ async def settle_account(
     as_of: date = row["as_of"]
     market_days = equity_dates(equity)
 
-    closes = dc.closes_through(list(config.symbols), as_of, data_dir=data_dir)
+    # 这里的取数全是 DuckDB（同步 IO），**必须卸到线程**：settle 一次可能几百毫秒，
+    # 直接跑会把事件循环连同 SSE 心跳、聊天 token 一起卡住。
+    closes = await asyncio.to_thread(
+        dc.closes_through, list(config.symbols), as_of, data_dir=data_dir
+    )
     trips = mark_open_trips(pair_trips(decisions), closes)
 
     def benchmark_return(window: Sequence[date]) -> float | None:
@@ -115,11 +120,17 @@ async def settle_account(
             return None
         return market_benchmark(list(window), 1.0, data_dir=data_dir).total_return
 
-    settled_trips = settle_trips(
-        trips, as_of=as_of, market_days=market_days, benchmark_return=benchmark_return
+    # `benchmark_return` 内部也查 DuckDB；把整个 settle_trips 放进同一线程，
+    # 回调自然在线程里跑，不会再回到事件循环。
+    settled_trips = await asyncio.to_thread(
+        settle_trips,
+        trips,
+        as_of=as_of,
+        market_days=market_days,
+        benchmark_return=benchmark_return,
     )
 
-    by_decision = _evidence_index(decisions, data_dir)
+    by_decision = await asyncio.to_thread(_evidence_index, decisions, data_dir)
     stamp = now or datetime.now(UTC).isoformat()
 
     sources_by_decision = {d.id: (dict(d.sources) if d.sources else None) for d in decisions}
@@ -181,7 +192,9 @@ async def settle_account(
         if decision.status in UNFILLED_STATES
     ]
 
-    market_end = dc.latest_dates(data_dir=data_dir)["latest_trade_date"]
+    market_end = (await asyncio.to_thread(dc.latest_dates, data_dir=data_dir))[
+        "latest_trade_date"
+    ]
     run = SettlementRun(
         settled=len(settled_items),
         open=len(open_items),

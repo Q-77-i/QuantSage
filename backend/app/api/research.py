@@ -85,11 +85,11 @@ def _limits() -> Limits:
     )
 
 
-def _default_as_of() -> datetime:
+async def _default_as_of() -> datetime:
     """缺省时点 = 行情末端当日 15:00（北京时间）。**不写死「今天」**——数据是日增的。"""
     from app.data import duckdb_client as dc
 
-    days = dc.trade_dates()
+    days = await asyncio.to_thread(dc.trade_dates)
     if not days:
         raise HTTPException(status_code=503, detail="本地没有行情数据")
     return datetime.fromisoformat(f"{days[-1].isoformat()}T15:00:00+08:00")
@@ -265,7 +265,7 @@ async def create_run(
 
         return sse_response(quick_stream())
 
-    as_of = body.as_of or _default_as_of()
+    as_of = body.as_of or await _default_as_of()
     brief = build_brief(
         body.question, decision=decision, as_of=as_of,
         symbols=tuple(body.symbols) if body.symbols else None,
