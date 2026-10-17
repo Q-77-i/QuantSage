@@ -622,8 +622,13 @@ class FakeDatabase:
                 break
         return out
 
-    async def list_all_paper_accounts(self, limit: int = 500) -> list[dict[str, Any]]:
-        """跨用户列出（结算 job 用）——替身同样**不带归属过滤**，与真库那条 SQL 同义。"""
+    async def list_all_paper_accounts(
+        self, *, after_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """跨用户列一页（结算 job 用）——替身与真库同一条 keyset 语义。"""
+        keys = sorted(self.paper_accounts)
+        if after_id is not None:
+            keys = [key for key in keys if key > after_id]
         return [
             {
                 "id": account_id,
@@ -633,8 +638,8 @@ class FakeDatabase:
                 "as_of": self.paper_accounts[account_id]["as_of"],
                 "config": self.paper_accounts[account_id]["config"],
             }
-            for account_id in reversed(self._paper_order)
-        ][:limit]
+            for account_id in keys[:limit]
+        ]
 
     async def get_paper_account(self, user_id: int, account_id: str) -> dict[str, Any] | None:
         row = self.paper_accounts.get(account_id)

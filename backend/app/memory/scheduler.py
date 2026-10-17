@@ -45,25 +45,34 @@ async def settle_all_accounts(state: Any) -> dict[str, int]:
         log.warning("结算跳过：决策记忆不可用（%s）", exc)
         return {"accounts": 0, "saved": 0, "reused": 0, "failed": 0}
 
-    accounts = await db.list_all_paper_accounts()
     totals = {"accounts": 0, "saved": 0, "reused": 0, "failed": 0}
-    for account in accounts:
-        try:
-            # E7c：定时结算与手动结算**同一口径**的观测配置（handler 批次内复用，
-            # 只有 session/user 逐账户换）——调度器此前完全没被追踪
-            _review, run = await settle_account(
-                db, memory, user_id=int(account["user_id"]), account_id=str(account["id"]),
-                trace=settle_trace(
-                    state, account_id=account["id"], user_id=int(account["user_id"])
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001 —— 一个账户炸了不该拖垮整轮
-            totals["failed"] += 1
-            log.warning("结算失败 %s：%s: %s", account["id"], type(exc).__name__, exc)
-            continue
-        totals["accounts"] += 1
-        totals["saved"] += run.saved
-        totals["reused"] += run.reused
+    page_size = 200
+    after_id: str | None = None
+    # keyset 分页：旧实现的 `LIMIT 500` 会让第 501 个之后的账户永远不结算。
+    while True:
+        accounts = await db.list_all_paper_accounts(after_id=after_id, limit=page_size)
+        if not accounts:
+            break
+        for account in accounts:
+            try:
+                # E7c：定时结算与手动结算**同一口径**的观测配置（handler 批次内复用，
+                # 只有 session/user 逐账户换）——调度器此前完全没被追踪
+                _review, run = await settle_account(
+                    db, memory, user_id=int(account["user_id"]), account_id=str(account["id"]),
+                    trace=settle_trace(
+                        state, account_id=account["id"], user_id=int(account["user_id"])
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 —— 一个账户炸了不该拖垮整轮
+                totals["failed"] += 1
+                log.warning("结算失败 %s：%s: %s", account["id"], type(exc).__name__, exc)
+                continue
+            totals["accounts"] += 1
+            totals["saved"] += run.saved
+            totals["reused"] += run.reused
+        after_id = str(accounts[-1]["id"])
+        if len(accounts) < page_size:
+            break
     log.info(
         "结算完成：账户 %(accounts)d（失败 %(failed)d），新写 %(saved)d 条、复用 %(reused)d 条",
         totals,
