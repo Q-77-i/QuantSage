@@ -293,12 +293,16 @@ SCHEMA = (
         progress    JSONB       NOT NULL DEFAULT '{}'::jsonb,
         result      JSONB,
         error       JSONB,
+        cancel_requested_at TIMESTAMPTZ,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
         started_at  TIMESTAMPTZ,
         finished_at TIMESTAMPTZ,
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # 收尾项 6：running 的协作式中止改成 DB 标志（跨进程可见；单实例下也更稳）。
+    # 老库补列；`queued` 的取消仍走状态条件更新，不经过这一列。
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ",
     # 幂等键（E4b / L7）：客户端每次**用户动作**给一个，重试复用同一个。
     # 部分唯一索引：没给键的行（`NULL`）天然互不冲突，`ON CONFLICT` 的推断子句
     # 必须连 `WHERE` 一起写才能对上这个索引。

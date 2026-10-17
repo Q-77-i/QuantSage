@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from fastapi.testclient import TestClient
 from app.data import duckdb_client
 from app.main import app
 from app.strategy.templates import template_source
-from tests.conftest import drive_tasks, make_backtest_dir, trading_days
+from tests.conftest import TEST_USER, drive_tasks, make_backtest_dir, trading_days
 from tests.fakes import FakeDatabase
 
 client = TestClient(app)
@@ -220,6 +221,22 @@ def test_cancel_queued_task(signed_in: FakeDatabase, data_dir: Path) -> None:
     assert signed_in.runs == {}
     # 幂等：再取消一次仍是 200（状态本来就是 cancelled）
     assert client.post(f"/api/v1/tasks/{task_id}/cancel").status_code == 200
+
+
+def test_cancel_running_cooperative_task_writes_db_flag(signed_in: FakeDatabase) -> None:
+    """running 的网格/批量：取消写成 DB 标志，不再依赖请求落到 worker 进程。"""
+    task_id = str(uuid.uuid4())
+    asyncio.run(signed_in.create_task(task_id, TEST_USER["id"], "grid", {"symbol": SYMBOL}))
+    asyncio.run(signed_in.claim_next_task())  # worker 已取走，正在跑
+
+    response = client.post(f"/api/v1/tasks/{task_id}/cancel")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelling"] is True
+    assert body["status"] == "running"
+    assert signed_in.tasks[task_id]["cancel_requested_at"] is not None
+    # 幂等：再取消一次仍返回 cancelling
+    assert client.post(f"/api/v1/tasks/{task_id}/cancel").json()["cancelling"] is True
 
 
 def test_cancel_running_or_finished_is_409(

@@ -176,8 +176,10 @@ class TasksMixin:
             "WHERE id = (SELECT id FROM tasks WHERE status = 'queued' "
             "            ORDER BY created_at, id LIMIT 1) "
             # 取件**多带 `user_id`**：执行体要拿它落 `backtest_runs` 的归属。
-            # 对外列不含它是给端点的（归属只作过滤条件，不出接口）——两者的用途不同
-            f"RETURNING user_id, {_TASK_COLUMNS}",
+            # `cancel_requested_at` 是收尾项 6 的取消标志——取件时就带着，worker 可在
+            # 执行前直接收尾成 cancelled。两者都不进对外 `_TASK_COLUMNS`。
+            "RETURNING user_id, cancel_requested_at, "
+            f"{_TASK_COLUMNS}",
             (),
         )
 
@@ -233,6 +235,32 @@ class TasksMixin:
         if cancelled is not None:
             return cancelled
         return await self.get_task(user_id, task_id)
+
+    async def request_task_cancel(self, user_id: int, task_id: str) -> dict[str, Any] | None:
+        """给 running 任务写取消标志（收尾项 6）。返回当前行；不存在/非本人返回 None。
+
+        与 `cancel_task` 分开：`queued` 的取消是状态条件更新，`running` 的协作式中止
+        只写 `cancel_requested_at`，由 worker 在格边界收尾。条件里带 `status='running'`：
+        已经结束的行不该被迟到的取消请求改回任何状态。
+        """
+        row = await self._one(
+            "UPDATE tasks SET cancel_requested_at = now(), updated_at = now() "
+            "WHERE id = %s::uuid AND user_id = %s AND status = 'running' "
+            f"RETURNING {_TASK_COLUMNS}",
+            (task_id, user_id),
+        )
+        if row is not None:
+            return row
+        return await self.get_task(user_id, task_id)
+
+    async def task_cancel_requested(self, task_id: str) -> bool:
+        """worker 轮询用：这一行是否已收到取消请求。查不到按未请求处理。"""
+        row = await self._one(
+            "SELECT (cancel_requested_at IS NOT NULL) AS requested "
+            "FROM tasks WHERE id = %s::uuid",
+            (task_id,),
+        )
+        return bool(row and row["requested"])
 
     async def sweep_interrupted_tasks(self) -> int:
         """启动扫尾：上一条进程留下的 `running` 行标为 `failed / interrupted`，返回条数。

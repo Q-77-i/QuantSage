@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +185,48 @@ def test_cancelled_task_is_not_executed(signed_in: FakeDatabase, data_dir: Path)
     assert signed_in.tasks[dropped]["result"] is None
     assert signed_in.tasks[kept]["status"] == "done"
     assert len(signed_in.runs) == 1
+
+
+def test_cancel_flag_before_claim_skips_execution(signed_in: FakeDatabase) -> None:
+    """收尾项 6：标志先落库、worker 后取件——取件即收尾，不执行。"""
+    task_id = str(uuid.uuid4())
+    asyncio.run(signed_in.create_task(task_id, TEST_USER["id"], "grid", {"symbol": SYMBOL}))
+    signed_in.tasks[task_id]["cancel_requested_at"] = datetime.now(UTC)
+
+    assert asyncio.run(worker.run_once(signed_in)) is True
+    assert signed_in.tasks[task_id]["status"] == "cancelled"
+    assert signed_in.tasks[task_id]["result"] is None
+    assert signed_in.runs == {}
+
+
+def test_running_cooperative_task_sees_db_cancel_flag(
+    signed_in: FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """执行期轮询：标志在任务跑到一半时写入，执行体在格边界收到 stop。"""
+    from app.tasks.executors import CANCELLED, EXECUTORS
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+
+        async def slow(_db: Any, _task: dict[str, Any], ctx: Any) -> dict[str, Any]:
+            started.set()
+            while not ctx.stop.is_set():
+                await asyncio.sleep(0.01)
+            return dict(CANCELLED)
+
+        monkeypatch.setitem(EXECUTORS, "grid", slow)
+        monkeypatch.setattr(worker, "CANCEL_POLL_SECONDS", 0.01)
+        task_id = str(uuid.uuid4())
+        await signed_in.create_task(task_id, TEST_USER["id"], "grid", {"symbol": SYMBOL})
+
+        runner = asyncio.create_task(worker.run_once(signed_in))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        signed_in.tasks[task_id]["cancel_requested_at"] = datetime.now(UTC)
+        assert await asyncio.wait_for(runner, timeout=2) is True
+        assert signed_in.tasks[task_id]["status"] == "cancelled"
+        assert signed_in.tasks[task_id]["result"] is None
+
+    asyncio.run(scenario())
 
 
 def test_sweep_marks_interrupted_and_blocks_late_finish(

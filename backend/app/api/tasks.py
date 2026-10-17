@@ -7,9 +7,9 @@
 取消的语义如实（SPEC §2.3/§2.8）：
 
 * `queued` → 条件更新置 `cancelled`（真取消：worker 取不到它）；
-* `running` 且 kind 支持协作式中止（`grid` / `batch`）→ 投递中止信号（已派发的格跑完，
-  不再派发新的），响应带 `cancelling: true`，任务由 worker 收尾成 `cancelled`
-  ——**中止的结果不落库**；
+* `running` 且 kind 支持协作式中止（`grid` / `batch`）→ 写 `cancel_requested_at` DB 标志
+  （本进程有该任务时同时置本地事件），响应带 `cancelling: true`，任务由 worker 收尾成
+  `cancelled`——**中止的结果不落库**。DB 标志让请求落到非 worker 进程也能生效；
 * `running` 的单次回测与一切终态 → **409**（它跑在子线程/子进程里，中止不了；
   如实拒绝，不假装能停）。
 
@@ -85,21 +85,24 @@ async def cancel_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     if row["status"] == "cancelled":
         return row
-    # 投递中止信号：已派发的格跑完，不再派发新的（`run_cells(stop=)`）；worker 收尾成 cancelled
-    if (
-        row["status"] == "running"
-        and row["kind"] in COOPERATIVE_KINDS
-        and task_worker.request_stop(normalized)
-    ):
-        return {**row, "cancelling": True}
+    # running 的网格/批量：**DB 标志是权威**（收尾项 6）。本进程有该任务时顺手置本地
+    # 事件，让它在 0.5s 轮询之前就停；请求落到非 worker 进程时，worker 自己会看到标志。
+    if row["status"] == "running" and row["kind"] in COOPERATIVE_KINDS:
+        task_worker.request_stop(normalized)
+        latest = await db.request_task_cancel(int(user["id"]), normalized)
+        if latest is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if latest["status"] == "running":
+            return {**latest, "cancelling": True}
+        raise HTTPException(status_code=409, detail=_why_not(latest["status"], latest["kind"]))
     raise HTTPException(status_code=409, detail=_why_not(row["status"], row["kind"]))
 
 
 def _why_not(status: str, kind: str) -> str:
-    """409 的文案分三档：跑着但停不下来 / 跑了但不在本进程 / 已经没有可取消的东西。"""
+    """409 的文案分三档：跑着但停不下来 / 刚跑完的竞态 / 已经没有可取消的东西。"""
     if status == "running":
         if kind in COOPERATIVE_KINDS:
-            # 走到这里 = 中止信号没投出去（任务不在本进程，单实例假设下极罕见）
-            return "任务在跑，但中止信号没能送达（可能刚结束）——刷新看状态"
+            # 走到这里 = 写标志时任务已经不在 running（典型是刚跑完）
+            return "任务刚结束或状态已变化——刷新看状态"
         return "任务已在执行，无法中止（单次回测跑在子线程/子进程里，跑完会有结果）"
     return f"任务已结束（{status}），没有可取消的东西"

@@ -873,7 +873,9 @@ class FakeDatabase:
 
     def _task_row(self, task_id: str) -> dict[str, Any]:
         row = self.tasks[task_id]
-        return {k: v for k, v in row.items() if k != "user_id"}
+        # `cancel_requested_at` 与真库的 `_TASK_COLUMNS` 一样不出对外行；取件路径
+        # （`claim_next_task`）直接返回整行，worker 才看得到它。
+        return {k: v for k, v in row.items() if k not in ("user_id", "cancel_requested_at")}
 
     async def create_task(
         self,
@@ -910,6 +912,7 @@ class FakeDatabase:
             "progress": {"done": 0, "total": total},
             "result": None,
             "error": None,
+            "cancel_requested_at": None,
             "idempotency_key": idempotency_key,
             "created_at": datetime.now(UTC),
             "started_at": None,
@@ -981,6 +984,18 @@ class FakeDatabase:
         if row["status"] == "queued":
             row.update(status="cancelled", finished_at=datetime.now(UTC))
         return self._task_row(task_id)
+
+    async def request_task_cancel(self, user_id: int, task_id: str) -> dict[str, Any] | None:
+        row = self.tasks.get(task_id)
+        if row is None or row["user_id"] != user_id:
+            return None
+        if row["status"] == "running":
+            row["cancel_requested_at"] = datetime.now(UTC)
+        return self._task_row(task_id)
+
+    async def task_cancel_requested(self, task_id: str) -> bool:
+        row = self.tasks.get(task_id)
+        return bool(row and row.get("cancel_requested_at") is not None)
 
     async def sweep_interrupted_tasks(self) -> int:
         stale = [row for row in self.tasks.values() if row["status"] == "running"]

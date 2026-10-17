@@ -20,12 +20,16 @@ from typing import Any
 
 from app.backtest.batch import error_of
 from app.tasks import bus
-from app.tasks.executors import EXECUTORS, RunContext
+from app.tasks.executors import COOPERATIVE_KINDS, EXECUTORS, RunContext
 
 log = logging.getLogger(__name__)
 
 #: 取件间隔（秒）。单次回测 0.3–2s，这点启动延迟可忽略，换来的是零跨 loop 状态。
 POLL_SECONDS = 0.2
+
+#: 执行期查取消标志的间隔（收尾项 6）。取消是协作式的：这个间隔决定「多快停止派发新格」，
+#: 不打断已经在跑的格。0.5s 对 100 格的任务是足够细的粒度。
+CANCEL_POLL_SECONDS = 0.5
 
 #: 后台主实例锁（Postgres advisory lock 的 key，取 ASCII 常量便于排查）。
 #: 多进程/多副本部署时只有一个进程能拿到它：持锁者跑 task worker，并由
@@ -45,21 +49,34 @@ class WorkerHandle:
     lock_conn: Any = None
 
 
-#: 正在跑的任务 → 中止信号。**协作式中止的投递口**：`POST /tasks/{id}/cancel` 在这里置位，
-#: 执行体（`run_cells`）看到就停止派发新格。进程内——单实例假设同 E1a（见 SPEC §2.4）。
+#: 正在跑的任务 → 中止事件。**本地加速口**：同进程的 `POST /cancel` 立即置位；
+#: 跨进程的权威是 `tasks.cancel_requested_at`（收尾项 6），由执行期的轮询读取。
 _RUNNING: dict[str, asyncio.Event] = {}
 
 
 def request_stop(task_id: str) -> bool:
     """请求中止一个正在跑的任务。返回是否真投递到了（同进程、且确实在跑）。
 
-    `False` 不是错误：可能它刚跑完，也可能跑在别的进程里（本项目单实例，如实返回即可）。
+    `False` 不是错误：可能它刚跑完，也可能跑在别的进程里——后者由 DB 标志
+    `cancel_requested_at` 兜底（收尾项 6），调用方不必据此判失败。
     """
     event = _RUNNING.get(task_id)
     if event is None:
         return False
     event.set()
     return True
+
+
+async def _cancel_requested(db: Any, task_id: str) -> bool:
+    """查 DB 取消标志。替身没有这个方法时按未请求处理；查询失败不拖垮任务。"""
+    checker = getattr(db, "task_cancel_requested", None)
+    if checker is None:
+        return False
+    try:
+        return bool(await checker(task_id))
+    except Exception:  # noqa: BLE001 —— 一次抖动不该让任务失败
+        log.warning("任务 %s 取消标志查询失败（继续执行）", task_id, exc_info=True)
+        return False
 
 
 async def run_once(db: Any) -> bool:
@@ -81,9 +98,32 @@ async def run_once(db: Any) -> bool:
             bus.release(task_id)
         return True
 
+    # 取件前就已经有取消标志（例如请求落在别的进程、标志先写库）⇒ 直接收尾，不执行
+    if task.get("cancel_requested_at") is not None:
+        try:
+            log.info("任务 %s（%s）取件前已请求取消，直接收尾", task_id, task["kind"])
+            await db.finish_task_cancelled(task_id)
+            bus.publish(task_id, "cancelled", {"message": "任务已取消（中止的结果不落库）"})
+        finally:
+            bus.release(task_id)
+        return True
+
     stop = asyncio.Event()
     _RUNNING[task_id] = stop
     total = int((task.get("progress") or {}).get("total") or 1)
+
+    # 协作式任务在执行期轮询 DB 标志：请求可能来自别的进程，本地事件只是加速
+    watcher: asyncio.Task[None] | None = None
+    if str(task["kind"]) in COOPERATIVE_KINDS:
+
+        async def watch_cancel() -> None:
+            while not stop.is_set():
+                await asyncio.sleep(CANCEL_POLL_SECONDS)
+                if await _cancel_requested(db, task_id):
+                    stop.set()
+                    return
+
+        watcher = asyncio.create_task(watch_cancel(), name=f"cancel-watch-{task_id}")
 
     async def progress(done: int) -> None:
         await db.update_task_progress(task_id, done=done, total=total)
@@ -120,6 +160,10 @@ async def run_once(db: Any) -> bool:
         ctx.publish("done", result)
         return True
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
         _RUNNING.pop(task_id, None)
         bus.release(task_id)
 
