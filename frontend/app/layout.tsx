@@ -10,6 +10,10 @@ export const metadata: Metadata = {
   description: "前视偏差为零的 AI 投研 Agent",
 };
 
+// CSP nonce 只能在动态渲染时注入。根布局强制动态，避免构建期静态页的内联脚本
+// 没有 nonce、上线后被自己的 CSP 拦掉。本项目是登录后的本地看板，静态化收益很低。
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({
   children,
 }: Readonly<{
