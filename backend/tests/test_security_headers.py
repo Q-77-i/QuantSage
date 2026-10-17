@@ -46,6 +46,27 @@ def test_headers_land_on_error_responses() -> None:
     assert response.headers["x-content-type-options"] == "nosniff"
 
 
+def test_cors_preflight_allows_idempotency_key() -> None:
+    """提交类端点的跨源预检必须放行 `Idempotency-Key`。
+
+    前端 3001 ↔ API 8000 是跨源，带自定义头必走预检；漏放行时浏览器在**发出真实请求之前**
+    就 400，表现为「点提交没反应」。后端集成用例直接发 POST，不跑预检，所以这条只能在
+    CORS 层钉住（E4b 的实际故障）。
+    """
+    response = client.options(
+        "/api/v1/backtest",
+        headers={
+            "Origin": "http://127.0.0.1:3001",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,idempotency-key",
+        },
+    )
+
+    assert response.status_code == 200
+    allowed = response.headers["access-control-allow-headers"].lower()
+    assert "idempotency-key" in allowed
+
+
 def test_headers_land_on_streamed_responses() -> None:
     """**直出 `StreamingResponse` 的响应也带头**——chat / research / tasks events 都走这条路。
 
