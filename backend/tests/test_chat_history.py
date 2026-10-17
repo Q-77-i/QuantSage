@@ -296,7 +296,9 @@ def test_messages_reports_running_while_a_turn_is_in_flight(signed_in: Any) -> N
             return True
 
     app.state.checkpointer = saver
-    _RUN_LOCKS[thread_id] = _Busy()  # type: ignore[assignment]
+    # 锁表是 WeakValueDictionary：必须由用例自己持住替身，否则立刻被回收
+    busy = _Busy()
+    _RUN_LOCKS[thread_id] = busy  # type: ignore[assignment]
     try:
         body = TestClient(app).get(f"/api/v1/chat/threads/{thread_id}/messages").json()
     finally:
