@@ -27,6 +27,9 @@ SENSITIVE_ENV_KEYS = (
     "CLICKHOUSE_PASSWORD",
     "MINIO_ROOT_PASSWORD",
     "POSTGRES_PASSWORD",
+    # 签发会话的密钥与含口令的 DSN：它们比数据源 key 更关键（泄露即可伪造会话）
+    "JWT_SECRET",
+    "DATABASE_URL",
 )
 
 # 太短的值不做替换，避免把普通单词打成掩码
@@ -34,7 +37,11 @@ _MIN_SECRET_LENGTH = 8
 
 
 class RedactingFilter(logging.Filter):
-    """把日志文本中出现的已知密钥明文替换为掩码。"""
+    """把日志文本中出现的已知密钥明文替换为掩码。
+
+    **异常栈也要脱敏**：第三方库（psycopg / httpx / LiteLLM）的异常消息里可能带
+    DSN、请求头或 API key；只处理 `record.msg` 等于给栈留了一条侧门。
+    """
 
     def __init__(self, secrets: Iterable[str] = (), name: str = "") -> None:
         super().__init__(name)
@@ -42,15 +49,25 @@ class RedactingFilter(logging.Filter):
             s for s in {*secrets} if s and len(s) >= _MIN_SECRET_LENGTH
         )
 
+    def _redact(self, text: str) -> str:
+        for secret in self._secrets:
+            if secret in text:
+                text = text.replace(secret, REDACTED)
+        return text
+
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        redacted = message
-        for secret in self._secrets:
-            if secret in redacted:
-                redacted = redacted.replace(secret, REDACTED)
+        redacted = self._redact(message)
         if redacted != message:
             record.msg = redacted
             record.args = ()
+        if record.exc_info:
+            trace = logging.Formatter().formatException(record.exc_info)
+            redacted_trace = self._redact(trace)
+            if redacted_trace != trace:
+                # 把脱敏后的栈交给 Formatter；`exc_info` 置空避免它再读原栈
+                record.exc_text = redacted_trace
+                record.exc_info = None
         return True
 
 
@@ -65,6 +82,8 @@ def collect_known_secrets() -> set[str]:
         settings.postgres_password.get_secret_value(),
         settings.langfuse_public_key.get_secret_value(),
         settings.langfuse_secret_key.get_secret_value(),
+        settings.jwt_secret.get_secret_value(),
+        settings.database_url.get_secret_value(),
     }
     values |= {os.environ.get(key, "") for key in SENSITIVE_ENV_KEYS}
     return values
@@ -107,6 +126,9 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
+        elif record.exc_text:
+            # RedactingFilter 脱敏后会把 exc_info 清空、把安全文本放进 exc_text
+            payload["exc_info"] = record.exc_text
         return json.dumps(payload, ensure_ascii=False)
 
 

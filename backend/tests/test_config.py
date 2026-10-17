@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import logging
+import sys
 
-from app.core.config import REPO_ROOT, Settings
-from app.core.logging import REDACTED, RedactingFilter
+import pytest
+from pydantic import ValidationError
+
+from app.core.config import REPO_ROOT, Settings, get_settings
+from app.core.logging import REDACTED, JsonFormatter, RedactingFilter, collect_known_secrets
 
 
 def _settings(**kwargs) -> Settings:
@@ -34,11 +38,38 @@ def test_summary_contains_no_password() -> None:
 
 def test_secrets_masked_in_repr_and_str() -> None:
     settings = _settings(
-        xiaoshi_api_key="xiaoshi-secret-value", postgres_password="pg-secret-value"
+        xiaoshi_api_key="xiaoshi-secret-value",
+        postgres_password="pg-secret-value",
+        database_url="postgresql://u:dsn-secret-value@h/db",
     )
     assert "xiaoshi-secret-value" not in repr(settings)
     assert "pg-secret-value" not in repr(settings)
+    assert "dsn-secret-value" not in repr(settings)
     assert "xiaoshi-secret-value" not in str(settings)
+
+
+def test_jwt_secret_has_a_minimum_length() -> None:
+    """短 HMAC 密钥等于把签名强度交给运气：非空且 <32 字节就拒绝加载。"""
+    with pytest.raises(ValidationError):
+        _settings(jwt_secret="too-short")
+
+    # 空值仍然是「未配置」，由 require_user 显式 503——不是静默降级
+    assert _settings(jwt_secret="").jwt_secret.get_secret_value() == ""
+    assert len(_settings(jwt_secret="x" * 32).jwt_secret.get_secret_value()) == 32
+
+
+def test_collect_known_secrets_includes_jwt_and_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    jwt = "jwt-secret-value-for-redaction-0123456789"
+    dsn = "postgresql://u:dsn-secret-value@h/db"
+    monkeypatch.setenv("JWT_SECRET", jwt)
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    get_settings.cache_clear()
+    try:
+        secrets = collect_known_secrets()
+    finally:
+        get_settings.cache_clear()
+
+    assert jwt in secrets and dsn in secrets
 
 
 def test_redacting_filter_masks_secret_in_log_record() -> None:
@@ -49,6 +80,25 @@ def test_redacting_filter_masks_secret_in_log_record() -> None:
     assert redactor.filter(record) is True
     assert "xiaoshi-secret-value" not in record.getMessage()
     assert REDACTED in record.getMessage()
+
+
+def test_redacting_filter_masks_secret_in_exception_text() -> None:
+    """异常栈里也可能带密钥（第三方库的异常消息）；只脱敏正文等于留侧门。"""
+    try:
+        raise RuntimeError("boom xiaoshi-secret-value")
+    except RuntimeError:
+        exc_info = sys.exc_info()
+
+    record = logging.LogRecord("test", logging.ERROR, __file__, 1, "failed", (), exc_info)
+    redactor = RedactingFilter(["xiaoshi-secret-value"])
+
+    assert redactor.filter(record) is True
+    assert record.exc_info is None
+    assert record.exc_text is not None
+    assert "xiaoshi-secret-value" not in record.exc_text
+    assert REDACTED in record.exc_text
+    # JSON 日志也读脱敏后的 exc_text
+    assert "xiaoshi-secret-value" not in JsonFormatter().format(record)
 
 
 def test_repo_root_resolution() -> None:

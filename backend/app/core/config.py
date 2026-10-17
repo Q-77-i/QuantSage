@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/core/config.py → 仓库根；按文件位置回溯，不依赖运行时 cwd
@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     postgres_password: SecretStr = SecretStr("")
     postgres_db: str = "quantsage"
     postgres_host_port: int = 5433
-    database_url: str = ""  # 留空则由上面几项推导；填了则以它为准
+    # SecretStr：DSN 里带口令，不能随 repr / 日志回显
+    database_url: SecretStr = SecretStr("")  # 留空则由上面几项推导；填了则以它为准
     redis_url: str = "redis://127.0.0.1:6379/0"
     qdrant_url: str = "http://127.0.0.1:6333"
 
@@ -255,11 +256,26 @@ class Settings(BaseSettings):
         "http://localhost:3001",
     ]
 
+    @field_validator("jwt_secret")
+    @classmethod
+    def _jwt_secret_min_bytes(cls, value: SecretStr) -> SecretStr:
+        """HMAC-SHA256 的推荐下限是 32 字节；短密钥等于把签名强度交给运气。
+
+        空值不算违规——「未配置」由 `require_user` 显式回 503，不是静默降级。
+        """
+        secret = value.get_secret_value()
+        if secret and len(secret.encode("utf-8")) < 32:
+            raise ValueError(
+                "JWT_SECRET 至少 32 字节（HMAC-SHA256 推荐下限）；请用 openssl rand -hex 32 生成"
+            )
+        return value
+
     @property
     def postgres_dsn(self) -> str:
         """后端连库用的 DSN。端口只在 .env 里写一次（POSTGRES_HOST_PORT）。"""
-        if self.database_url:
-            return self.database_url
+        url = self.database_url.get_secret_value()
+        if url:
+            return url
         password = self.postgres_password.get_secret_value()
         return (
             f"postgresql://{self.postgres_user}:{password}"

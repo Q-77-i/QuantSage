@@ -40,7 +40,7 @@ env:
   # 会校验它**存在且可执行**（`is_file()` + `X_OK`），所以不能随手编一个路径——
   # `/bin/true` 在 Ubuntu 上稳（`/bin` 是 `/usr/bin` 的软链）；本机是 macOS 时对应
   # `/usr/bin/true`，本地复现 CI 条件时要跟着换。
-  JWT_SECRET: ci-dummy-secret-not-a-real-key
+  JWT_SECRET: ci-dummy-secret-not-a-real-key-0123456789
   XIAOSHI_API_KEY: ci-dummy
   XIAOSHI_MCP_COMMAND: /bin/true
   XIAOSHI_CLI_COMMAND: /bin/true
