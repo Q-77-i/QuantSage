@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import resource  # noqa: S404 - 只用于给自己设配额，不碰用户输入
+import signal
 import sys
 import threading
 import time
@@ -65,13 +66,27 @@ def _die(code: int, message: str) -> None:
         os._exit(code)
 
 
-def _install_cpu_limit(cpu_seconds: int) -> None:
+class CpuLimitReached(BaseException):
+    """SIGXCPU 到达。
+
+    刻意继承 `BaseException`：用户代码与引擎里大量的 `except Exception` 不能把它吞掉，
+    否则 CPU 超限会被当成「策略自己抛了个错」而不是沙箱终止。
+    """
+
+
+def _raise_cpu_limit(_signum: int, _frame: object) -> None:
+    raise CpuLimitReached()
+
+
+def _install_cpu_limit(cpu_seconds: int) -> bool:
     try:
         # 硬限比软限多 2s：软限到了先 SIGXCPU（默认动作即终止），万一卡在 C 扩展里不响应，
         # 硬限再 SIGKILL 兜底
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 2))
+        return True
     except (ValueError, OSError) as exc:  # pragma: no cover - 正常机器不会走到
         print(f"[sandbox] CPU 配额设置失败（{exc}）：仍由父进程墙钟兜底", file=sys.stderr)
+        return False
 
 
 def _start_memory_watchdog(memory_mb: int) -> None:
@@ -93,7 +108,10 @@ def _start_memory_watchdog(memory_mb: int) -> None:
 
 
 def install_limits(limits: SandboxLimits) -> None:
-    _install_cpu_limit(limits.cpu_seconds)
+    if _install_cpu_limit(limits.cpu_seconds):
+        # 不接 SIGXCPU 的话，进程会被信号直接杀掉；经 bwrap 包一层后父进程只看到
+        # 「异常退出」，错误码会从 cpu 退化成 crash。接住它，走结构化信封回去。
+        signal.signal(signal.SIGXCPU, _raise_cpu_limit)
     _start_memory_watchdog(limits.memory_mb)
 
 
@@ -129,6 +147,12 @@ def _execute(payload: dict[str, Any]) -> dict[str, Any]:
     except StrategyRejected as exc:
         # 面向人的报错已在 message 里（带 bar 日期与行号），不再泼一遍栈
         return _rejected(str(exc), line=exc.line)
+    except CpuLimitReached:
+        seconds = int((payload.get("limits") or {}).get("cpu_seconds") or 0)
+        return {
+            "ok": False,
+            "error": {"kind": "cpu", "message": f"策略 CPU 时间超过 {seconds}s 上限，已终止"},
+        }
     except MemoryError:
         return {"ok": False, "error": {"kind": "memory", "message": "策略内存不足（MemoryError）"}}
     except BacktestError as exc:
@@ -170,6 +194,12 @@ def _execute_paper(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "result": result_to_payload(result)}
     except StrategyRejected as exc:
         return _rejected(str(exc), line=exc.line)
+    except CpuLimitReached:
+        seconds = int((payload.get("limits") or {}).get("cpu_seconds") or 0)
+        return {
+            "ok": False,
+            "error": {"kind": "cpu", "message": f"策略 CPU 时间超过 {seconds}s 上限，已终止"},
+        }
     except MemoryError:
         return {"ok": False, "error": {"kind": "memory", "message": "策略内存不足（MemoryError）"}}
     except (BacktestError, PaperError) as exc:

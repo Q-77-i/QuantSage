@@ -212,7 +212,10 @@ def on_bar(ctx):
 '''
     with pytest.raises(StrategyRejected) as info:
         run_source(source, data_dir)
-    assert "PermissionError" in str(info.value)
+    # macOS 的读白名单给出 PermissionError；bwrap 只绑 backend/data，仓库根不可见，
+    # 给出 FileNotFoundError。两种都说明「读不到」，这正是要钉住的行为。
+    message = str(info.value)
+    assert "PermissionError" in message or "FileNotFoundError" in message
 
 
 def test_user_validate_params_hook_blocks_run(data_dir: Path) -> None:
