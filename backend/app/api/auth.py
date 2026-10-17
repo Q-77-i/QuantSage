@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, field_validator
 
+from app.api.limits import limit_ip
 from app.core.auth import (
     COOKIE_NAME,
     DUMMY_HASH,
@@ -81,9 +82,15 @@ class UserOut(BaseModel):
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
-    request: Request, response: Response, body: Credentials
+    request: Request,
+    response: Response,
+    body: Credentials,
+    _: None = Depends(limit_ip("auth")),
 ) -> UserOut:
-    """注册即登录：与登录共用签发逻辑，前端少一次往返。"""
+    """注册即登录：与登录共用签发逻辑，前端少一次往返。
+
+    按**客户端地址**限流：每次注册都要跑一次 bcrypt，不挡就是 CPU 放大入口。
+    """
     db = require_db(request)
     password_hash = await asyncio.to_thread(hash_password, body.password)
     user = await db.create_user(body.email, password_hash)
@@ -92,7 +99,13 @@ async def register(
 
 
 @router.post("/login")
-async def login(request: Request, response: Response, body: LoginRequest) -> UserOut:
+async def login(
+    request: Request,
+    response: Response,
+    body: LoginRequest,
+    _: None = Depends(limit_ip("auth")),
+) -> UserOut:
+    """登录。按客户端地址限流，挡密码喷洒与 bcrypt CPU 放大。"""
     db = require_db(request)
     user = await db.find_user_by_email(body.email)
 

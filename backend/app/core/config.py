@@ -214,6 +214,10 @@ class Settings(BaseSettings):
     rate_limit_pdf: int = 10
     rate_limit_pdf_window: float = 60.0
     rate_limit_pdf_public: int = 5
+    # 登录/注册按客户端地址限流：bcrypt 是 CPU 密集，注册洪水可以打满单机；
+    # 登录还要挡密码喷洒。匿名端点用 limit_ip，不依赖用户身份。
+    rate_limit_auth: int = 10
+    rate_limit_auth_window: float = 60.0
 
     # ── 用户配额（E2）：**累计用量**，跨重启持久（与上面 L0 的「速率」边界见 SPEC §3.1）──
     # 两个维度：在飞任务数（queued + running，**排队即占额**）、每日 Agent 请求数（自然日 +08）。

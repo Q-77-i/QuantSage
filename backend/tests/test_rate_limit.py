@@ -21,7 +21,7 @@ from tests.conftest import TEST_USER, FakeDatabase
 
 client = TestClient(app)
 
-BUCKETS = ("llm-chat", "llm-research", "task-submit")
+BUCKETS = ("llm-chat", "llm-research", "task-submit", "auth")
 CAPACITY = 2
 
 
@@ -98,6 +98,33 @@ def test_buckets_are_per_user(signed_in: FakeDatabase) -> None:
 
     app.dependency_overrides[require_user] = lambda: {**TEST_USER, "id": 2}
     assert client.post("/api/v1/chat", json={"message": "你好"}).status_code != 429
+
+
+AUTH_BODY = {"email": "nobody@example.com", "password": "wrong-password"}
+
+
+def test_auth_bucket_limits_login_attempts(signed_in: FakeDatabase) -> None:
+    """登录按客户端地址限流：bcrypt 密集，挡密码喷洒。"""
+    for _ in range(CAPACITY):
+        assert client.post("/api/v1/auth/login", json=AUTH_BODY).status_code == 401
+
+    response = client.post("/api/v1/auth/login", json=AUTH_BODY)
+
+    assert response.status_code == 429
+    assert response.json()["kind"] == "rate_limited"
+
+
+def test_auth_bucket_is_shared_by_login_and_register(signed_in: FakeDatabase) -> None:
+    """登录与注册共用一个桶：注册洪水与登录爆破是同一类 CPU 放大。"""
+    for _ in range(CAPACITY):
+        client.post("/api/v1/auth/login", json=AUTH_BODY)
+
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "new@example.com", "password": "long-enough-pass"},
+    )
+
+    assert response.status_code == 429
 
 
 def test_login_still_comes_first(jwt_secret: Any) -> None:

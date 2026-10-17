@@ -263,6 +263,7 @@ def _bucket_of(name: str) -> Bucket:
         "paper-run": (settings.rate_limit_paper, settings.rate_limit_paper_window),
         "pdf": (settings.rate_limit_pdf, settings.rate_limit_pdf_window),
         "pdf-public": (settings.rate_limit_pdf_public, settings.rate_limit_pdf_window),
+        "auth": (settings.rate_limit_auth, settings.rate_limit_auth_window),
     }
     if name not in table:
         raise KeyError(f"未知的限流桶：{name}")
