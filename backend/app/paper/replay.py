@@ -97,6 +97,24 @@ def replay(
             if decision.fill is not None and decision.status is not DecisionStatus.FILLED
             else decision
         )
+    #: 仍待审批的决策（key=id）。逐日过期只遍历这一小撮，不扫整本历史决策。
+    pending: dict[str, Decision] = {
+        decision.id: decision
+        for decision in book.values()
+        if decision.status is DecisionStatus.PENDING
+    }
+    #: 每日开盘前的“当日已挂买单”名义金额。旧实现每个交易日重扫整本 book；
+    #: 当日之前的决策 trade_date 都不是今天，真正能贡献的只有日志里当天的那几条。
+    initial_pending_notional: dict[date, float] = {}
+    for decision in book.values():
+        if (
+            decision.side is Side.BUY
+            and decision.status in (DecisionStatus.PENDING, DecisionStatus.APPROVED)
+        ):
+            initial_pending_notional[decision.trade_date] = (
+                initial_pending_notional.get(decision.trade_date, 0.0)
+                + decision.est_qty * decision.est_price
+            )
     #: 日志里**已经成交**的决策，按（标的, 成交日）索引。
     #: 重放要重建账户，所以这些成交必须**照原样记回账本**——不记的话，「用日志再跑一遍」
     #: 会得到一条没有成交的净值曲线，而决策列表却显示已成交（自相矛盾；2026-10-10 由
@@ -127,13 +145,9 @@ def replay(
         # 当日已存在的买入也要算进总仓位约束：正常 step 的当日日志为空（决策在当日收盘
         # 才生成），这里为 0；Agent 在收盘后追加提案（收尾项 5a）时，当日已有的策略买入
         # 必须计入，否则单独看每笔都合规、合起来越线。
-        pending_notional = sum(
-            d.est_qty * d.est_price
-            for d in book.values()
-            if d.trade_date == day
-            and d.side is Side.BUY
-            and d.status in (DecisionStatus.PENDING, DecisionStatus.APPROVED)
-        )
+        # 预计算：逐日重扫整本 book 是 O(天数 × 历史决策)；当日之前的决策 trade_date
+        # 都不是今天，只有日志里当天的那几条会贡献。
+        pending_notional = initial_pending_notional.get(day, 0.0)
 
         # ① 开盘：先记回日志里已成交的，再成交已批准的、过掉仍待审批的
         for symbol in config.symbols:
@@ -170,10 +184,12 @@ def replay(
                     book[resolved.id] = resolved
                     carries.pop(symbol, None)
                     (filled if resolved.status is DecisionStatus.FILLED else unfilled).append(resolved)
-        for pending in [d for d in book.values() if d.status is DecisionStatus.PENDING]:
-            if pending.trade_date < day:  # 成交窗口已过 —— 未审批不成交
-                moved = pending.replace(status=DecisionStatus.EXPIRED)
+        for pending_id in list(pending):
+            pending_decision = pending[pending_id]
+            if pending_decision.trade_date < day:  # 成交窗口已过 —— 未审批不成交
+                moved = pending_decision.replace(status=DecisionStatus.EXPIRED)
                 book[moved.id] = moved
+                pending.pop(pending_id, None)
                 expired.append(moved)
 
         # ② 收盘估值
@@ -375,6 +391,8 @@ def replay(
                 if decision is None or decision.id in book:
                     continue
                 book[decision.id] = decision
+                if decision.status is DecisionStatus.PENDING:
+                    pending[decision.id] = decision
                 generated.append(decision)
                 if limits is not None:
                     if signal.side is Side.BUY:
@@ -529,12 +547,11 @@ def _sources_for(event_id: str | None, data: MarketData) -> Mapping[str, str] | 
         "content_hash",
         "source_url",
     )
-    for rows in data.events.values():
-        for row in rows:
-            if row.get("event_id") == event_id:
-                # 列按需取：`source_url` 这类列在夹具与旧分片里可能不存在，缺就是缺
-                return {key: str(row[key]) for key in keys if row.get(key) is not None}
-    return None
+    row = data.event_rows.get(event_id)
+    if row is None:
+        return None
+    # 列按需取：`source_url` 这类列在夹具与旧分片里可能不存在，缺就是缺
+    return {key: str(row[key]) for key in keys if row.get(key) is not None}
 
 
 def _resolve_carry(

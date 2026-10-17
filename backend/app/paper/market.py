@@ -57,6 +57,8 @@ class MarketData:
     days: tuple[date, ...]
     symbols: Mapping[str, SymbolData]
     events: Mapping[str, tuple[dict, ...]]
+    #: `event_id → 原始事件行`：决策回链来源时不再逐单线性扫全部池内事件
+    event_rows: Mapping[object, Mapping[str, object]]
 
     def feed_for(self, symbol: str, mode: Mode) -> EventFeed:
         """每只标的**一份 feed**——与引擎逐标的的语义一致（事件表本来就是按标的取的）。"""
@@ -137,10 +139,20 @@ def load_market_data(config: PaperConfig, *, data_dir: Path | None = None) -> Ma
             if code in events:
                 events[code].append(row)
 
+    # 同一行事件可能挂多只标的；`setdefault` 保留首次出现的行，与旧 `_sources_for`
+    # 按 `data.events` 顺序扫描时命中的是同一行。
+    event_rows_by_id: dict[object, Mapping[str, object]] = {}
+    for rows in events.values():
+        for row in rows:
+            event_id = row.get("event_id")
+            if event_id is not None:
+                event_rows_by_id.setdefault(event_id, row)
+
     return MarketData(
         days=days,
         symbols=per_symbol,
         events={s: tuple(rows) for s, rows in events.items()},
+        event_rows=event_rows_by_id,
     )
 
 
