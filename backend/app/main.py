@@ -17,7 +17,8 @@ import hmac
 import logging
 import math
 import threading
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
@@ -107,6 +108,73 @@ def _start_rag_warmup() -> None:
     threading.Thread(target=run, name="rag-warmup", daemon=True).start()
 
 
+@dataclass(slots=True)
+class _Background:
+    """本进程承担的后台任务。
+
+    `owner` 先留位：E1 只做生命周期收口，E2 起用它表示是否持有后台主实例锁。
+    """
+
+    owner: bool | None = None
+    worker: task_worker.WorkerHandle | None = None
+    scheduler: Any | None = None
+    settle_scheduler: Any | None = None
+
+
+async def _start_background(app: FastAPI, db: Any) -> _Background:
+    """启动 task worker 与两个调度器，返回可独立停止的句柄。
+
+    E1 先保持旧行为（调度器无条件启动）；E2 起由 `owner` 决定是否启动。
+    业务库不可用时不启动 worker，与旧实现一致。
+    """
+    background = _Background()
+    if db is not None:
+        try:
+            handle = await task_worker.start(db)
+        except Exception as exc:  # noqa: BLE001 —— worker 起不来不阻断服务
+            log.warning("任务 worker 未启动（%s），提交的任务将排队等待", type(exc).__name__)
+        else:
+            background.worker = handle
+            app.state.task_worker = handle
+            if handle is None:
+                log.info("任务 worker 单实例锁被其它进程持有，本进程只服务 HTTP（不取件）")
+            else:
+                log.info("任务 worker 已启动（单 worker 串行，队列 = tasks 表）")
+
+    try:
+        background.scheduler = start_scheduler()
+        app.state.scheduler = background.scheduler
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ETL 调度器未启动（%s），/api/v1/etl/run 仍可手动触发", type(exc).__name__)
+
+    try:
+        background.settle_scheduler = start_settlement_scheduler(app)
+        app.state.settle_scheduler = background.settle_scheduler
+    except Exception as exc:  # noqa: BLE001
+        log.warning("结算调度器未启动（%s），结算端点仍可手动触发", type(exc).__name__)
+
+    return background
+
+
+async def _stop_background(background: _Background | None) -> None:
+    """停止本进程的后台任务。幂等：重复调用不会二次 shutdown。
+
+    **不等正在跑的那一件**：取消不了线程/子进程，硬等只会拖长停机；它的行留在
+    `running`，下次启动由持锁进程扫成 failed/interrupted。
+    """
+    if background is None:
+        return
+    if background.worker is not None:
+        await task_worker.stop(background.worker)
+        background.worker = None
+    for name in ("scheduler", "settle_scheduler"):
+        scheduler = getattr(background, name)
+        if scheduler is not None:
+            with suppress(Exception):
+                scheduler.shutdown(wait=False)
+            setattr(background, name, None)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
@@ -122,6 +190,7 @@ async def lifespan(app: FastAPI):
     app.state.memory = None
     app.state.settle_scheduler = None
     app.state.task_worker = None
+    app.state.background_owner = None
 
     if not settings.jwt_secret.get_secret_value():
         # 不静默降级成无鉴权：/api/v1/auth/* 会返回 503，缺的是配置不是代码
@@ -179,37 +248,16 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001 —— 缺 key 时不要让整个服务起不来
             log.warning("Agent 未就绪（%s），/api/v1/chat 将返回 503", type(exc).__name__)
 
-        # 异步任务 worker（P3-E1a）：**队列实体就是 `tasks` 表**，这里只起常驻取件循环
-        # （起来先扫尾上一条进程留下的 `running`）。业务库不可用就不起——提交端点本来就 503；
-        # worker 起不来也不阻断启动，提交的任务会一直排在 `queued`（状态可查，不是静默丢失）。
-        if app.state.db is not None:
-            try:
-                handle = await task_worker.start(app.state.db)
-                app.state.task_worker = handle
-                if handle is None:
-                    log.info("任务 worker 单实例锁被其它进程持有，本进程只服务 HTTP（不取件）")
-                else:
-                    log.info("任务 worker 已启动（单 worker 串行，队列 = tasks 表）")
-            except Exception as exc:  # noqa: BLE001
-                log.warning("任务 worker 未启动（%s），提交的任务将排队等待", type(exc).__name__)
-
         # 决策记忆（M7b）：LangGraph Store 首用——与 checkpointer 同库不同表。
         # **按需建**（`MemoryHolder`）：`AsyncBatchedBaseStore` 在构造时捕获事件循环，
         # 在 lifespan 的 loop 里建、在请求的 loop 上用会炸 `Future attached to a different loop`
         # （实测；uvicorn 单 loop 侥幸不炸，那是运气）。这里只放持有者，建库建表在首次使用时。
         app.state.memory = MemoryHolder(settings.postgres_dsn)
 
-        # 事件语料定时（M2b）：默认不启用；启用了才起，起不来也不阻断服务
-        try:
-            app.state.scheduler = start_scheduler()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ETL 调度器未启动（%s），/api/v1/etl/run 仍可手动触发", type(exc).__name__)
-
-        # 到期结算定时（M7b）：**独立于 ETL**的开关与调度器（默认关，它会调模型）
-        try:
-            app.state.settle_scheduler = start_settlement_scheduler(app)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("结算调度器未启动（%s），结算端点仍可手动触发", type(exc).__name__)
+        # 异步任务 worker + ETL/结算调度器：队列实体就是 `tasks` 表，业务库不可用就不起 worker；
+        # 生命周期收进局部句柄——退出时只停本进程启动的那些，嵌套 lifespan 不会互相 shutdown。
+        background = await _start_background(app, app.state.db)
+        app.state.background_owner = background.owner
 
         if settings.rag_warmup_on_start:
             # 后台线程预热 RAG 模型：把首次提问要付的 7–15s 载入挪到启动期。
@@ -219,13 +267,12 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
-            if app.state.task_worker is not None:
-                # 只掐取件循环，**不等**正在跑的那一件（取消不了线程/子进程，硬等只会拖长停机）；
-                # 它的行留在 `running`，下次启动由 `task_worker.start` 扫成 failed/interrupted
-                await task_worker.stop(app.state.task_worker)
-            for scheduler in (app.state.scheduler, app.state.settle_scheduler):
-                if scheduler is not None:
-                    scheduler.shutdown(wait=False)
+            # 用本地句柄停：不读 app.state，避免嵌套 lifespan 时把别人的调度器 shutdown 两次
+            await _stop_background(background)
+            app.state.background_owner = None
+            app.state.task_worker = None
+            app.state.scheduler = None
+            app.state.settle_scheduler = None
             holder = app.state.memory
             if holder is not None and hasattr(holder, "aclose"):
                 await holder.aclose()  # 按需建的 Store 连接在这里收
