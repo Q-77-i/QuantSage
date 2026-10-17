@@ -23,6 +23,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from weakref import WeakValueDictionary
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -81,7 +82,10 @@ _DETACHED: set[asyncio.Task[None]] = set()
 #: 「刷新（旧轮继续跑）+ 立刻再问一次」会让两个图同时写同一个 thread 的 checkpoint，
 #: 两边的消息会交错落盘，用户看到的是错乱的问答。锁的生命周期跟**运行**走（不是跟连接走），
 #: 所以 `_detach` 之后它仍被持有，直到那一轮真正跑完。
-_RUN_LOCKS: dict[str, asyncio.Lock] = {}
+#:
+#: **弱引用**：锁被 pump / 等待者持有时才存在，运行结束且无人等待即自动回收——
+#: 普通 dict 会按「每个见过的 thread 一条」只增不减（旧实现的 512 条清理只清空闲项）。
+_RUN_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _RUN_LOCKS_MAX = 512
 
 
