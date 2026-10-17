@@ -248,6 +248,8 @@ class Settings(BaseSettings):
     # 只从环境变量读；为空时 /api/v1/auth/* 返回 503，**不静默降级为无鉴权**
     jwt_secret: SecretStr = SecretStr("")
     jwt_ttl_seconds: int = 7 * 24 * 3600
+    # 上线 HTTPS 时置 true：会话 cookie 加 `Secure`（本地 http 置 true 会让 cookie 发不出去）
+    session_cookie_secure: bool = False
 
     # ── 启动姿态：False 时连不上 Postgres 也降级启动（本地开发用）──
     startup_require_db: bool = False

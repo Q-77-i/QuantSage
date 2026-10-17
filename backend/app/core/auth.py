@@ -129,12 +129,16 @@ def session_cookie_value(token: str, *, remember: bool = True) -> str:
 
     `HttpOnly`：JS 读不到 → 防 XSS 窃取。`SameSite=lax`：跨站请求不带 cookie，顺带挡掉
     表单类 CSRF；本项目前后端同 site（页面 host 与 API host 相同，只差端口），Lax 不影响
-    正常调用。**`secure` 缺省即不写**——本地是 http；上线必须补上 `Secure`（与 HSTS
-    同一处口径，见 SPEC §8.2）。
+    正常调用。**`Secure` 由 `SESSION_COOKIE_SECURE` 控制，默认关**——本地是 http，加上去
+    浏览器不会回传；上线 HTTPS 时置 true（与 HSTS 同一处口径，见 SPEC §8.2）。
+    `__Host-` 前缀要求 Secure + Path=/ + 无 Domain，切换会让既有会话全部失效，
+    留到「明确只跑 HTTPS」的部署版本再改。
     """
     parts = [f"{COOKIE_NAME}={token}", "Path=/", "SameSite=lax", "HttpOnly"]
     if remember:
         parts.append(f"Max-Age={get_settings().jwt_ttl_seconds}")
+    if get_settings().session_cookie_secure:
+        parts.append("Secure")
     return "; ".join(parts)
 
 

@@ -137,6 +137,18 @@ def test_session_cookie_is_hardened() -> None:
     assert "Max-Age=" in cookie
 
 
+def test_session_cookie_secure_flag_is_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上线 HTTPS 时置 true；本地 http 保持不写，否则浏览器不回传。"""
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "true")
+    get_settings.cache_clear()
+    try:
+        assert "Secure" in session_cookie_value("token-value")
+    finally:
+        get_settings.cache_clear()
+
+
 def test_renewal_and_login_write_the_same_cookie_attributes() -> None:
     """端点写 cookie 与续期中间件写 cookie **必须逐字一致**（E8a）。
 
