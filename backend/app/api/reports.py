@@ -464,6 +464,7 @@ async def account_review(
         review, _run = await settle_account(
             db, memory, user_id=user["id"], account_id=str(account_id),
             trace=settle_trace(request.app.state, account_id=account_id, user_id=user["id"]),
+            user=user,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="模拟盘会话不存在") from exc
@@ -483,6 +484,7 @@ async def settle_now(
         _review, run = await settle_account(
             db, memory, user_id=user["id"], account_id=str(account_id),
             trace=settle_trace(request.app.state, account_id=account_id, user_id=user["id"]),
+            user=user,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="模拟盘会话不存在") from exc

@@ -15,6 +15,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from app.backtest.types import Fill, Side
+from app.core import quota
 from app.data import calendar as cal
 from app.data import duckdb_client
 from app.memory import service
@@ -177,6 +178,33 @@ def test_settlement_is_idempotent_and_does_not_pay_twice(env: dict[str, Any]) ->
     assert run.saved == 0 and run.reused == 3
     assert run.lessons == 2
     assert review["settled"][0]["reflection"]["text"].startswith("教训：")
+
+
+def test_settlement_quota_is_checked_before_reflection(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """手动触发结算时，配额拦在**调模型之前**；被拒的这一次不产生反思调用。"""
+
+    async def blocked(*_args: Any, **_kwargs: Any) -> None:
+        raise quota.QuotaExceeded(
+            quota.METRIC_AGENT_CALLS, "今日已用满", limit=1, used=1
+        )
+
+    monkeypatch.setattr(service.quota, "enforce", blocked)
+
+    with pytest.raises(quota.QuotaExceeded):
+        asyncio.run(
+            service.settle_account(
+                env["db"],
+                env["memory"],
+                user_id=1,
+                account_id="acct",
+                chat=None,
+                user={"id": 1},
+            )
+        )
+
+    assert env["calls"] == []
 
 
 def test_alpha_uses_the_same_window_benchmark(env: dict[str, Any]) -> None:

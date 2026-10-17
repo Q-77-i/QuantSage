@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from app.backtest.benchmark import market_benchmark
+from app.core import quota
 from app.core.langfuse import TraceConfig
 from app.data import duckdb_client as dc
 from app.memory.decision_store import DecisionMemory, is_current
@@ -91,11 +92,16 @@ async def settle_account(
     data_dir: Any = None,
     now: str | None = None,
     trace: TraceConfig | None = None,
+    user: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], SettlementRun]:
     """结算一个账户并把复盘载荷交回去（幂等；只对**新到期**的回合调模型）。
 
     `trace`：E7c 的观测配置（handler + 四个字段），透传给反思那次 LLM 调用
     ——结算路径此前完全没被追踪。
+
+    `user`：端点手动触发时传入，用于在**每次真正要调模型之前**做 Agent 配额；
+    定时结算传 None（没有「当前用户」，也不该占用户额度）。`create_report` 已在
+    更外层记过一次配额，不传 `user`，避免重复扣。
     """
     row = await db.get_paper_account(user_id, account_id)
     if row is None:
@@ -146,11 +152,15 @@ async def settle_account(
             record = dict(stored or {})
             reused += 1
         else:
-            reflection = (
-                await build_reflection(settled.to_payload(), chat=chat, trace=trace)
-                if settled.settled
-                else None
-            )
+            reflection = None
+            if settled.settled:
+                # 端点手动触发才占用户额度；定时结算没有用户上下文。拦在调模型之前，
+                # 被拒时这次不写记忆，重试仍会重新结算（幂等）。
+                if user is not None:
+                    await quota.enforce(db, user, quota.METRIC_AGENT_CALLS)
+                reflection = await build_reflection(
+                    settled.to_payload(), chat=chat, trace=trace
+                )
             record = await memory.save(
                 user_id=user_id,
                 account_id=account_id,
