@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     max_request_bytes: int = 1_048_576
     # E7e：日志格式——`text` 便于本地阅读（默认），`json` 供采集/检索（一行一个 JSON）
     log_format: str = "text"
+    # Prometheus `/metrics` 的访问控制：配置了 token 就要求 `X-Metrics-Token`；
+    # 未配置只允许回环地址（127.0.0.1 / ::1 / 测试客户端），公网不再裸奔。
+    metrics_token: SecretStr = SecretStr("")
 
     # ── 基础设施（compose 与本文件共用仓库根 .env）──
     postgres_user: str = "quantsage"

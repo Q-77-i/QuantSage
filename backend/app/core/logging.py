@@ -30,6 +30,7 @@ SENSITIVE_ENV_KEYS = (
     # 签发会话的密钥与含口令的 DSN：它们比数据源 key 更关键（泄露即可伪造会话）
     "JWT_SECRET",
     "DATABASE_URL",
+    "METRICS_TOKEN",
 )
 
 # 太短的值不做替换，避免把普通单词打成掩码
@@ -84,6 +85,7 @@ def collect_known_secrets() -> set[str]:
         settings.langfuse_secret_key.get_secret_value(),
         settings.jwt_secret.get_secret_value(),
         settings.database_url.get_secret_value(),
+        settings.metrics_token.get_secret_value(),
     }
     values |= {os.environ.get(key, "") for key in SENSITIVE_ENV_KEYS}
     return values

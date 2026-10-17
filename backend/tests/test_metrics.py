@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import generate_latest
 
+from app.core.config import get_settings
 from app.core.logging import JsonFormatter, request_id_var
 from app.core.metrics import CACHE_HITS, TASKS
 from app.data import cache
@@ -105,3 +106,19 @@ def test_cache_through_counts_l1_hit_and_miss(
         before, 'quantsage_cache_hits_total{tier="l1"}'
     )
     cache.clear_local()
+
+
+def test_metrics_requires_token_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """配了 METRICS_TOKEN 就要求请求头；否则公网 scrape 面白送队列深度。"""
+    monkeypatch.setenv("METRICS_TOKEN", "metrics-secret-value")
+    get_settings.cache_clear()
+    try:
+        assert client.get("/metrics").status_code == 403
+        allowed = client.get(
+            "/metrics", headers={"X-Metrics-Token": "metrics-secret-value"}
+        )
+        assert allowed.status_code == 200
+    finally:
+        get_settings.cache_clear()

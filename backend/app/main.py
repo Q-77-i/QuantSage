@@ -13,13 +13,14 @@ lifespan 里按「能降级就降级」的姿态装配：checkpointer → 业务
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import math
 import threading
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -487,13 +488,25 @@ async def ready(response: Response) -> dict:
     return {"status": "ready" if db_ready else "degraded", "postgres": db_ready}
 
 
+def _metrics_allowed(request: Request) -> bool:
+    """配置了 `METRICS_TOKEN` 就验头；未配置只放行回环客户端（本地 scrape / 测试）。"""
+    token = get_settings().metrics_token.get_secret_value()
+    if token:
+        supplied = request.headers.get("x-metrics-token", "")
+        return hmac.compare_digest(supplied, token)
+    host = request.client.host if request.client is not None else ""
+    return host in {"127.0.0.1", "::1", "testclient"}
+
+
 @app.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
+async def metrics(request: Request) -> Response:
     """Prometheus 文本端点（E7e）。任务队列是**scrape 时现查**，不靠进程内缓存猜。
 
-    不鉴权：本地单机 scrape 面；只暴露路由模板 / 状态 / 计数，不含用户数据（与 `/health`
-    同一条口径）。LLM 的 trace/token/成本仍在 Langfuse，这里不重复。
+    访问控制：`METRICS_TOKEN` 存在时要求 `X-Metrics-Token`；否则只允许回环地址。
+    只暴露路由模板 / 状态 / 计数，不含用户数据。LLM 的 trace/token/成本仍在 Langfuse。
     """
+    if not _metrics_allowed(request):
+        raise HTTPException(status_code=403, detail="metrics 未授权")
     db = getattr(app.state, "db", None)
     if db is not None:
         try:
