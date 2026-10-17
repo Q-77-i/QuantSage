@@ -64,6 +64,23 @@ def test_off_still_scrubs_env(monkeypatch, tmp_path: Path) -> None:
     assert "XIAOSHI_API_KEY" not in env
 
 
+def test_bwrap_env_uses_the_inner_tmpfs(monkeypatch, tmp_path: Path) -> None:
+    """bwrap 的 `/tmp` 是 tmpfs；HOME/TMPDIR 必须是容器内路径，不能指向宿主 work_dir。"""
+    monkeypatch.setattr(isolation, "sandbox_kind", lambda: "bwrap")
+    monkeypatch.setattr(
+        isolation.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None
+    )
+    command, env = isolation.wrap_command(
+        _python_command("print(1)"),
+        backend_dir=BACKEND_DIR,
+        data_dir=tmp_path,
+        work_dir=tmp_path,
+        mode="require",
+    )
+    assert command[0] == "/usr/bin/bwrap"
+    assert env["HOME"] == "/tmp" and env["TMPDIR"] == "/tmp"
+
+
 def test_bwrap_command_isolates_network_and_paths(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(isolation.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
     command = isolation._bwrap_command(

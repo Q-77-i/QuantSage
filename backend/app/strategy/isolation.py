@@ -211,6 +211,8 @@ def wrap_command(
         )
         return ["sandbox-exec", "-f", str(profile), *original], env
     if kind == "bwrap":
+        # bwrap 里 /tmp 是 tmpfs；`work_dir` 是宿主路径，不能直接当 HOME/TMPDIR
+        env = {**env, "HOME": "/tmp", "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
         return _bwrap_command(original, backend_dir=backend_dir, data_dir=data_dir), env
 
     message = (
