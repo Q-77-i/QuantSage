@@ -178,8 +178,12 @@ async def lifespan(app: FastAPI):
         # worker 起不来也不阻断启动，提交的任务会一直排在 `queued`（状态可查，不是静默丢失）。
         if app.state.db is not None:
             try:
-                app.state.task_worker = await task_worker.start(app.state.db)
-                log.info("任务 worker 已启动（单 worker 串行，队列 = tasks 表）")
+                handle = await task_worker.start(app.state.db)
+                app.state.task_worker = handle
+                if handle is None:
+                    log.info("任务 worker 单实例锁被其它进程持有，本进程只服务 HTTP（不取件）")
+                else:
+                    log.info("任务 worker 已启动（单 worker 串行，队列 = tasks 表）")
             except Exception as exc:  # noqa: BLE001
                 log.warning("任务 worker 未启动（%s），提交的任务将排队等待", type(exc).__name__)
 

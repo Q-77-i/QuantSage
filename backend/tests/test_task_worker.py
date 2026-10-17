@@ -216,6 +216,29 @@ def test_start_sweeps_then_serves(signed_in: FakeDatabase, data_dir: Path) -> No
     assert signed_in.tasks[task_id]["error"]["kind"] == "interrupted"
 
 
+def test_start_does_not_sweep_when_lock_held(
+    signed_in: FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """拿不到单实例锁的进程**不扫尾、不取件**。
+
+    多进程部署时进程 B 启动，若照旧扫尾，会把进程 A 正在跑的 `running` 标成
+    failed；A 的 `finish_task` 因 `WHERE status='running'` 静默不写，任务结果就丢了。
+    """
+    task_id = queue(signed_in, frozen_request())
+    asyncio.run(signed_in.claim_next_task())  # 进程 A 正在跑
+
+    async def no_lock(_db: Any) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "_acquire_instance_lock", no_lock)
+
+    async def scenario() -> worker.WorkerHandle | None:
+        return await worker.start(signed_in)
+
+    assert asyncio.run(scenario()) is None
+    assert signed_in.tasks[task_id]["status"] == "running"  # 没有被 B 杀掉
+
+
 # ── 用户策略分支 ────────────────────────────────────────────────────────────
 
 

@@ -21,6 +21,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -95,6 +96,22 @@ def _run_lock(thread_id: str) -> asyncio.Lock:
     return lock
 
 
+@asynccontextmanager
+async def _cross_process_lock(db: Any, thread_id: str) -> AsyncIterator[None]:
+    """同一 thread 的图在**多进程**下也串行。
+
+    `_run_lock` 只管本进程；`uvicorn --workers 2` 时同一个 thread 的两个请求可能落到
+    不同 worker，各拿各的锁，两个图并发写同一个 checkpoint，消息会交错落盘。
+    数据库会话锁补上这一层；离线替身没有 `advisory_lock` 方法时按无锁处理。
+    """
+    lock = getattr(db, "advisory_lock", None)
+    if lock is None:
+        yield
+        return
+    async with lock(f"chat:{thread_id}"):
+        yield
+
+
 def _detach(task: asyncio.Task[None]) -> None:
     """把任务交给事件循环自己跑完，只记结果。
 
@@ -167,7 +184,8 @@ async def chat(
         async def pump() -> None:
             # 同一会话排队跑（理由见 `_run_lock`）：等锁期间客户端可能已经走了，
             # 但那一轮仍会跑完并落 checkpoint——与断连的处理一致
-            async with _run_lock(thread_id):
+            # 进程内锁 + 数据库会话锁：多 worker 下同一 thread 也只能串行
+            async with _run_lock(thread_id), _cross_process_lock(db, thread_id):
                 # 工具拿「当前用户 + 业务库」的唯一来源（收尾项 5a）；user_id 绝不
                 # 作为 LLM 可传参数。ContextVar 随 pump 任务走，finally 复位。
                 token = set_agent_context(AgentContext(user_id=int(user["id"]), db=db))
