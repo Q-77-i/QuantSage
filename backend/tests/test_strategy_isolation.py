@@ -91,6 +91,8 @@ def test_bwrap_command_isolates_network_and_paths(monkeypatch, tmp_path: Path) -
     assert "--die-with-parent" in command
     assert f"--ro-bind {BACKEND_DIR} {BACKEND_DIR}" in joined
     assert f"--ro-bind {tmp_path.resolve()} {tmp_path.resolve()}" in joined
+    # tmpfs 必须先挂：tmp_path 常在 /tmp 下，反过来会把数据目录盖掉
+    assert command.index("--tmpfs") < command.index(str(tmp_path.resolve()))
 
 
 @pytest.mark.skipif(

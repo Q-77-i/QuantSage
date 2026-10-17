@@ -126,7 +126,11 @@ def _macos_profile(*, backend_dir: Path, data_dir: Path, work_dir: Path) -> str:
 def _bwrap_command(
     command: list[str], *, backend_dir: Path, data_dir: Path
 ) -> list[str]:
-    """Linux：只读绑定必要路径，`/tmp` 用 tmpfs，网络与 PID/用户命名空间全隔离。"""
+    """Linux：只读绑定必要路径，`/tmp` 用 tmpfs，网络与 PID/用户命名空间全隔离。
+
+    **顺序要紧**：`--tmpfs /tmp` 必须先挂，之后再绑数据目录——离线用例的 `tmp_path`
+    就在 `/tmp` 下，反过来的话 tmpfs 会把刚绑进去的数据目录盖掉。
+    """
     bwrap = shutil.which("bwrap")
     assert bwrap is not None  # 调用方已探测
     args = [
@@ -135,23 +139,47 @@ def _bwrap_command(
         "--new-session",
         "--unshare-all",
         "--unshare-net",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
     ]
     # 系统目录：存在才绑（不同发行版布局不同）
     for directory in ("/usr", "/lib", "/lib64", "/etc"):
         if Path(directory).exists():
             args.extend(["--ro-bind", directory, directory])
-    # 后端代码（含 venv）、数据目录、Python 安装目录：只读
+
+    def _is_under(child: Path, parent: Path) -> bool:
+        return child == parent or parent in child.parents
+
+    bound: list[Path] = []
+    created: set[Path] = set()
     for directory in (
-        backend_dir,
-        data_dir,
+        Path(backend_dir),
+        Path(data_dir),
         Path(sys.prefix),
         Path(sys.base_prefix),
         Path(sys.base_prefix).resolve(),
     ):
-        if Path(directory).exists():
-            args.extend(["--ro-bind", str(directory), str(directory)])
-    args.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
-    args.extend(["--chdir", str(backend_dir), "--"])
+        directory = directory.resolve()
+        if not directory.exists() or any(_is_under(directory, parent) for parent in bound):
+            continue
+        # bwrap 只保证绑定点本身；父目录与叶子都显式建出来，嵌套路径（/repo/backend）才稳
+        for parent in reversed(directory.parents):
+            if str(parent) in ("/", "/tmp") or any(_is_under(parent, item) for item in bound):
+                continue
+            if parent not in created:
+                args.extend(["--dir", str(parent)])
+                created.add(parent)
+        if directory not in created:
+            args.extend(["--dir", str(directory)])
+            created.add(directory)
+        args.extend(["--ro-bind", str(directory), str(directory)])
+        bound.append(directory)
+
+    args.extend(["--chdir", str(backend_dir.resolve()), "--"])
     args.extend(command)
     return args
 
