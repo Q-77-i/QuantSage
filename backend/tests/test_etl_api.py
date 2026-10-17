@@ -21,6 +21,13 @@ client = TestClient(app)
 
 
 @pytest.fixture
+def owner_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无 lifespan 时 app.state 没有这个字段；钉成 None，锁住「未知即放行」的兼容语义。"""
+    monkeypatch.setattr(app.state, "background_owner", None, raising=False)
+    monkeypatch.setattr(app.state, "scheduler", None, raising=False)
+
+
+@pytest.fixture
 def etl_off(monkeypatch: pytest.MonkeyPatch) -> Any:
     """把 ETL 开关钉成默认值。
 
@@ -56,7 +63,7 @@ def test_endpoints_require_admin(signed_in: Any) -> None:
     assert client.post("/api/v1/etl/run").status_code == 403
 
 
-@pytest.mark.usefixtures("etl_off")
+@pytest.mark.usefixtures("etl_off", "owner_unknown")
 def test_status_merges_runner_and_scheduler(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(etl_api.runner, "status", lambda data_dir=None: dict(STATUS_STUB))
     monkeypatch.setattr(etl_api.runner, "is_running", lambda: False)
@@ -68,8 +75,25 @@ def test_status_merges_runner_and_scheduler(signed_in_admin: Any, monkeypatch: p
     assert body["running"] is False
     assert body["scheduler"]["enabled"] is False  # 默认不启用定时
     assert body["scheduler"]["next_run_at"] is None
+    assert body["scheduler"]["owner"] is None  # 没有 lifespan：不假装知道角色
+    assert body["scheduler"]["active"] is False
 
 
+@pytest.mark.usefixtures("etl_off")
+def test_status_reports_a_standby_process(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """非主实例如实报告 owner=false / active=false，不把配置值当成运行值。"""
+    monkeypatch.setattr(app.state, "background_owner", False, raising=False)
+    monkeypatch.setattr(app.state, "scheduler", None, raising=False)
+    monkeypatch.setattr(etl_api.runner, "status", lambda data_dir=None: dict(STATUS_STUB))
+    monkeypatch.setattr(etl_api.runner, "is_running", lambda: False)
+
+    body = client.get("/api/v1/etl/status").json()
+
+    assert body["scheduler"]["owner"] is False
+    assert body["scheduler"]["active"] is False
+
+
+@pytest.mark.usefixtures("owner_unknown")
 def test_run_conflicts_when_already_running(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """并发跑会同时写同一批文件——必须挡在入口，不是靠「大概率不会撞上」。"""
     monkeypatch.setattr(etl_api.runner, "is_running", lambda: True)
@@ -80,6 +104,21 @@ def test_run_conflicts_when_already_running(signed_in_admin: Any, monkeypatch: p
     assert "ETL 在执行" in response.json()["detail"]
 
 
+def test_run_rejects_a_standby_process(signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """后台主实例门：非持锁进程不能在这里起一轮全局 ETL。"""
+    monkeypatch.setattr(app.state, "background_owner", False, raising=False)
+    called: list[int] = []
+    monkeypatch.setattr(etl_api.runner, "is_running", lambda: False)
+    monkeypatch.setattr(etl_api, "_safe_run", lambda trailing: called.append(trailing))
+
+    response = client.post("/api/v1/etl/run")
+
+    assert response.status_code == 409
+    assert "不是后台任务主实例" in response.json()["detail"]
+    assert called == []
+
+
+@pytest.mark.usefixtures("owner_unknown")
 def test_run_starts_in_background_and_answers_immediately(
     signed_in_admin: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -122,7 +122,9 @@ async def list_snapshots(_: Annotated[dict[str, Any], Depends(require_admin)]) -
 
 @router.post("/rollback")
 async def do_rollback(
-    payload: RollbackRequest, _: Annotated[dict[str, Any], Depends(require_admin)]
+    request: Request,
+    payload: RollbackRequest,
+    _: Annotated[dict[str, Any], Depends(require_admin)],
 ) -> dict[str, Any]:
     """按快照把 `data/` 换回历史状态（SPEC §4.5 的六步，**破坏性、不可撤销**）。
 
@@ -132,12 +134,21 @@ async def do_rollback(
     快照 ts 不认识        404   索引里没有这一份
     对象缺片              409   **整次拒绝**（不做半截回滚），响应列出缺的 sha 前 12 位
     已有同步在跑          409   与 ETL / 行情刷新串行，撞上就拒
+    非主实例              409   后台全局数据操作只由持锁实例执行
     `confirm` 不相等      422   防手滑——**界面上那个确认框不是门**
     ==================== ===== ==============================================
 
     **同步返回完整结论**（不像 `POST /etl/run` 那样回 202）：回滚是分钟以内的事，而调用方
     要的正是「还回去了什么、之后的体检什么读数」，拆成两段反而要再轮询一次。
     """
+    if getattr(request.app.state, "background_owner", None) is False:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "本进程不是后台任务主实例（后台任务仅由持锁实例执行）；"
+                "请在主实例触发，或重启本进程重新竞选"
+            ),
+        )
     if payload.confirm != payload.snapshot:
         raise HTTPException(
             status_code=422,

@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import data as data_api
 from app.core.config import get_settings
 from app.data import data_health as dh
 from app.data import health_log, snapshots
@@ -183,6 +184,23 @@ def test_snapshots_list_is_newest_first(signed_in_admin: Any, data_dir: Path) ->
 
     assert body["total"] == 2
     assert [row["ts"] for row in body["snapshots"]] == [second["ts"], first["ts"]]
+
+
+def test_rollback_rejects_a_standby_process(
+    signed_in_admin: Any, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """破坏性全局操作不能落在只服务 HTTP 的副本上。"""
+    monkeypatch.setattr(app.state, "background_owner", False, raising=False)
+    called: list[Any] = []
+    monkeypatch.setattr(data_api.rollback, "execute", lambda *args, **kwargs: called.append(True))
+
+    response = client.post(
+        "/api/v1/data/rollback", json={"snapshot": "x", "confirm": "x"}
+    )
+
+    assert response.status_code == 409
+    assert "不是后台任务主实例" in response.json()["detail"]
+    assert called == []
 
 
 def test_rollback_refuses_a_mismatched_confirm(signed_in_admin: Any, data_dir: Path) -> None:

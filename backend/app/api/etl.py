@@ -38,6 +38,10 @@ async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(requ
     result["running"] = runner.is_running()
     result["scheduler"] = {
         "enabled": settings.etl_enabled,
+        # owner/active 分开：前者是“本进程有没有后台主实例锁”，后者是“本进程是否真起了
+        # 调度器”。enabled 仍是配置值——三者混在一起会让读者误判“配置开了就等于在跑”。
+        "owner": getattr(request.app.state, "background_owner", None),
+        "active": getattr(request.app.state, "scheduler", None) is not None,
         "hour": settings.etl_hour,
         "minute": settings.etl_minute,
         "trailing_days": settings.etl_trailing_days,
@@ -59,11 +63,22 @@ async def get_status(request: Request, _: Annotated[dict[str, Any], Depends(requ
 
 
 @router.post("/run", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_run(_: Annotated[dict[str, Any], Depends(require_admin)]) -> dict[str, Any]:
+async def trigger_run(
+    request: Request, _: Annotated[dict[str, Any], Depends(require_admin)]
+) -> dict[str, Any]:
     """手动触发一次日增量（回落窗口），后台执行、立即回话。
 
     **admin 门（E2b）**：一次触发是**全局**动作（全市场语料/行情），影响所有用户。
+    **后台主实例门（E 批）**：非持锁进程只服务 HTTP，不能在这里起一轮全局 ETL。
     """
+    if getattr(request.app.state, "background_owner", None) is False:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "本进程不是后台任务主实例（后台任务仅由持锁实例执行）；"
+                "请在主实例触发，或重启本进程重新竞选"
+            ),
+        )
     if runner.is_running():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已有一次 ETL 在执行")
     settings = get_settings()
