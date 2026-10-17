@@ -97,7 +97,7 @@ function buildOption(payload: ICBarsPayload, t: ChartTokens): EChartsCoreOption 
   return {
     animation: false,
     backgroundColor: "transparent",
-    grid: { left: 12, right: 16, top: 16, bottom: 4, containLabel: true },
+    grid: { left: 12, right: 16, top: 16, bottom: 4, outerBoundsMode: "same", outerBoundsContain: "axisLabel" },
     tooltip: {
       trigger: "item",
       backgroundColor: t.surface,

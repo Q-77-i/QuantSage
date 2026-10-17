@@ -54,7 +54,7 @@ function buildOption(
 
   return {
     animation: false,
-    grid: { left: 12, right: 16, top: 28, bottom: 8, containLabel: true },
+    grid: { left: 12, right: 16, top: 28, bottom: 8, outerBoundsMode: "same", outerBoundsContain: "axisLabel" },
     tooltip: {
       trigger: "item",
       backgroundColor: tokens.surface,

@@ -144,7 +144,7 @@ function buildOption(
 ): EChartsCoreOption {
   return {
     animation: false,
-    grid: { left: 8, right: 16, top: 12, bottom: 56, containLabel: true },
+    grid: { left: 8, right: 16, top: 12, bottom: 56, outerBoundsMode: "same", outerBoundsContain: "axisLabel" },
     tooltip: {
       trigger: "item",
       backgroundColor: tokens.surface,
@@ -353,7 +353,7 @@ function buildLineOption(
 ): EChartsCoreOption {
   return {
     animation: false,
-    grid: { left: 8, right: 24, top: 24, bottom: 12, containLabel: true },
+    grid: { left: 8, right: 24, top: 24, bottom: 12, outerBoundsMode: "same", outerBoundsContain: "axisLabel" },
     tooltip: {
       trigger: "axis",
       backgroundColor: tokens.surface,

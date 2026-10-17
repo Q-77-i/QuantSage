@@ -86,7 +86,7 @@ function buildOption(
   return {
     animation: false,
     backgroundColor: "transparent",
-    grid: { left: 12, right: 16, top: 30, bottom: 4, containLabel: true },
+    grid: { left: 12, right: 16, top: 30, bottom: 4, outerBoundsMode: "same", outerBoundsContain: "axisLabel" },
     legend: {
       top: 2,
       right: 0,

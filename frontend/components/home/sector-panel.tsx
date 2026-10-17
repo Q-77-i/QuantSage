@@ -172,7 +172,7 @@ function buildOption(
   return {
     animation: false,
     // 横向条：类目在 y 轴，`inverse` 让第一名在最上面（否则 ECharts 从下往上排）
-    grid: { left: 8, right: 76, top: 8, bottom: 24, containLabel: true },
+    grid: { left: 8, right: 76, top: 8, bottom: 24, outerBoundsMode: "same", outerBoundsContain: "axisLabel" },
     tooltip: {
       trigger: "item",
       backgroundColor: tokens.surface,
