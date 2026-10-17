@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import reports as reports_api
+from app.core.config import get_settings
 from app.data import duckdb_client
 from app.main import app
 from app.report import pdf as pdf_module
@@ -52,6 +53,21 @@ def test_token_signature_actually_covers_the_payload() -> None:
 
     tampered = f"{int(expires) + 3600}.{signature}"
     assert not verify_export_token(report_id, tampered, now=1_100.0)
+
+
+def test_export_token_requires_a_non_empty_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """没有 JWT_SECRET 时不能签：空密钥的 HMAC 谁都能算出来。"""
+    monkeypatch.setenv("JWT_SECRET", "")
+    get_settings.cache_clear()
+    try:
+        report_id = str(uuid.uuid4())
+        assert not verify_export_token(report_id, "1.abc", now=0)
+        with pytest.raises(pdf_module.PdfRenderError):
+            issue_export_token(report_id, now=1_000.0)
+    finally:
+        get_settings.cache_clear()
 
 
 def test_print_page_url_carries_the_token() -> None:

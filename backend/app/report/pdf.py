@@ -67,24 +67,34 @@ class PdfRenderError(RuntimeError):
     """渲染失败（浏览器起不来 / 页面打不开 / 超时）。端点翻 500，detail 带原因。"""
 
 
-def _secret() -> bytes:
-    return get_settings().jwt_secret.get_secret_value().encode("utf-8")
+def _secret() -> bytes | None:
+    """签名密钥；未配置时返回 None（**不能**用空密钥签——任何人都能伪造）。"""
+    value = get_settings().jwt_secret.get_secret_value()
+    return value.encode("utf-8") if value else None
 
 
-def _digest(report_id: str, expires_at: int) -> str:
-    return hmac.new(_secret(), f"{report_id}|{expires_at}".encode(), hashlib.sha256).hexdigest()
+def _digest(secret: bytes, report_id: str, expires_at: int) -> str:
+    return hmac.new(
+        secret, f"{report_id}|{expires_at}".encode(), hashlib.sha256
+    ).hexdigest()
 
 
 def issue_export_token(report_id: str, *, ttl: int = EXPORT_TTL_SECONDS, now: float | None = None) -> str:
     """签发导出令牌：`<过期时间戳>.<签名>`。**不落库**——它是一次性能力的自证。"""
+    secret = _secret()
+    if secret is None:
+        raise PdfRenderError("JWT_SECRET 未配置，无法签发导出令牌")
     expires_at = int((now if now is not None else time.time()) + ttl)
-    return f"{expires_at}.{_digest(report_id, expires_at)}"
+    return f"{expires_at}.{_digest(secret, report_id, expires_at)}"
 
 
 def verify_export_token(
     report_id: str, token: str, *, now: float | None = None
 ) -> bool:
     """校验导出令牌：格式、有效期、签名三者都要过。**任何异常都返回 False**（不泄露细节）。"""
+    secret = _secret()
+    if secret is None:
+        return False
     try:
         raw_expires, signature = token.split(".", 1)
         expires_at = int(raw_expires)
@@ -92,7 +102,7 @@ def verify_export_token(
         return False
     if expires_at < int(now if now is not None else time.time()):
         return False
-    return hmac.compare_digest(signature, _digest(report_id, expires_at))
+    return hmac.compare_digest(signature, _digest(secret, report_id, expires_at))
 
 
 def print_page_url(report_id: str, token: str, *, base_url: str | None = None) -> str:
