@@ -84,6 +84,14 @@ function DecisionCardItem({
           <span className="text-sm text-ink-2">{name}</span>
         ) : null}
         <StatusBadge status={decision.status} label={decision.status_label} />
+        {card.originLabel ? (
+          <span
+            data-risk-badge
+            className="inline-flex items-center rounded-[var(--radius)] border border-warn/40 px-1.5 py-0.5 text-xs whitespace-nowrap text-warn"
+          >
+            {card.originLabel}
+          </span>
+        ) : null}
         <span className="num ml-auto text-xs text-ink-3">决策日 {decision.trade_date}</span>
       </div>
 
@@ -158,7 +166,9 @@ function DecisionCardItem({
           </>
         ) : (
           <span className="text-xs text-warn">
-            已批准，等下一交易日开盘成交——点「推进一天」，成交价与成交股数到那时才确定。
+            {card.autoExit
+              ? "风控止损单已自动批准，不可驳回；点「推进一天」按次日开盘价成交。"
+              : "已批准，等下一交易日开盘成交——点「推进一天」，成交价与成交股数到那时才确定。"}
           </span>
         )}
       </div>

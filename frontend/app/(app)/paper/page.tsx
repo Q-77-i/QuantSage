@@ -10,6 +10,7 @@ import { DecisionTable } from "@/components/paper/decision-table";
 import { EquityPanel, SettlementTable } from "@/components/paper/equity-panel";
 import { PaperForm } from "@/components/paper/paper-form";
 import { PositionsTable } from "@/components/paper/positions-table";
+import { RiskPanel } from "@/components/paper/risk-panel";
 import { StepControls } from "@/components/paper/step-controls";
 import { usePaperAccount, usePaperSessions, useSymbolNames } from "@/components/paper/use-paper";
 import { useAccountReports } from "@/components/research/use-report";
@@ -143,6 +144,9 @@ function PaperView() {
       {detail ? (
         <div className="mt-4 flex flex-col gap-6">
           <AccountCard detail={detail} />
+
+          {/* 风控：先看账户受什么约束，再看今天要批什么 */}
+          <RiskPanel detail={detail} names={names} />
 
           {/* 出研报：绩效研报是账户的产物，入口跟着账户走（页头不加导航项，M5b 记过窄屏溢出） */}
           <ReportEntry accountId={detail.account.id} sessionName={detail.account.name} />

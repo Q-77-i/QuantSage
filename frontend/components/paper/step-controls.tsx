@@ -110,7 +110,8 @@ export function StepControls({
       {confirming ? (
         <p className="mt-2 text-xs text-ink-3">
           跑到结束会一路推进到 <span className="num">{detail.progress.end}</span>，
-          新生成的决策按「{approve === "all" ? "全部批准" : "全部驳回"}」处理，
+          新生成的决策按「{approve === "all" ? "全部批准" : "全部驳回"}」处理
+          {approve === "none" ? "（风控止损仍会执行）" : ""}，
           <strong className="font-medium">跑完不能再推进</strong>。
         </p>
       ) : null}

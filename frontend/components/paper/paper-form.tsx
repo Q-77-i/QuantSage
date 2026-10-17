@@ -5,8 +5,15 @@ import { useEffect, useState } from "react";
 import { Check, Field, Input, Select } from "@/components/ui/form-controls";
 import { api, describeError } from "@/lib/api";
 import { STRATEGIES, symbolName } from "@/lib/backtest-form";
-import { STRATEGY_PARAM_DEFAULTS, parseSymbols, paperRequest } from "@/lib/paper";
-import type { PaperFormState } from "@/lib/paper";
+import {
+  RISK_PRESETS,
+  RISK_PROFILE_LABELS,
+  STRATEGY_PARAM_DEFAULTS,
+  parseSymbols,
+  paperRequest,
+  riskProfileHint,
+} from "@/lib/paper";
+import type { PaperFormState, RiskProfile } from "@/lib/paper";
 import type { PaperAccountDetail, StrategySummary } from "@/lib/types";
 
 /**
@@ -30,6 +37,8 @@ export function PaperForm({ onCreated }: { onCreated: (detail: PaperAccountDetai
     end: "",
     fees: true,
     slippage: true,
+    riskProfile: "standard",
+    risk: { ...RISK_PRESETS.standard },
   });
   const [strategies, setStrategies] = useState<StrategySummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +53,11 @@ export function PaperForm({ onCreated }: { onCreated: (detail: PaperAccountDetai
   }, []);
 
   const parsed = parseSymbols(form.symbolsText);
+  const riskHint = riskProfileHint(form.riskProfile, form.risk);
+
+  function setRisk(key: keyof PaperFormState["risk"], value: string) {
+    setForm({ ...form, risk: { ...form.risk, [key]: Number(value) } });
+  }
 
   async function submit() {
     const { body, error: invalid } = paperRequest(form);
@@ -220,6 +234,72 @@ export function PaperForm({ onCreated }: { onCreated: (detail: PaperAccountDetai
             </Field>
           </>
         ) : null}
+      </div>
+
+      <div className="mt-4 rounded-[var(--radius)] border border-border p-3">
+        <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+          <Field label="风控档位" htmlFor="paper-risk-profile">
+            <Select
+              id="paper-risk-profile"
+              value={form.riskProfile}
+              onChange={(event) =>
+                setForm({ ...form, riskProfile: event.target.value as RiskProfile })
+              }
+              className="w-[9rem]"
+            >
+              {(Object.entries(RISK_PROFILE_LABELS) as [RiskProfile, string][]).map(
+                ([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ),
+              )}
+            </Select>
+          </Field>
+          <p className="text-xs text-ink-3">{riskHint ?? "本次不启用风控。"}</p>
+        </div>
+
+        {form.riskProfile === "custom" ? (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="总仓位上限（%）" htmlFor="paper-risk-gross">
+              <Input
+                id="paper-risk-gross"
+                inputMode="decimal"
+                value={String(form.risk.max_gross_exposure)}
+                onChange={(event) => setRisk("max_gross_exposure", event.target.value)}
+              />
+            </Field>
+            <Field label="单标的上限（%）" htmlFor="paper-risk-position">
+              <Input
+                id="paper-risk-position"
+                inputMode="decimal"
+                value={String(form.risk.max_position)}
+                onChange={(event) => setRisk("max_position", event.target.value)}
+              />
+            </Field>
+            <Field label="止损（%）" htmlFor="paper-risk-stop">
+              <Input
+                id="paper-risk-stop"
+                inputMode="decimal"
+                value={String(form.risk.stop_loss)}
+                onChange={(event) => setRisk("stop_loss", event.target.value)}
+              />
+            </Field>
+            <Field label="回撤上限（%）" htmlFor="paper-risk-drawdown">
+              <Input
+                id="paper-risk-drawdown"
+                inputMode="decimal"
+                value={String(form.risk.max_drawdown)}
+                onChange={(event) => setRisk("max_drawdown", event.target.value)}
+              />
+            </Field>
+          </div>
+        ) : null}
+
+        <p className="mt-2 text-xs text-ink-3">
+          风控上限在会话创建后不可修改；止损单由系统自动批准。上限是<strong className="font-medium">硬顶不是目标</strong>
+          ——单标的上限在 5 只以上池子里通常不触发。
+        </p>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-ink-2">

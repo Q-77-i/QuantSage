@@ -872,6 +872,53 @@ export interface PaperSources {
   source_url?: string;
 }
 
+/** E5 风控上限（百分比，0–100） */
+export interface PaperRiskLimits {
+  max_gross_exposure: number;
+  max_position: number;
+  stop_loss: number;
+  max_drawdown: number;
+}
+
+/** `as_of` 收盘的风控快照；权益 ≤ 0 时三个比率为 `null` */
+export interface PaperRiskState {
+  as_of: string;
+  peak_equity: number;
+  equity: number;
+  drawdown_pct: number | null;
+  gross_exposure_pct: number | null;
+  max_position_pct: number | null;
+  blocked_by_drawdown: boolean;
+}
+
+export type PaperRiskVerdict = "pass" | "cap" | "block" | "trigger" | "breach" | "clear";
+
+export type PaperRiskGate =
+  | "gross_exposure"
+  | "concentration"
+  | "stop_loss"
+  | "drawdown"
+  | "position_open"
+  | "stop_loss_pending"
+  | null;
+
+/** 一行风控审计（服务端 `decision_audit`）；`decision_id` 对拦截提案是 would-be id */
+export interface PaperRiskEvent {
+  id: string;
+  account_id: string;
+  decision_id: string | null;
+  trade_date: string;
+  symbol: string | null;
+  side: "buy" | "sell" | null;
+  origin: "strategy" | "risk";
+  kind: "proposal" | "exit" | "stop_loss" | "drawdown_state";
+  verdict: PaperRiskVerdict;
+  gate: PaperRiskGate;
+  metrics: Record<string, number | null>;
+  detail: string;
+  created_at: string | null;
+}
+
 export interface PaperDecision {
   id: string;
   account_id: string;
@@ -891,6 +938,8 @@ export interface PaperDecision {
   fill: PaperFill | null;
   reject_code: string | null;
   reject_reason: string | null;
+  /** `strategy` / `risk`——风控止损单由系统自动批准（旧数据缺省按 strategy 读） */
+  origin?: "strategy" | "risk";
 }
 
 export interface PaperPosition {
@@ -925,6 +974,8 @@ export interface PaperAccountConfig {
     fee_enabled: boolean;
     slippage_enabled: boolean;
   };
+  /** E5：`null` = 未启用（旧会话缺键也按未启用读） */
+  risk?: PaperRiskLimits | null;
 }
 
 /** 每只标的的涨跌停判定生效情况（升格如实标注：`skipped` 时要说出来） */
@@ -963,6 +1014,9 @@ export interface PaperStepOutcome {
   expired: PaperDecision[];
   unfilled: PaperDecision[];
   generated: PaperDecision[];
+  /** E5：风控止损单（生来 approved）与当日风控审计 */
+  risk_exits?: PaperDecision[];
+  risk_events?: PaperRiskEvent[];
 }
 
 export interface PaperAccountDetail {
@@ -975,6 +1029,9 @@ export interface PaperAccountDetail {
   /** `decisions` 里状态为待审批的那些（省得前端自己过滤） */
   pending: PaperDecision[];
   equity_curve: PaperEquityPoint[];
+  /** E5：风控未启用时是 `{}`（旧响应可能缺键） */
+  risk_state?: PaperRiskState | Record<string, never> | null;
+  risk_events?: PaperRiskEvent[];
   this_step?: PaperStepOutcome;
 }
 
@@ -1004,6 +1061,8 @@ export interface PaperAccountRequest {
   start: string;
   end?: string;
   costs: { fees: boolean; slippage: boolean; slippage_bps: number };
+  /** E5：四个值必须同时给；省略 = 关闭 */
+  risk?: PaperRiskLimits;
 }
 
 // ── M7 绩效研报 ────────────────────────────────────────────────────────────

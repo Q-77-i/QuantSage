@@ -13,11 +13,17 @@
 
 import { amount, num } from "./format";
 import type {
+  PaperAccountDetail,
   PaperAccountRequest,
   PaperDecision,
   PaperDecisionStatus,
   PaperEquityPoint,
   PaperProgress,
+  PaperRiskEvent,
+  PaperRiskGate,
+  PaperRiskLimits,
+  PaperRiskState,
+  PaperRiskVerdict,
   PaperStepOutcome,
 } from "./types";
 
@@ -59,6 +65,7 @@ const SIDE_LABELS: Record<PaperDecision["side"], string> = { buy: "买入", sell
 const REASON_PREFIXES: Record<string, string> = {
   ma_cross: "双均线",
   event_driven: "事件驱动",
+  risk: "风控",
 };
 
 export function sideLabel(side: PaperDecision["side"]): string {
@@ -132,6 +139,9 @@ export function decisionCard(decision: PaperDecision) {
     reason: reasonText(decision.reason),
     sources: sourceRows(decision),
     reject: decision.reject_reason,
+    /** 风控止损单：系统自动批准，界面加徽章、不可驳回（`canDecide` 仍只看 pending） */
+    originLabel: decision.origin === "risk" ? "风控自动" : null,
+    autoExit: decision.origin === "risk" && decision.status === "approved",
   };
 }
 
@@ -162,6 +172,17 @@ export function stepLines(outcome: PaperStepOutcome | undefined): StepLine[] {
     });
   if (outcome.generated.length)
     lines.push({ tone: "action", text: `新生成 ${outcome.generated.length} 条待审批` });
+  const exits = outcome.risk_exits ?? [];
+  if (exits.length)
+    lines.push({
+      tone: "waiting",
+      text: `风控止损 ${exits.length} 笔（自动批准，T+1 开盘成交）`,
+    });
+  const blocked = (outcome.risk_events ?? []).filter(
+    (event) => event.verdict === "block",
+  ).length;
+  if (blocked)
+    lines.push({ tone: "void", text: `风控拦截 ${blocked} 笔买入（见风控日志）` });
   return lines;
 }
 
@@ -201,6 +222,171 @@ export function ruleDegradations(
   return Object.entries(rules)
     .filter(([, rule]) => rule.limit_check !== "on")
     .map(([symbol, rule]) => ({ symbol, reason: rule.reason ?? "未说明" }));
+}
+
+// ── E5 风控 ────────────────────────────────────────────────
+
+export type RiskProfile = "off" | "standard" | "strict" | "custom";
+
+/** 预设只做填充，最终值随会话冻结（API 收的是四个具体数值，不是一个档位名） */
+export const RISK_PRESETS: Record<"standard" | "strict", PaperRiskLimits> = {
+  standard: {
+    max_gross_exposure: 95,
+    max_position: 30,
+    stop_loss: 6,
+    max_drawdown: 10,
+  },
+  strict: {
+    max_gross_exposure: 80,
+    max_position: 20,
+    stop_loss: 4,
+    max_drawdown: 8,
+  },
+};
+
+export const RISK_PROFILE_LABELS: Record<RiskProfile, string> = {
+  off: "关闭",
+  standard: "标准",
+  strict: "严格",
+  custom: "自定义",
+};
+
+/** 档位 → 最终四个值；`off` 返回 null（请求里省略 `risk`） */
+export function riskProfileLimits(
+  profile: RiskProfile,
+  custom: PaperRiskLimits,
+): PaperRiskLimits | null {
+  if (profile === "off") return null;
+  if (profile === "custom") return { ...custom };
+  return { ...RISK_PRESETS[profile] };
+}
+
+export function riskProfileHint(
+  profile: RiskProfile,
+  custom: PaperRiskLimits,
+): string | null {
+  const limits = riskProfileLimits(profile, custom);
+  if (!limits) return null;
+  return (
+    `总仓位 ≤${limits.max_gross_exposure}% · 单标的 ≤${limits.max_position}% · ` +
+    `止损 -${limits.stop_loss}% · 回撤 ≤${limits.max_drawdown}%`
+  );
+}
+
+/** 本地只拦「不是 0–100 的正数」；「缩量后买不起一手」由后端 422 指出是哪只 */
+export function riskRequestError(limits: PaperRiskLimits): string | null {
+  const entries: [string, number][] = [
+    ["总仓位上限", limits.max_gross_exposure],
+    ["单标的上限", limits.max_position],
+    ["止损", limits.stop_loss],
+    ["回撤上限", limits.max_drawdown],
+  ];
+  for (const [label, value] of entries) {
+    if (!Number.isFinite(value) || value <= 0 || value > 100) {
+      return `${label}要填 0–100 的正数`;
+    }
+  }
+  return null;
+}
+
+export type RiskTone = "normal" | "warn";
+
+const RISK_GATE_LABELS: Record<Exclude<PaperRiskGate, null>, string> = {
+  gross_exposure: "总仓位",
+  concentration: "单标的集中度",
+  stop_loss: "止损",
+  drawdown: "回撤",
+  position_open: "已持仓",
+  stop_loss_pending: "止损挂单中",
+};
+
+const RISK_VERDICT_LABELS: Record<PaperRiskVerdict, string> = {
+  pass: "放行",
+  cap: "缩量",
+  block: "拦截",
+  trigger: "触发",
+  breach: "超限",
+  clear: "恢复",
+};
+
+export function riskGateLabel(gate: PaperRiskGate): string {
+  return gate ? RISK_GATE_LABELS[gate] : "—";
+}
+
+export function riskVerdictLabel(verdict: PaperRiskVerdict): string {
+  return RISK_VERDICT_LABELS[verdict];
+}
+
+/** 风控的「需要看一眼」统一用 `--warn`，不借红绿（红绿是涨跌/买卖的专用色） */
+export function riskTone(verdict: PaperRiskVerdict): RiskTone {
+  return verdict === "pass" || verdict === "clear" ? "normal" : "warn";
+}
+
+export function riskEventSymbol(event: PaperRiskEvent): string {
+  return event.symbol ?? "全账户";
+}
+
+export interface RiskRow {
+  metric: "gross_exposure" | "position" | "drawdown";
+  label: string;
+  /** 百分比；`null` = 无定义（权益 ≤ 0） */
+  current: number | null;
+  limit: number;
+  /** 进度条宽度（0–1）；`null` 时不画条 */
+  ratio: number | null;
+  alert: boolean;
+}
+
+/** `risk_state` 在风控关闭时是 `{}`（旧响应可能缺键）——用 `as_of` 判「有没有快照」 */
+export function riskStateOf(
+  state: PaperAccountDetail["risk_state"] | undefined,
+): PaperRiskState | null {
+  if (!state || !("as_of" in state)) return null;
+  return state as PaperRiskState;
+}
+
+export function riskRows(state: PaperRiskState, limits: PaperRiskLimits): RiskRow[] {
+  const row = (
+    metric: RiskRow["metric"],
+    label: string,
+    current: number | null,
+    limit: number,
+    alert: boolean,
+  ): RiskRow => ({
+    metric,
+    label,
+    current,
+    limit,
+    ratio:
+      current === null || limit <= 0
+        ? null
+        : Math.min(Math.max(current / limit, 0), 1),
+    alert,
+  });
+  return [
+    row(
+      "gross_exposure",
+      "总仓位",
+      state.gross_exposure_pct,
+      limits.max_gross_exposure,
+      state.gross_exposure_pct !== null &&
+        state.gross_exposure_pct > limits.max_gross_exposure,
+    ),
+    row(
+      "position",
+      "最大单标的",
+      state.max_position_pct,
+      limits.max_position,
+      state.max_position_pct !== null && state.max_position_pct > limits.max_position,
+    ),
+    row(
+      "drawdown",
+      "当前回撤",
+      state.drawdown_pct,
+      limits.max_drawdown,
+      state.blocked_by_drawdown,
+    ),
+  ];
 }
 
 // ── 净值曲线 ──────────────────────────────────────────────────────────────
@@ -280,6 +466,9 @@ export interface PaperFormState {
   end: string;
   fees: boolean;
   slippage: boolean;
+  /** E5：档位只做预设填充；`custom` 时用 `risk` 里的四个值 */
+  riskProfile: RiskProfile;
+  risk: PaperRiskLimits;
 }
 
 /**
@@ -334,6 +523,11 @@ export function paperRequest(form: PaperFormState): {
   if (!form.start) return { body: null, error: "选一个起点日期" };
   if (form.strategy === "user" && !form.strategyId)
     return { body: null, error: "选一条已保存的策略（模拟盘只认库里的源码）" };
+  const risk = riskProfileLimits(form.riskProfile, form.risk);
+  if (risk) {
+    const riskError = riskRequestError(risk);
+    if (riskError) return { body: null, error: riskError };
+  }
 
   return {
     body: {
@@ -346,6 +540,7 @@ export function paperRequest(form: PaperFormState): {
       start: form.start,
       ...(form.end ? { end: form.end } : {}),
       costs: { fees: form.fees, slippage: form.slippage, slippage_bps: 5 },
+      ...(risk ? { risk } : {}),
     },
     error: null,
   };

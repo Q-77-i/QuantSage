@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  RISK_PRESETS,
   STRATEGY_PARAM_DEFAULTS,
   canDecide,
   effectiveParams,
@@ -11,6 +12,14 @@ import {
   pnlTone,
   progressRatio,
   reasonText,
+  riskEventSymbol,
+  riskGateLabel,
+  riskProfileLimits,
+  riskRequestError,
+  riskRows,
+  riskStateOf,
+  riskTone,
+  riskVerdictLabel,
   ruleDegradations,
   sideLabel,
   sourceRows,
@@ -18,7 +27,13 @@ import {
   stepLines,
   totalReturn,
 } from "./paper";
-import type { PaperDecision, PaperDecisionStatus, PaperEquityPoint } from "./types";
+import type {
+  PaperDecision,
+  PaperDecisionStatus,
+  PaperEquityPoint,
+  PaperRiskEvent,
+  PaperRiskState,
+} from "./types";
 
 function decision(overrides: Partial<PaperDecision> = {}): PaperDecision {
   return {
@@ -38,6 +53,25 @@ function decision(overrides: Partial<PaperDecision> = {}): PaperDecision {
     fill: null,
     reject_code: null,
     reject_reason: null,
+    ...overrides,
+  };
+}
+
+function riskEvent(overrides: Partial<PaperRiskEvent> = {}): PaperRiskEvent {
+  return {
+    id: "e1",
+    account_id: "a1",
+    decision_id: "d1",
+    trade_date: "2026-08-24",
+    symbol: "000001",
+    side: "buy",
+    origin: "strategy",
+    kind: "proposal",
+    verdict: "pass",
+    gate: null,
+    metrics: {},
+    detail: "",
+    created_at: null,
     ...overrides,
   };
 }
@@ -171,6 +205,96 @@ describe("decisionCard", () => {
       "一字涨停：全天无卖盘",
     );
   });
+
+  it("风控止损单带「风控自动」标识，理由前缀翻成风控", () => {
+    const card = decisionCard(
+      decision({
+        origin: "risk",
+        status: "approved",
+        reason: "risk:止损触发（浮亏 12.0% ≥ 6.0%）",
+      }),
+    );
+    expect(card.originLabel).toBe("风控自动");
+    expect(card.autoExit).toBe(true);
+    expect(card.reason).toBe("风控 · 止损触发（浮亏 12.0% ≥ 6.0%）");
+  });
+
+  it("普通策略单没有风控标识", () => {
+    const card = decisionCard(decision());
+    expect(card.originLabel).toBeNull();
+    expect(card.autoExit).toBe(false);
+  });
+});
+
+describe("E5 风控", () => {
+  it("档位 → 四个值；关闭为 null", () => {
+    expect(riskProfileLimits("standard", RISK_PRESETS.standard)).toEqual(RISK_PRESETS.standard);
+    expect(riskProfileLimits("off", RISK_PRESETS.standard)).toBeNull();
+    expect(
+      riskProfileLimits("custom", {
+        max_gross_exposure: 90,
+        max_position: 25,
+        stop_loss: 5,
+        max_drawdown: 12,
+      }),
+    ).toEqual({
+      max_gross_exposure: 90,
+      max_position: 25,
+      stop_loss: 5,
+      max_drawdown: 12,
+    });
+  });
+
+  it("自定义档校验 0–100", () => {
+    expect(riskRequestError(RISK_PRESETS.standard)).toBeNull();
+    expect(riskRequestError({ ...RISK_PRESETS.standard, stop_loss: 0 })).toContain("止损");
+    expect(riskRequestError({ ...RISK_PRESETS.standard, max_position: 101 })).toContain(
+      "单标的",
+    );
+  });
+
+  it("风险状态 → 三读数；超限才标警，null 不编 0", () => {
+    const state: PaperRiskState = {
+      as_of: "2026-08-24",
+      peak_equity: 500_000,
+      equity: 480_000,
+      drawdown_pct: 4.0,
+      gross_exposure_pct: 101.0,
+      max_position_pct: null,
+      blocked_by_drawdown: true,
+    };
+    const rows = riskRows(state, RISK_PRESETS.standard);
+    expect(rows.map((row) => row.metric)).toEqual([
+      "gross_exposure",
+      "position",
+      "drawdown",
+    ]);
+    expect(rows[0].alert).toBe(true); // 101 > 95
+    expect(rows[1].current).toBeNull();
+    expect(rows[1].ratio).toBeNull();
+    expect(rows[1].alert).toBe(false);
+    expect(rows[2].alert).toBe(true); // blocked_by_drawdown
+    expect(rows[2].ratio).toBeCloseTo(0.4);
+  });
+
+  it("风控关闭的 `{}` 判成 null（不画空表）", () => {
+    expect(riskStateOf({})).toBeNull();
+    expect(riskStateOf(undefined)).toBeNull();
+  });
+
+  it("闸门 / 处置中文与语气", () => {
+    expect(riskGateLabel("concentration")).toBe("单标的集中度");
+    expect(riskGateLabel(null)).toBe("—");
+    expect(riskVerdictLabel("block")).toBe("拦截");
+    expect(riskTone("pass")).toBe("normal");
+    expect(riskTone("cap")).toBe("warn");
+    expect(riskTone("trigger")).toBe("warn");
+  });
+
+  it("回撤状态切换的标的显示「全账户」", () => {
+    expect(riskEventSymbol(riskEvent({ symbol: null }))).toBe("全账户");
+    expect(riskEventSymbol(riskEvent())).toBe("000001");
+  });
 });
 
 describe("stepLines", () => {
@@ -185,6 +309,25 @@ describe("stepLines", () => {
     expect(lines).toEqual([
       { tone: "normal", text: "成交 1 笔" },
       { tone: "action", text: "新生成 2 条待审批" },
+    ]);
+  });
+
+  it("风控止损与拦截各占一行", () => {
+    const lines = stepLines({
+      trade_date: "2026-08-25",
+      filled: [],
+      expired: [],
+      unfilled: [],
+      generated: [],
+      risk_exits: [decision({ id: "r", origin: "risk", status: "approved" })],
+      risk_events: [
+        riskEvent({ id: "e1", verdict: "block" }),
+        riskEvent({ id: "e2", verdict: "pass" }),
+      ],
+    });
+    expect(lines).toEqual([
+      { tone: "waiting", text: "风控止损 1 笔（自动批准，T+1 开盘成交）" },
+      { tone: "void", text: "风控拦截 1 笔买入（见风控日志）" },
     ]);
   });
 
@@ -329,6 +472,8 @@ describe("paperRequest", () => {
     end: "",
     fees: true,
     slippage: true,
+    riskProfile: "standard" as const,
+    risk: RISK_PRESETS.standard,
   };
 
   it("end 为空就不传这个键（后端缺省取池子最后一根 bar）", () => {
@@ -341,6 +486,27 @@ describe("paperRequest", () => {
 
   it("填了 end 就带上", () => {
     expect(paperRequest({ ...form, end: "2026-09-30" }).body!["end"]).toBe("2026-09-30");
+  });
+
+  it("风控档位：关闭不传 risk；标准档传四个值；自定义越界本地拦下", () => {
+    expect(paperRequest({ ...form, riskProfile: "off" }).body).not.toHaveProperty("risk");
+    expect(paperRequest(form).body!.risk).toEqual(RISK_PRESETS.standard);
+    const custom = {
+      max_gross_exposure: 90,
+      max_position: 25,
+      stop_loss: 5,
+      max_drawdown: 12,
+    };
+    expect(paperRequest({ ...form, riskProfile: "custom", risk: custom }).body!.risk).toEqual(
+      custom,
+    );
+    const bad = paperRequest({
+      ...form,
+      riskProfile: "custom",
+      risk: { ...RISK_PRESETS.standard, stop_loss: 0 },
+    });
+    expect(bad.body).toBeNull();
+    expect(bad.error).toContain("止损");
   });
 
   it("切了策略就只发该策略的参数（界面上看不见的东西不进请求）", () => {

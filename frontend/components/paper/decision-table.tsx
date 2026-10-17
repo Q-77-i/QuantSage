@@ -59,6 +59,11 @@ export function DecisionTable({
                 <span data-decision={decision.id}>
                   <StatusBadge status={decision.status} label={decision.status_label} />
                 </span>
+                {decision.origin === "risk" ? (
+                  <span data-risk-badge className="ml-1 text-xs whitespace-nowrap text-warn">
+                    风控
+                  </span>
+                ) : null}
               </Cell>
               <Cell className="num whitespace-nowrap">
                 {fill ? (
