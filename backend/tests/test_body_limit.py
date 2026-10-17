@@ -62,6 +62,29 @@ def test_grid_axis_values_are_bounded(signed_in: Any) -> None:
     assert response.status_code == 422
 
 
+def test_nan_and_infinity_are_rejected(signed_in: Any) -> None:
+    """`json.loads` 接受 NaN/Infinity，Pydantic 默认也接受；落 JSONB 时才会炸成 500。"""
+    nan = client.post(
+        "/api/v1/optimize/grid",
+        content=(
+            '{"strategy":"ma_cross","symbol":"600519",'
+            '"axes":[{"param":"fast","values":[NaN,5]}]}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    infinity = client.post(
+        "/api/v1/backtest",
+        content=(
+            '{"strategy":"ma_cross","symbol":"600519",'
+            '"params":{"fast":Infinity}}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+
+    assert nan.status_code == 422
+    assert infinity.status_code == 422
+
+
 def test_backtest_params_are_bounded(signed_in: Any) -> None:
     response = client.post(
         "/api/v1/backtest",

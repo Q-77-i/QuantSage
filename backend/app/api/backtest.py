@@ -55,6 +55,8 @@ class CostOptions(BaseModel):
     `costs: bool` 会让这项验收没法在前端复现。
     """
 
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
     fees: bool = True
     slippage: bool = True
     slippage_bps: float = Field(default=5.0, ge=0.0, le=100.0)
@@ -68,7 +70,7 @@ class CostOptions(BaseModel):
 
 
 class BacktestRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     strategy: str
     #: 仅 `strategy="user"` 时使用（M4c）：要跑的是**库里那条**源码，不是请求里现传的

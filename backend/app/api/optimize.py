@@ -70,7 +70,7 @@ KEEPALIVE_SECONDS = 15.0
 class Axis(BaseModel):
     """一条参数轴。`values` 的**顺序即展开顺序**，热力图的行列跟着它走。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     param: str
     # 上限 50：网格总格数另受 MAX_CELLS=100 约束；这里挡的是「一个轴塞百万个值」
@@ -78,7 +78,7 @@ class Axis(BaseModel):
 
 
 class GridRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     strategy: str
     strategy_id: str | None = None
@@ -99,7 +99,7 @@ class GridRequest(BaseModel):
 
 
 class StrategyPick(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     strategy: str
     strategy_id: str | None = None
@@ -107,7 +107,7 @@ class StrategyPick(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     symbols: list[str]
     strategies: list[StrategyPick]

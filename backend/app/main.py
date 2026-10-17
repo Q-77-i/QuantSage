@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -278,6 +281,33 @@ for router in (
     capabilities_router,
 ):
     app.include_router(router)
+
+
+def _finite_json(value: Any) -> Any:
+    """把 NaN / Infinity 转成字符串，供 **422 错误体**序列化。
+
+    `json.loads` 接受 `NaN`，Pydantic 会拒绝它；但 FastAPI 默认的错误体里带着
+    `input: nan`，Starlette 的 JSONResponse 用 `allow_nan=False` 序列化 ⇒ 客户端拿到的
+    不是 422，而是序列化失败的 500。这里只改错误体，不碰业务响应。
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _finite_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(item) for item in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_error(
+    _: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """与 FastAPI 默认同形（`{"detail": [...]}`），只是把非有限浮点字符串化。"""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": _finite_json(jsonable_encoder(exc.errors()))},
+    )
 
 
 @app.exception_handler(PaperConflict)

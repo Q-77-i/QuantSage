@@ -97,7 +97,7 @@ def replay_gate() -> asyncio.Semaphore:
 class RiskOptions(BaseModel):
     """风控上限（百分比）。四个值必须同时给——半开的配置在界面上说不清。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     max_gross_exposure: float = Field(gt=0, le=100)
     max_position: float = Field(gt=0, le=100)
@@ -106,7 +106,7 @@ class RiskOptions(BaseModel):
 
 
 class PaperAccountRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     name: str = Field(min_length=1, max_length=60)
     initial_cash: float = Field(default=1_000_000.0, gt=0, le=1_000_000_000.0)
