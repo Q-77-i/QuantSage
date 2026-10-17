@@ -66,5 +66,14 @@ export function credentials(form: AuthForm): { email: string; password: string }
  */
 export function safeNextPath(raw: string | null | undefined): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
-  return raw;
+  // 反斜杠在 WHATWG URL 里等同 `/`：`/\evil.example` 会被解析成 `//evil.example`。
+  // 控制字符同理，一律拒绝。
+  if (raw.includes("\\") || /[\u0000-\u001f]/.test(raw)) return "/";
+  try {
+    const probe = new URL(raw, "http://internal.invalid");
+    if (probe.origin !== "http://internal.invalid") return "/";
+    return probe.pathname + probe.search + probe.hash;
+  } catch {
+    return "/";
+  }
 }

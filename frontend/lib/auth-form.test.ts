@@ -62,4 +62,14 @@ describe("safeNextPath", () => {
     expect(safeNextPath(null)).toBe("/");
     expect(safeNextPath("")).toBe("/");
   });
+
+  it("挡反斜杠/控制字符绕过", () => {
+    // WHATWG URL 把 `\` 当 `/`：`/\evil.example` → `//evil.example`
+    expect(safeNextPath("/\\evil.example")).toBe("/");
+    expect(safeNextPath("/\tevil.example")).toBe("/");
+  });
+
+  it("站内路径保留查询串与 hash", () => {
+    expect(safeNextPath("/backtest?run=1#chart")).toBe("/backtest?run=1#chart");
+  });
 });
