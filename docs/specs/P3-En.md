@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.12）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.41 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16 + E7e 2026-10-17）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）、E7e 可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5 全节交付完毕**（§6，2026-10-17——E5a 后端核心 + 审计 + API；E5b 前端 + 真机取证 + 界面走查）；§9 E9 待滚动；**附录 A 收尾项 5 已交付**（2026-10-17——5b Agentic RAG 纠错 + A2A 静态能力卡 / 5a Agent 下单提案 / 5d 策略版本 / 5c 深研报评测）。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.43 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16 + E7e 2026-10-17）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）、E7e 可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5 全节交付完毕**（§6，2026-10-17——E5a 后端核心 + 审计 + API；E5b 前端 + 真机取证 + 界面走查）；§9 E9 待滚动；**附录 A 收尾项 5 已交付**（2026-10-17——5b Agentic RAG 纠错 + A2A 静态能力卡 / 5a Agent 下单提案 / 5d 策略版本 / 5c 深研报评测）。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -112,7 +112,7 @@ worker（进程内单协程，lifespan 起停）
 | `POST /api/v1/backtest` | **改**：202 + `{task_id, status: "queued"}`，不再内联报告；**能静态判的闸门照旧在提交时判**（401/404/422/503 语义一字不变） |
 | `GET /api/v1/tasks?limit=` | 我的任务摘要，倒序 |
 | `GET /api/v1/tasks/{task_id}` | `{id, kind, status, progress, result, error, created_at, started_at, finished_at}`；越权与不存在同为 404 |
-| `POST /api/v1/tasks/{task_id}/cancel` | `queued` → **条件更新**置 `cancelled`（`WHERE status='queued'`）；已在跑 / 已结束 → **409**（单次回测跑在子线程/子进程里，中止不了——如实拒绝，不假装能停）。与 worker 之间无需加锁：`cancel` 只改 `queued` 行、`claim` 只选 `queued` 行，两条语句各自原子，谁先命中谁生效。E1b 的网格改用 `run_cells(stop=)` 做协作式中止 |
+| `POST /api/v1/tasks/{task_id}/cancel` | `queued` → **条件更新**置 `cancelled`（`WHERE status='queued'`）；`running` 且 kind ∈ `{grid, batch}` → 写 `cancel_requested_at`（DB 标志），本进程有该任务时同时置本地事件，返回 `cancelling: true`；`running` 的单次回测 / 终态 → **409**（单次回测跑在子线程/子进程里，中止不了——如实拒绝，不假装能停）。**取消的权威标志是 DB 行**：请求落到非 worker 进程也能生效；worker 取件时与执行期每 0.5s 查一次，执行体在格边界停止派发。与 worker 之间无需加锁：`cancel` 只改 `queued` 行或写 running 行的标志、`claim` 只选 `queued` 行，各自原子。E1b 的网格用 `run_cells(stop=)` 做协作式中止；已派发的格跑完不撤回，终态以 worker 为准 |
 
 报告取回走**既有** `GET /api/v1/backtest/runs/{run_id}`（回测页深链 `?run=` 已在用这条路），不新开报告通道。
 
@@ -133,6 +133,8 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 - 对外**只能说**「排队中的任务重启后续跑」——**不得宣称「重启不丢任务」**（P3 规划底稿那句是粗口径）。
 - 已知代价（E1a 独有，E1b 会消掉）：重启会打断正在跑的**单次回测**（0.3–2s 窗口，概率极低）——失败可查、可重跑。
 - **单实例契约（E 批）**：同一业务库只支持一个应用进程承担后台任务。启动时用 session 级 advisory lock 竞选“后台主实例”；只有持锁进程启动 task worker、ETL/行情/体检调度器与结算调度器，并接受手动全局数据操作。非持锁进程作为 HTTP 副本继续服务，但不跑后台任务，`POST /etl/run` 与 `POST /data/rollback` 返回 409；其限流、熔断、SSE 实时进度、指标与进程内并发闸门仍按本进程计算。主实例退出后不自动晋升，由 supervisor 重启并重新竞选。任务扫尾只由持锁进程执行，旧版“后起者扫尾把前者 running 标 failed”的路径已不存在。多 worker 不是受支持形态；真要多实例，需把上述进程内状态外部化（P4 规模，不在此做）。
+- **取消的跨进程语义（2026-10-17 收尾项 6）**：`tasks.cancel_requested_at` 是取消的权威标志；`POST /tasks/{id}/cancel` 对 running 的网格/批量写标志并返回 `cancelling: true`，不再依赖请求是否落到 worker 进程。worker 在取件时与执行期每 0.5s 检查；已派发的格跑完不撤回，终态以 worker 为准。单次回测仍不可中止（子线程/子进程），仍 409。**这只把取消从进程内投递改为 DB 投递，不改变单实例契约**；进度、限流、熔断、指标、并发闸门仍在进程内。
+- **不引消息队列（2026-10-17 收尾项 6 评估）**：`tasks` 表即队列（持久、原子取件、幂等键、进度、取消、终态）。当前没有跨主机 / fan-out / 延迟 / 重试 / 死信需求，不引入 Celery/Redis Streams/Kafka。**触发重新评估的条件**（任一）：持续提交 > 1/s 或队列等待 p95 > 30s（单 worker 已满）；需要跨主机 worker；需要延迟任务、重试/死信或多消费者。触发后先升级 DB 队列（`FOR UPDATE SKIP LOCKED` + lease/heartbeat + `NOTIFY`），再考虑 Redis Streams（**独立 `noeviction` 实例**，不能用业务缓存的 `allkeys-lru` 实例），不先上 Celery。
 
 ### 2.5 接缝（E1c）
 
@@ -1263,7 +1265,7 @@ E8 对清单主体的动作是**核验与订正**，不是再加固一遍。四�
 | `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` | API（JSON 响应无子资源，一行即成立） |
 | 前四条 + CSP | 见 §8.10（2026-10-17 收尾加固） | 前端 `next.config.ts::headers()` |
 
-**不做**：HSTS（本地 http 无意义——与 `SESSION_COOKIE_SECURE=false` 同一处口径，上线置 https 时两处一起改）。前端 CSP 已在收尾加固中落地（§8.10）；它是 `'unsafe-inline' 'unsafe-eval'` 的折中版，完整 nonce 方案仍留后续。
+**不做**：HSTS（本地 http 无意义——与 `SESSION_COOKIE_SECURE=false` 同一处口径，上线置 https 时两处一起改）。前端 CSP 已从折中版升级为**生产 nonce + `strict-dynamic`**（`lib/csp.ts` / `middleware.ts`；开发保留 `unsafe-inline`，见 §8.10）；`next-themes` 的主题内联脚本已显式传 nonce，`connect-src` 的后端端口跟随 `NEXT_PUBLIC_API_PORT`。hash/SRI 不做（App Router 的 RSC 内联脚本随请求变化，无法静态枚举；Next 官方把 hash/SRI 列为实验特性、只适合可静态化页面）。
 
 ### 8.3 会话策略（续期 + 撤销）
 
@@ -1404,11 +1406,34 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 | 研究 | `resume` 条件抢占（并发只放行一个）；`run_id` 畸形返回 422；`_default_as_of` 的 DuckDB 取数走线程 | `claim_research_resume`、`normalize_run_id` |
 | 结算 | 手动 `review`/`settle` 在调反思模型前按次计 Agent 配额；`settle_account` 的 DuckDB 取数全部走线程；账户遍历改 keyset 分页（不再漏 500 之后） | `memory/service.py`、`memory/scheduler.py` |
 | 输入 | 请求体 1MB 硬上限（chunked 同限）；`axes[].values` / `params` 等集合字段上限 50；NaN/Infinity 在模型层拒绝，422 错误体不再序列化失败 | `core/body_limit.py`、`MAX_REQUEST_BYTES` |
-| 前端/部署 | `safeNextPath` 拦反斜杠开放重定向；`source_url` 服务端只放行 http(s)；前端加 CSP（折中版，见 §8.2）；Cookie 支持 `Secure`；能力卡用 `PUBLIC_BASE_URL`，支持 `TRUSTED_HOSTS`；`/metrics` 按 token/回环访问；chat 锁表改弱引用 | `SESSION_COOKIE_SECURE`、`PUBLIC_BASE_URL`、`TRUSTED_HOSTS`、`METRICS_TOKEN` |
+| 前端/部署 | `safeNextPath` 拦反斜杠开放重定向；`source_url` 服务端只放行 http(s)；前端 CSP 生产 nonce + `strict-dynamic`（`lib/csp.ts` + `middleware.ts`；开发保留 `unsafe-inline` 折中版）；Cookie 支持 `Secure`；能力卡用 `PUBLIC_BASE_URL`，支持 `TRUSTED_HOSTS`；`/metrics` 按 token/回环访问；chat 锁表改弱引用 | `SESSION_COOKIE_SECURE`、`PUBLIC_BASE_URL`、`TRUSTED_HOSTS`、`METRICS_TOKEN` |
 
 **E 批（2026-10-17）**：后台主实例锁——task worker、ETL/行情/体检调度器、结算调度器只由持锁进程启动；非持锁进程只服务 HTTP，`POST /etl/run` 与 `POST /data/rollback` 返回 409；`/etl/status` 增 `owner/active`；非主实例的进度流在 keepalive 超时后从库回放终态。完整边界见 §2.4。
 
-**仍未做**：完整容器化 / 独立低权限用户；多 worker 不是受支持形态——调度器与 task worker 已收口到后台主实例，但限流/熔断/running 取消/逐格进度/指标/并发闸门仍按进程计算（见 §2.4 的单实例契约与 §8.7）。
+**仍未做**：完整容器化 / 独立低权限用户——2026-10-17 spike 已证明 bwrap 在容器内可用（`seccomp=unconfined` + 非 root + 只读根 + `cap_drop ALL`），DuckDB bind mount 与 Chromium 中文 PDF 均通过；但 torch 在 linux/arm64 会拉 CUDA 13 依赖（>2.5GB），CPU-only 轮子与最小 seccomp profile 未定案，故**暂缓全量容器化**。多 worker 不是受支持形态——调度器与 task worker 已收口到后台主实例，但限流/熔断/逐格进度/指标/并发闸门仍按进程计算；**running 取消已改为 DB 标志**（§2.3/§2.4），不再依赖同进程投递（见 §2.4 的单实例契约与 §8.7）。
+
+### 8.11 收尾项 6：CSP 生产验证与容器化 spike（2026-10-17）
+
+**CSP 生产验证**：生产构建 + Playwright 走查 8 个页面（登录/注册/首页/chat/策略工作台/回测/模拟盘/打印页外壳），
+`securitypolicyviolation` 与 console `Refused to` 均为 0，**33/33 通过**；证据 `logs/csp/verify.{json,md}`。
+**发现并修复**：`next-themes` 的主题内联脚本未带 nonce，生产 `script-src-elem` 会拦掉它——根布局现从
+`x-nonce` 取值并传给 `ThemeProvider`。`connect-src` 的后端端口改为跟随 `NEXT_PUBLIC_API_PORT`（默认 8000）。
+新增可复用脚本 `frontend/scripts/verify-csp.mjs`；前端 509 测试 + typecheck/lint 全绿。
+
+**容器化 spike**（一次性探针，不入库）：
+
+| 项 | 结果 |
+|---|---|
+| bwrap 默认 seccomp | ❌ `No permissions to create new namespace` |
+| bwrap + `seccomp=unconfined` | ✅ 非 root + 只读根 + `cap_drop ALL` + `no-new-privileges` 下仍通过 |
+| bwrap + `cap SYS_ADMIN` | ❌ `pivot_root: Operation not permitted`（只加 cap 不够） |
+| DuckDB bind mount | ✅ 宿主中位 1.9ms / 容器 1.9ms（冷启 4.8ms） |
+| Chromium + 中文 PDF | ✅ 非 root 渲染 67KB，`pdftotext` 可提取中文；镜像 2.08GB |
+| torch / 模型镜像 | ⚠ naive `pip install torch==2.14.1` 在 linux/arm64 拉 CUDA 13（cudnn 651MB、cublas 543MB…），构建超 10 分钟；模型加载本轮未完成 |
+
+**结论**：关键阻塞（bwrap）已证可解；剩余是 CPU-only torch 镜像策略与最小 seccomp profile。按用户决定，
+**全量容器化暂缓**；多 worker 只做取消增强，进度/指标/限流/熔断/闸门不外化；消息队列不引入
+（触发条件见 §2.4）。
 
 ## 10. 测试策略
 
@@ -1416,7 +1441,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 ### E1（E1a + E1c + E1b）
 
-- **离线后端**：`tests/test_tasks_api.py`（提交 202 / 轮询到终态 / 越权与不存在同为 404 / 非法请求仍同步 422 / 取消语义：queued 可取消、running 与终态 409）、`tests/test_task_worker.py`（FIFO 串行、失败捕获且不落 run、取件复核已取消状态、启动把 `running` 扫成 `interrupted`）。
+- **离线后端**：`tests/test_tasks_api.py`（提交 202 / 轮询到终态 / 越权与不存在同为 404 / 非法请求仍同步 422 / 取消语义：queued 可取消、running 单次回测 409、running 网格/批量写 `cancel_requested_at` 并返回 `cancelling`、终态 409）、`tests/test_task_worker.py`（FIFO 串行、失败捕获且不落 run、取件时已有取消标志则不执行、启动把 `running` 扫成 `interrupted`）。
 - **测试驱动方式**：离线用例**不起 worker**——用 `app/tasks/worker.py::run_once(db)` 由夹具手动驱动。理由：模块级 `TestClient` 每请求一个事件循环，后台常驻协程在那种用法下活不过一次请求；集成用例 `real_stack` 走 `with TestClient` 才有常驻 loop。
 - **假库**：`tests/fakes.py::FakeDatabase` 补任务方法（与 `Database` 同方法面）。
 - **集成**：`tests/integration/test_tasks_e1.py`（真库 + 真回测走队列；`running` 扫尾语义）。
@@ -1556,6 +1581,7 @@ E5/M6 回归 **6 例**；
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.43 | 2026-10-17 | **收尾项 6 评估与第一批落地**：① **CSP 生产验证 33/33**（生产构建 + Playwright 8 页；`securitypolicyviolation` / console 拒绝均为 0）——修复 `next-themes` 主题内联脚本未传 nonce（根布局从 `x-nonce` 取值并传给 `ThemeProvider`），`connect-src` 后端端口改为跟随 `NEXT_PUBLIC_API_PORT`（默认 8000）；新增可复用脚本 `frontend/scripts/verify-csp.mjs`，证据 `logs/csp/`。② **容器化 spike**：bwrap 默认 seccomp 不可用；`seccomp=unconfined` + 非 root + 只读根 + `cap_drop ALL` + `no-new-privileges` 可跑；DuckDB bind mount 宿主/容器中位均 **1.9ms**（冷启 4.8ms）；非 root Chromium 中文 PDF 通过；**torch 在 linux/arm64 拉 CUDA 13（cudnn 651MB / cublas 543MB…，>2.5GB）**，CPU-only 轮子与最小 seccomp profile 未定案 ⇒ **全量容器化暂缓**。③ **多 worker / MQ 口径**：维持单实例；只把 running 取消改为 `tasks.cancel_requested_at` DB 标志（§2.3/§2.4，**已实施**：API 写标志 + worker 取件前检查 + 执行期 0.5s 轮询；单次回测仍 409）；**不引消息队列**，触发条件写进 §2.4。**验收**：CSP **33/33**；前端 **509** + typecheck/lint 全绿；后端离线 **1791 passed** + `ruff` 全绿 + 真库取消集成 1 例；spike 证据见 `docs/private/Pn-n/P3-En/P3-收尾项6-规划评估.md`。 |
 | v2.42 | 2026-10-17 | **E 批交付——单实例契约与后台主实例锁**：把 task worker 的单实例锁扩展为“后台主实例锁”（`BACKGROUND_LOCK_KEY`，**数值不变**）；只有持锁进程启动 task worker + ETL/行情/体检调度器 + 结算调度器，非持锁进程只服务 HTTP；业务库不可用时后台任务与调度器均不启动。`GET /etl/status` 增 `owner/active`；`POST /etl/run` 与 `POST /data/rollback` 在非主实例返回 409；任务进度流在 keepalive 超时后查库回放终态；未知 task kind 收尾释放 bus 缓冲。**边界**：限流/熔断/running 取消/逐格进度/指标/并发闸门仍按进程计算，多 worker 不是受支持形态；主实例退出后不自动晋升，由 supervisor 重启重新竞选。**验收**：离线 **1784 passed / 135 deselected**、`ruff` 全绿；新增 `tests/test_background_owner.py` 6 例，ETL/数据端点/进度流/worker 用例同步；E0–E5 六次推送 CI 全绿。 |
 | v2.41 | 2026-10-17 | **收尾项 5c 交付——深研报 rubric 评测（手动轨）**：`app/report/deep_eval.py`（自动项 + judge 解析 + 聚合 + 一页纸纯函数）+ `scripts/build_deep_eval.py` + `tests/research/eval_set_v1.json`（12 题）；自动项含 PIT 红线（证据 `available_at ≤ as_of`）、闸门、缺口、辩论 ≤3 轮、证据数、预算；judge 五维 1–5，失败记 null。**真跑 3 题冒烟**（D01–D03）：报告 **3/3**、PIT 违规 **0**、辩论 ≤3 **3/3**；judge 均值 PIT **4.67** / 证据 **4.0** / 数字 **3.67** / 平衡 **4.0** / 风险 **4.33**（`logs/p3/deep_eval.md`）；**不设及格线、不进 CI、不把 3 题说成 12 题**。judge 在 D02 抓到一条无关证据（*ST 清越混入）——如实留在读数里，新闻角色 `event_type` 过滤另开评估。离线 **6** 例（`tests/test_report_deep_eval.py`）。 |
 | v2.40 | 2026-10-17 | **收尾项 5d 交付——策略版本管理 + 运行绑定**：`strategy_versions`（append-only，`UNIQUE(strategy_id, version_no)`）+ `strategies.version`（head + 乐观锁）；创建/更新事务化，`SELECT ... FOR UPDATE`，**只有 code/params 实际变化才 +1**（只改名不增版），`expected_version` 不匹配 → `StrategyVersionConflict` 409；启动回填幂等。端点：`GET /versions` / `/versions/{n}` / `/versions/{n}/diff?against=`（`difflib.unified_diff`）/ `POST /rollback`（追加新版本，保留当前名字）。运行绑定：`backtest_runs.strategy_version`（提交时冻结进任务行）、`PaperConfig.strategy_id + strategy_version`（模拟盘锁版本，旧 config 按名字回落）；优化记录**不绑定版本**（如实写边界）。前端工作台「版本 N / 历史」抽屉（列表 + diff + 回滚，回滚后清 descriptor 缓存）、保存带 `expected_version`。**验收**：离线 2 例（版本/回滚/只改名）+ paper user 1 例（锁版本）+ 前端 4 例；集成 2 例（真库 DDL/回填/回滚、回测绑定）——见 §10；界面走查 13/13（含回滚追加 v3）。 |

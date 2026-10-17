@@ -8,6 +8,8 @@
 
 **阶段**：P2-Mn 的 M1–M10 已全部交付并验收（里程碑 `m-p2`，2026-10-13）。P1-Tn 与 P2-Mn 的浏览器内闭环均可走完。
 
+**进行中**：**P3 收尾项 6 —— 企业级收尾加固**（2026-10-17/18，SPEC §2.3/§2.4/§8.11 v2.43）——CSP 生产验证 **33/33**（修复 `next-themes` 主题脚本 nonce；`connect-src` 跟随 `NEXT_PUBLIC_API_PORT`）；容器化 spike（bwrap 在 `seccomp=unconfined` 下可跑、DuckDB 读延迟无回退、非 root Chromium 中文 PDF 通过；**torch 在 linux/arm64 拉 CUDA 13，全量容器化暂缓**）；running 网格/批量取消改 `tasks.cancel_requested_at` DB 标志（单次回测仍 409）；多 worker 维持单实例、**不引消息队列**（触发条件见 SPEC §2.4）。**待办**：E9 企业级文档；全量容器化待 CPU-only torch 方案。
+
 **最近交付**：**P3 收尾项 5 —— 5a Agent 下单提案 · 5b RAG 一轮纠错 + 静态能力卡 · 5d 策略版本 · 5c 深研报评测**（2026-10-17，SPEC 附录 A）——Agent 只能创建待审批决策（逐条裁决，`run(all)` 409）；零命中改写一次查询（`as_of` 不变）；`/.well-known/agent-card.json` 静态能力卡（非 A2A 协议）；append-only 策略版本 + diff/回滚，模拟盘锁定版本、回测绑 `strategy_version`；12 题深研报 rubric（3 题冒烟：PIT 违规 0、judge 均值见 `logs/p3/deep_eval.md`）。**验收**：离线 **1731 passed / 135 deselected**、覆盖率 **89.64%**（门槛 88）、`ruff` 全绿；前端 **503 passed** + typecheck/lint 全绿；新集成 **3 例**（5a 1 + 5d 2）+ E5/M6 回归 **6 例**；界面走查 **13/13**（`logs/5a5d/ui.md`）；真模型 Agent 提案 E2E 成交（`logs/5a5d/agent-e2e.md`）。**下一步 E9 企业级文档**。
 
 **上一交付**：**P3-E7e —— 可观测性最小闭环**（2026-10-17，SPEC §7 v2.36）——JSON 日志（`log_format` 默认 text，可切 json）+ request id 透传/回写 + Prometheus `/metrics`（HTTP 计数/耗时、任务表五状态 gauge、缓存 L1/L2 命中/未命中）；纯 ASGI 中间件，路由标签用模板；`prometheus-client==0.26.0`。**边界**：指标进程内、单实例、无 Prometheus server/告警、未引入 OTel SDK；LLM 观测仍在 Langfuse。**验收**：离线 **1695** / 覆盖率 **90.37%** / ruff 全绿 / 真库集成 1 例。**E9 前审计落地第一项**。
