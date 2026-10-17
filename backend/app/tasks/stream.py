@@ -67,6 +67,17 @@ async def task_frames(
             try:
                 frame = await asyncio.wait_for(queue.get(), keepalive_seconds)
             except TimeoutError:
+                # 订阅可能落在非主实例：本进程拿不到 worker 的实时帧，但数据库是共享真值。
+                # keepalive 超时补查一次，任务已终结就按 `_replay` 收流——否则页面会永远
+                # 停在「运行中」。逐格实时仍不跨进程，这是单实例契约的已知边界。
+                latest = await db.get_task(user_id, task_id)
+                if latest is None:
+                    yield ("error", {"code": "not_found", "message": "任务不存在"})
+                    return
+                if latest["status"] in TERMINAL:
+                    async for replay in _replay(db, user_id, latest):
+                        yield replay
+                    return
                 yield None
                 continue
             yield frame

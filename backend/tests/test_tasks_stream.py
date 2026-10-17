@@ -131,6 +131,49 @@ def test_running_task_streams_backlog_then_live() -> None:
     assert [payload["index"] for name, payload in frames if name == "cell"] == [0, 1]
 
 
+def test_keepalive_timeout_picks_up_a_terminal_state_from_the_database() -> None:
+    """订阅落在非主实例：拿不到实时帧，但 keepalive 超时查库能收口到终态。"""
+
+    async def scenario() -> list[Any]:
+        bus.reset()
+        db = FakeDatabase()
+        await make_task(db, status="running")
+        await db.save_optimization_run(
+            "run-1",
+            USER_ID,
+            {"kind": "grid"},
+            {
+                "kind": "grid",
+                "cells": [{"index": 0, "ok": True}],
+                "cells_total": 1,
+                "cells_ok": 1,
+                "best_index": 0,
+                "overfit": None,
+                "duration_s": 0.5,
+            },
+        )
+
+        async def finish_elsewhere() -> None:
+            # 模拟另一个进程里的 worker：只落库，不 publish（本进程收不到实时帧）
+            await asyncio.sleep(0.01)
+            await db.finish_task(TASK_ID, result={"run_id": "run-1"})
+
+        finisher = asyncio.create_task(finish_elsewhere())
+        frames: list[Any] = []
+        async for frame in task_frames(db, USER_ID, TASK_ID, keepalive_seconds=0.05):
+            if frame is None:
+                continue
+            frames.append(frame)
+            if frame[0] in {"done", "error", "cancelled"}:
+                break
+        await finisher
+        return frames
+
+    frames = asyncio.run(scenario())
+    assert [name for name, _ in frames] == ["start", "cell", "done"]
+    assert frames[-1][1]["run_id"] == "run-1"
+
+
 def test_finished_task_replays_from_the_database() -> None:
     """已终结：**从库回放**（缓冲早释放了）——cells + 摘要拼出与在线时同形的帧。"""
 
