@@ -27,10 +27,11 @@ log = logging.getLogger(__name__)
 #: 取件间隔（秒）。单次回测 0.3–2s，这点启动延迟可忽略，换来的是零跨 loop 状态。
 POLL_SECONDS = 0.2
 
-#: 进程级 worker 单实例锁（Postgres advisory lock 的 key，取 ASCII 常量便于排查）。
-#: 多进程/多副本部署时只有一个进程能拿到它；只有持锁者扫尾与取件，避免 B 启动时把
-#: A 正在跑的 `running` 标成 failed（旧行为会静默丢结果）。
-WORKER_LOCK_KEY = int.from_bytes(b"QS-TASKS", "big")
+#: 后台主实例锁（Postgres advisory lock 的 key，取 ASCII 常量便于排查）。
+#: 多进程/多副本部署时只有一个进程能拿到它：持锁者跑 task worker，并由
+#: `main._start_background` 一并启动 ETL/结算调度器；非持锁进程只服务 HTTP。
+#: **数值不可改**（滚动升级期间新旧进程必须互斥）；改名只是让语义与职责一致。
+BACKGROUND_LOCK_KEY = int.from_bytes(b"QS-TASKS", "big")
 
 #: 离线替身没有 `pool`：区分「没有跨进程概念」与「锁被别的进程持有」
 _NO_LOCK = object()
@@ -134,7 +135,7 @@ async def serve(db: Any, *, interval: float = POLL_SECONDS) -> None:
 
 
 async def _acquire_instance_lock(db: Any) -> Any:
-    """拿进程级 worker 锁；拿不到返回 None。没有连接池（离线替身）时按不锁处理。
+    """拿后台主实例锁；拿不到返回 None。没有连接池（离线替身）时按不锁处理。
 
     **单独成函数**是为了让「锁被别的进程持有」这条分支可以离线注入；真库路径用一条
     **独立连接**持有 session 级 advisory lock——不能用池里的连接，那会白占一个槽位直到进程退出。
@@ -150,7 +151,7 @@ async def _acquire_instance_lock(db: Any) -> Any:
         log.exception("任务 worker 锁连接失败，本次不启动 worker")
         return None
     try:
-        cursor = await conn.execute("SELECT pg_try_advisory_lock(%s)", (WORKER_LOCK_KEY,))
+        cursor = await conn.execute("SELECT pg_try_advisory_lock(%s)", (BACKGROUND_LOCK_KEY,))
         row = await cursor.fetchone()
     except Exception:
         await conn.close()
@@ -176,7 +177,8 @@ async def start(db: Any) -> WorkerHandle | None:
     """
     lock_conn = await _acquire_instance_lock(db)
     if lock_conn is None:
-        log.info("任务 worker 单实例锁被其它进程持有，本进程不启动 worker")
+        # 由 `main._start_background` 统一打“本进程只服务 HTTP”的日志，避免两处重复
+        log.debug("未取得后台主实例锁，本进程不启动 worker")
         return None
     try:
         interrupted = await db.sweep_interrupted_tasks()
@@ -210,13 +212,13 @@ async def stop(handle: WorkerHandle | asyncio.Task[None] | None) -> None:
         and handle.lock_conn is not _NO_LOCK
     ):
         with suppress(Exception):
-            await handle.lock_conn.execute("SELECT pg_advisory_unlock(%s)", (WORKER_LOCK_KEY,))
+            await handle.lock_conn.execute("SELECT pg_advisory_unlock(%s)", (BACKGROUND_LOCK_KEY,))
             await handle.lock_conn.close()
 
 
 __all__ = [
     "POLL_SECONDS",
-    "WORKER_LOCK_KEY",
+    "BACKGROUND_LOCK_KEY",
     "WorkerHandle",
     "request_stop",
     "run_once",

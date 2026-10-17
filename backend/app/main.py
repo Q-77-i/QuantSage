@@ -112,7 +112,8 @@ def _start_rag_warmup() -> None:
 class _Background:
     """本进程承担的后台任务。
 
-    `owner` 先留位：E1 只做生命周期收口，E2 起用它表示是否持有后台主实例锁。
+    `owner`：`None` = 没尝试竞选（业务库不可用或 worker 启动异常），
+    `False` = 锁被别的进程持有，`True` = 本进程持锁。
     """
 
     owner: bool | None = None
@@ -122,24 +123,34 @@ class _Background:
 
 
 async def _start_background(app: FastAPI, db: Any) -> _Background:
-    """启动 task worker 与两个调度器，返回可独立停止的句柄。
+    """启动后台任务；只有拿到后台主实例锁的进程才启动 worker 与两个调度器。
 
-    E1 先保持旧行为（调度器无条件启动）；E2 起由 `owner` 决定是否启动。
-    业务库不可用时不启动 worker，与旧实现一致。
+    业务库不可用或 worker 启动异常时 `owner=None`，不启动调度器，但保留手动 ETL
+    的逃生口；锁被占用时 `owner=False`，本进程只服务 HTTP。
     """
     background = _Background()
-    if db is not None:
-        try:
-            handle = await task_worker.start(db)
-        except Exception as exc:  # noqa: BLE001 —— worker 起不来不阻断服务
-            log.warning("任务 worker 未启动（%s），提交的任务将排队等待", type(exc).__name__)
-        else:
-            background.worker = handle
-            app.state.task_worker = handle
-            if handle is None:
-                log.info("任务 worker 单实例锁被其它进程持有，本进程只服务 HTTP（不取件）")
-            else:
-                log.info("任务 worker 已启动（单 worker 串行，队列 = tasks 表）")
+    if db is None:
+        log.warning("业务库未就绪：后台任务与调度器均不启动")
+        return background
+
+    try:
+        handle = await task_worker.start(db)
+    except Exception as exc:  # noqa: BLE001 —— worker 起不来不阻断服务
+        log.warning("任务 worker 未启动（%s），提交的任务将排队等待", type(exc).__name__)
+        return background
+
+    if handle is None:
+        background.owner = False
+        log.info(
+            "未取得后台主实例锁（被占用或连接失败）：本进程只服务 HTTP"
+            "（不跑 worker/调度器/手动全局数据操作）"
+        )
+        return background
+
+    background.owner = True
+    background.worker = handle
+    app.state.task_worker = handle
+    log.info("本进程为后台主实例：task worker + ETL/结算调度器")
 
     try:
         background.scheduler = start_scheduler()
