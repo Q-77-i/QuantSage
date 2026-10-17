@@ -64,7 +64,7 @@ P3 起笔时点（2026-10-13）的现状核对——各 E 节的增量以本表�
 
 ### 2.1 任务模型
 
-`tasks` 表（DDL 进 `core/db.py::SCHEMA`，幂等建表与索引，与既有九张表同约定）：
+`tasks` 表（DDL 进 `core/schema.py::SCHEMA`，幂等建表与索引，与既有九张表同约定）：
 
 | 列 | 类型 | 说明 |
 |---|---|---|
@@ -242,7 +242,7 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 
 | PRD 原文 | 事实（本轮扫描，带出处） | 本 SPEC 的口径 |
 |---|---|---|
-| 配额管理「回测并发数」 | 队列**单 worker 串行**（`app/tasks/worker.py:7-8`）⇒ 全局并发恒 1、per-user 并发恒 ≤1——**按字面做这条配额永远不会触发**。真实会被打爆的是队列：`claim_next_task` 全局 FIFO、不按用户过滤（`core/db.py:1058-1072`），一个用户灌满队列，后面的人全在排队 | **在飞任务数上限**（`queued` + `running`），语义 = 占队列槽位，不是「同时跑」 |
+| 配额管理「回测并发数」 | 队列**单 worker 串行**（`app/tasks/worker.py:7-8`）⇒ 全局并发恒 1、per-user 并发恒 ≤1——**按字面做这条配额永远不会触发**。真实会被打爆的是队列：`claim_next_task` 全局 FIFO、不按用户过滤（`core/db_tasks.py::claim_next_task`），一个用户灌满队列，后面的人全在排队 | **在飞任务数上限**（`queued` + `running`），语义 = 占队列槽位，不是「同时跑」 |
 | 配额管理「Agent 调用次数」 | 深路径一次运行约 10 次 LLM 调用（E7c 实测一条 trace 10 generation）；单次成本上限已由 E4 Budget 管住（40 次调用 / $0.50 硬顶，`agent/deep/budget.py:40-46`） | **用户发起的 Agent 请求数 / 日**（chat / research create / report create），**不计**底层 LLM 调用数、不计 token |
 | RBAC「admin 仅审计与配额视图」 | `GET /api/v1/etl/status` 与 `POST /api/v1/etl/run` **只要求登录、无任何角色判断**（`api/etl.py:29,57`）——任意注册用户都能触发一次**全局**数据拉取、看系统级覆盖率与调度状态 | admin 用途**加一条「平台运维端点」**：ETL 两端点归 admin（PRD v0.12 已同步） |
 | 「资源隔离（P2 已落地）」 | 属实：13 张自有表 9 张直接带 `user_id`、3 张经 `account_id` 归属；**全仓零 403**，越权与不存在同响应 404（`core/db.py:9-10`、`core/auth.py:156-157`） | 基线，不重做；E2 只把它**盘点成 §3.6 的表** + 补漏（唯一补漏 = ETL 门） |
@@ -263,7 +263,7 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 - **默认值取演示友好档**（与 L0 的 `rate_limit_*` 同调）：正常用碰不到，灌队列 / 刷量时才拦得住。
 - **gauge 为什么不落计数器表**：计数器得在任务终结时减一，而终结有五条路径（`finish_task` / `fail_task` / `finish_task_cancelled` + 启动扫尾 `sweep_interrupted_tasks` + 进程被杀），**漏一处就是永久占额**。直查以 `tasks` 表为唯一真值，天然不漂；既有 `(user_id, created_at)` 索引覆盖谓词，**不新增索引**。
 
-**计数表**（进 `core/db.py` 的 `SCHEMA`，幂等建表，与既有 13 张表同约定）：
+**计数表**（进 `core/schema.py` 的 `SCHEMA`，幂等建表，与既有 13 张表同约定）：
 
 ```sql
 CREATE TABLE IF NOT EXISTS usage_counters (
@@ -329,7 +329,7 @@ RETURNING used
 
 ### 3.4 RBAC
 
-- **`users.role TEXT NOT NULL DEFAULT 'user'`**：幂等 `ALTER TABLE users ADD COLUMN IF NOT EXISTS`（与 `token_version` 同约定，`db.py:47`）。
+- **`users.role TEXT NOT NULL DEFAULT 'user'`**：幂等 `ALTER TABLE users ADD COLUMN IF NOT EXISTS`（与 `token_version` 同约定，`core/schema.py`）。
 - **`require_admin`**：`Depends(require_user)` 之后判 `user.get("role") == "admin"`，否则 **403**。`require_user` 返回 users **整行**（`core/auth.py:153-180`）⇒ **零额外查询**。
 - **角色不进 JWT**：payload 仍只有 `sub/ver/iat/exp`（`core/auth.py:86-91`）。角色变更**立即生效**；塞进 payload 会引入「撤销角色要 bump `token_version`」的耦合，而 `token_version` 的语义是**会话撤销**，两件事不该并轨。
 - **授予走脚本**：`scripts/grant_admin.py <email> [--revoke]`。角色是**数据**（进库）、不是行为参数（进 settings）——改角色不该要重启服务。
