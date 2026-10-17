@@ -9,8 +9,12 @@
  * 这条 CSP 挡的是外部脚本注入与 object/iframe/base 劫持，不是完整的 XSS 防线。
  */
 
+/** 后端端口。与 `lib/api.ts` 的 `API_PORT` 同源；换端口时 CSP 跟着换，不另写一份。 */
+const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? "8000";
+
 export const API_ORIGINS =
-  "http://127.0.0.1:8000 http://localhost:8000 http://*:8000 https://*:8000";
+  `http://127.0.0.1:${API_PORT} http://localhost:${API_PORT} ` +
+  `http://*:${API_PORT} https://*:${API_PORT}`;
 
 export type CspOptions = {
   nonce?: string;
