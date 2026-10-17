@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.12）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.36 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16 + E7e 2026-10-17）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）、E7e 可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5 全节交付完毕**（§6，2026-10-17——E5a 后端核心 + 审计 + API；E5b 前端 + 真机取证 + 界面走查）；§9 E9 待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.41 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16 + E7e 2026-10-17）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）、E7e 可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5 全节交付完毕**（§6，2026-10-17——E5a 后端核心 + 审计 + API；E5b 前端 + 真机取证 + 界面走查）；§9 E9 待滚动；**附录 A 收尾项 5 已交付**（2026-10-17——5b Agentic RAG 纠错 + A2A 静态能力卡 / 5a Agent 下单提案 / 5d 策略版本 / 5c 深研报评测）。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -21,6 +21,7 @@
 | §9 | E9 企业级文档（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
 | [§11](#11-变更记录) | 变更记录 |
+| [附录 A](#附录-a-p3-收尾项-5e9-前) | P3 收尾项 5（5b Agentic RAG 纠错 + A2A 静态能力卡 · 5a Agent 下单提案 · 5d 策略版本 · 5c 深研报评测） |
 
 ## 1. 规划基线
 
@@ -1494,10 +1495,44 @@ typecheck / lint 全绿；真机取证 **7/7**（`logs/e5/risk-smoke.md`）；�
   「缩量 / 拦截 / 止损成交 / 回撤解禁」四类事件（`logs/e5/risk-smoke.md`）；界面走查断言
   风控状态数字、日志行、风控徽章、风控单不可驳回。
 
+### 收尾项 5（5a / 5b / 5c / 5d，2026-10-17）
+
+**5a Agent 提案**：离线 `tests/test_paper_proposal.py`（生成 / 风控 block / 同键拒绝 / 池外 /
+末端 / 确定性 id）、`tests/test_agent_paper_tools.py`（上下文 / 文本 / 只提案）、
+`tests/test_paper_api.py` 的 `run` 409；集成 `tests/integration/test_paper_agent_e5a.py`
+（真库单条插入 + `as_of` 守卫 + 批量排除 agent）。真机见 `logs/5a5d/agent-e2e.md`。
+
+**5b RAG 纠错 + 能力卡**：离线 `tests/test_rag_correct.py`（零命中才改写 / 两次 `as_of` 相等 /
+改写失败降级 / 二次仍空 / mode 透传）、`tests/test_capabilities.py`（公开字段与「非 A2A」口径）、
+`tests/test_agent_rag_tool.py` 与 `tests/test_mcp_server.py` 各增改写用例；深路径 news 角色
+走同一函数（既有降级用例回归）。
+
+**5c 深研报评测**：离线 `tests/test_report_deep_eval.py`（自动项 / PIT 违规 / judge 解析 /
+聚合 / 一页纸）；手动轨 `scripts/build_deep_eval.py` + `tests/research/eval_set_v1.json`（12 题），
+本次真跑 3 题冒烟：报告 3/3、PIT 违规 **0**、辩论 ≤3 轮 3/3，judge 均值 PIT 4.67 / 证据 4.0 /
+数字 3.67 / 平衡 4.0 / 风险 4.33（`logs/p3/deep_eval.md`；**不设及格线**）。
+
+**5d 策略版本**：离线 `tests/test_strategies_api.py`（版本历史 / diff / 回滚 / 只改名不增版 /
+`expected_version` 409）、`tests/test_paper_user.py`（模拟盘锁定版本）与前端
+`frontend/lib/strategy-versions.test.ts`；集成 `tests/integration/test_strategies_5d.py`
+（真库 DDL / 回填幂等 / 回滚事务 / 回测绑定版本）。界面走查 `frontend/scripts/capture-5a5d.mjs`
+**13/13**（`logs/5a5d/ui.md`）：版本抽屉与真实 diff、回滚追加 v3、Agent 提案徽章 /「跑到结束」
+禁用 / 批准 / 推进成交、真聊天调用 `list_paper_accounts`。
+
+**整体验收**：后端离线 **1731 passed / 135 deselected**、覆盖率 **89.64%**（门槛 88）、
+`ruff` 全绿；前端 **503 passed** + typecheck / lint 全绿；新集成 **3 例**（5a 1 + 5d 2）+
+E5/M6 回归 **6 例**；
+界面走查 **13/13**；真模型 Agent 提案 E2E 成交（`logs/5a5d/agent-e2e.md`）。
+
 ## 11. 变更记录
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.41 | 2026-10-17 | **收尾项 5c 交付——深研报 rubric 评测（手动轨）**：`app/report/deep_eval.py`（自动项 + judge 解析 + 聚合 + 一页纸纯函数）+ `scripts/build_deep_eval.py` + `tests/research/eval_set_v1.json`（12 题）；自动项含 PIT 红线（证据 `available_at ≤ as_of`）、闸门、缺口、辩论 ≤3 轮、证据数、预算；judge 五维 1–5，失败记 null。**真跑 3 题冒烟**（D01–D03）：报告 **3/3**、PIT 违规 **0**、辩论 ≤3 **3/3**；judge 均值 PIT **4.67** / 证据 **4.0** / 数字 **3.67** / 平衡 **4.0** / 风险 **4.33**（`logs/p3/deep_eval.md`）；**不设及格线、不进 CI、不把 3 题说成 12 题**。judge 在 D02 抓到一条无关证据（*ST 清越混入）——如实留在读数里，新闻角色 `event_type` 过滤另开评估。离线 **6** 例（`tests/test_report_deep_eval.py`）。 |
+| v2.40 | 2026-10-17 | **收尾项 5d 交付——策略版本管理 + 运行绑定**：`strategy_versions`（append-only，`UNIQUE(strategy_id, version_no)`）+ `strategies.version`（head + 乐观锁）；创建/更新事务化，`SELECT ... FOR UPDATE`，**只有 code/params 实际变化才 +1**（只改名不增版），`expected_version` 不匹配 → `StrategyVersionConflict` 409；启动回填幂等。端点：`GET /versions` / `/versions/{n}` / `/versions/{n}/diff?against=`（`difflib.unified_diff`）/ `POST /rollback`（追加新版本，保留当前名字）。运行绑定：`backtest_runs.strategy_version`（提交时冻结进任务行）、`PaperConfig.strategy_id + strategy_version`（模拟盘锁版本，旧 config 按名字回落）；优化记录**不绑定版本**（如实写边界）。前端工作台「版本 N / 历史」抽屉（列表 + diff + 回滚，回滚后清 descriptor 缓存）、保存带 `expected_version`。**验收**：离线 2 例（版本/回滚/只改名）+ paper user 1 例（锁版本）+ 前端 4 例；集成 2 例（真库 DDL/回填/回滚、回测绑定）——见 §10；界面走查 13/13（含回滚追加 v3）。 |
+| v2.39 | 2026-10-17 | **收尾项 5a 交付——Agent 下单提案（HITL + E5）**：不新建意图表——Agent 工具 `list_paper_accounts` / `propose_paper_order` 直接在当前 `as_of` 日写一条 `pending`、`origin=agent` 的决策；`ScriptedAgentStrategy` 跑一次 replay 复用 `_propose` / `evaluate_buy` / 审计；`add_paper_decision` 单事务写决策 + 当日该标的审计（`user_id + as_of + status='active'` 守卫、`FOR UPDATE`、`ON CONFLICT DO NOTHING`）。`Signal.origin` 与「当日日志已有买入计入 `pending_notional`」两处适配。**HITL**：`run(approve="all")` 有 pending Agent 决策 → 409，`set_paper_decisions_bulk` 排除 `origin='agent'`；前端「Agent 提案」徽章、「跑到结束」禁用并给原因。请求上下文用 `ContextVar`（`user_id` 绝不作 LLM 参数）。**验收**：离线 **14** 例（生成/风控 block/同键/池外/末端/上限/工具文本/`run` 409）+ 真库集成 1 例（单条插入 + `as_of` 守卫 + 批量排除）；**真模型 E2E**：list → propose → pending 2700 股 → 人工批准 → step → 2025-09-23 @ 361.1922 成交，回答明确「待审批、不能批准」（`logs/5a5d/agent-e2e.md`）；界面走查 13/13。 |
+| v2.38 | 2026-10-17 | **收尾项 5b 交付——Agentic RAG 一轮纠错 + A2A 静态能力卡**：`app/rag/correct.py`（只在零命中时改写一次；`as_of` / `symbol` / `event_type` / `top_k` 逐字保留；改写空/同原查询/失败不二次检索；`correction_note` 透明告知），Chat `search_events`、深路径 `news` 角色、对外 MCP 三处接入；MCP 返回增 `query{original,effective,rewritten,note}`；`RAG_QUERY_REWRITE` 默认开、离线 conftest 关（空结果用例不调真模型）。`GET /.well-known/agent-card.json` 静态能力卡（公开只读、A2A 形状、**非 A2A 协议**；四项 skill + PIT/HITL/风控/MCP 限制）。**验收**：离线 **7** 例纠错 + **3** 例能力卡 + agent/MCP 各 1 例改写；真机 `curl` 能力卡 200、字段齐全。文档口径统一：A2A 协议不做，能力卡是元数据。 |
+| v2.37 | 2026-10-17 | **附录 A（P3 收尾项 5）规格定稿**——底稿 `docs/private/Pn-n/P3-En/P3-收尾项5-规划评估.md`（逐行核对 Agent 工具 / 模拟盘六态 / RAG / 深研报 / 策略代码）。**范围**：5b Agentic RAG 一轮纠错 + A2A 静态能力卡 · 5a Agent 下单提案 · 5d 策略版本管理 · 5c 深研报评测；顺序 5b → 5a → 5d → 5c，四项可独立停止。**两处拍板（用户）**：① Agent 提案**逐条审批**，`run(all)` 拒绝且批量 SQL 排除 `origin='agent'`；② 策略版本**模拟盘创建时锁定**，改策略不影响运行中的会话。**5a 实施期收敛**：不新建意图表、不改 replay 输入协议——Agent 直接在当前 `as_of` 日写一条 `pending`、`origin="agent"` 的决策，用 `ScriptedAgentStrategy` 跑一次 replay 复用 `_propose`/`evaluate_buy`/审计，再用新 `add_paper_decision` 单事务落库（`user_id + as_of + status='active'` 三重守卫）；新增 `Signal.origin` 与「当日日志已有买入计入 `pending_notional`」两处小适配。**5b**：零命中才改写一次、`as_of` 逐字不变、三处接入；`/.well-known/agent-card.json` 静态能力卡（非 A2A 协议）。**5d**：append-only `strategy_versions` + `strategies.version`；diff/rollback；回测 `strategy_version` + 模拟盘 config 锁定版本。**5c**：12 题 rubric + `build_deep_eval.py`，自动项 + LLM-judge，手动轨、不设及格线。**边界**如实写进附录 A.5。**待实施。** |
 | v2.36 | 2026-10-17 | **§7（E7）E7e 交付——可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）**。**由头**：E9 前审计把技术栈逐项核了一遍——`LCEL` 从未落地、`OTel` P3 未补、Qdrant/Store 是 P1 快照旧状态；其中 **OTel / 结构化日志 / 服务指标**是企业级机制里唯一还缺的一块 ⇒ 先补最小版，E9 文档才有东西可写。**落地**：`core/logging.py` 的 `JsonFormatter`（`log_format` 默认 `text`，需要 JSON 时在 `.env` 写 LOG_FORMAT=json）；`core/observability.py` 纯 ASGI 中间件（request id 透传/替换、HTTP 计数与耗时直方图、访问日志、响应头 `X-Request-Id`，CORS expose 已加）；`core/metrics.py` + `GET /metrics`（`include_in_schema=False`、不鉴权、路由模板标签，404 记 `unmatched`；任务队列 scrape 时现查 `tasks` 表，五状态补齐；缓存 L1/L2 命中与 producer 执行计数）；`prometheus-client==0.26.0` 精确 pin。**两条设计口径**：路由标签用模板不用原始路径（UUID 会撑爆时间序列）；LLM 的 trace/token/成本仍归 Langfuse，不在 Prometheus 重复。**边界（如实）**：指标进程内、重启清零、单实例假设（同任务 worker / 限流 / 熔断）；无 Prometheus server/告警；**未引入 OTel SDK**（留作部署形态升级选项）。**验收**：离线 **1695 passed**（+5）/ 覆盖率 **90.37%**（门槛 88）/ `ruff` 全绿；真库集成 **1 例**（`/metrics` 读到 `tasks` 状态 gauge）。**E9 前审计的第一项落地。** |
 | v2.35 | 2026-10-17 | **§6（E5）E5b 交付——前端风控档位 / 状态 / 审计日志 + 真机取证 + 界面走查，E5 全节交付完毕**。**① 前端**：`lib/types.ts` 增 `PaperRiskLimits` / `PaperRiskState` / `PaperRiskEvent` / `PaperDecision.origin` 与 config/detail/step 的风控字段；`lib/paper.ts` 增四档预设（标准 95/30/6/10、严格 80/20/4/8）、`riskRows` 三读数、闸门/处置文案与 `--warn` 语气、`paperRequest` 的 `risk` 与本地 0–100 校验；`paper-form.tsx` 增风控档位与四个自定义输入；新 `risk-panel.tsx`（三读数 + 回撤暂停横幅 + 风控日志，最近 12 条可展开）；决策卡/流水加 `data-risk-badge`「风控自动 / 风控」；`step-controls.tsx` 的「全部驳回」确认段补「风控止损仍会执行」；`paper/page.tsx` 把面板放在账户卡与决策闸门之间。**② 真机取证**（`scripts/run_paper_risk.py`，真实行情）：**7/7** 全过——28 次止损触发、28 张风控卖出全部 T+1 成交；2 次回撤 breach；83 条回撤拦截；60 条放行审计；18 条集中度缩量（17 张成交，全部 `fill.qty ≤ est_qty`）；风控关闭零审计；206 条事件重放逐 id 相等。**③ 界面走查**（`capture-e5.mjs`，真浏览器 + 真后端）：**14/14**——自定义档提示回显四个值、建会话后三读数与接口一致、「全部驳回」确认段写明风控止损仍会执行、跑到结束后日志 verdict 集合与接口一致（block/breach/cap/pass/trigger）、回撤暂停横幅可见、流水里 3 张风控单各带徽章且无 pending 态。**④ 文档同步**：README 的模拟盘功能行 / 截图说明 / 设计取向 / 已知边界四处补风控与「风控关闭才平价」的口径；`docs/images/paper.png` 按 2026-10-13 规格（1440 宽 / 浅色 / 非整页 1000 高）重拍；`getting-started.md` 增 8.2 风控与档位说明、8.3 账户与曲线；FAQ 增 D7（止损为何不能驳回）/ D8（风控开启为何不再等于回测）并在 D2 补风控变体。**⑤ 验收**：前端 **498 passed** + typecheck / lint 全绿；后端 1690 / 覆盖率 90.38% / ruff 全绿（E5a 基线）；真机 7/7；界面 14/14。**E5 至此全节交付。** |
 | v2.34 | 2026-10-17 | **§6（E5）E5a 交付——风控后端核心 + 审计 + API 响应面**（E5b 前端与取证未做）。**① 落地物**：新模块 `app/paper/risk.py`（四闸门纯函数 + `BuyCheck` / `StopLossHit` / `RiskState`）；`paper.types` 增 `RiskLimits` / `RiskEvent` / `RiskState` / `Decision.origin` / `PaperConfig.risk` / `DayOutcome.risk_exits` / `ReplayResult.risk_events\|risk_state`；`replay` 在收盘后、策略前跑止损 → 回撤 → 逐提案闸门；`store` 增风控信封与 `origin`；`account` 增 `valuation_price()`（风控与 `mark` 同一批价）；`broker.execute(qty_cap=...)`；`core/db.py` 增 `paper_accounts.risk_state` / `paper_decisions.origin` / `decision_audit` 表与 `paper_audit`；`api/paper.py` 增 `risk` 创建参数、`risk_state` / `risk_events` 响应与 step 当日事件。**② 两条实施期发现**：**(a) 缩量必须在成交时仍是硬上限**——M6 的成交股数由 `affordable_qty` 在次日开盘重算，只改提案的 `est_qty` 会让跳空低开把仓位买回上限以上 ⇒ `Broker.execute(qty_cap=...)`，风控开启时 `est_qty` 是股数硬上限（跳空高开按可负担股数成交，可能买不满）；风控关闭不传，M6 口径原样。**(b) 审计不是决策日志的纯函数**——被拦截的提案不在 `paper_decisions` 里，已落日志的信号日在重放时被 `logged` 跳过 ⇒ 从决策日志重放只能重建账户与 `as_of` 风险快照，不能重建全部提案审计；`decision_audit` 是生成期事实的权威记录（`ON CONFLICT DO NOTHING`），重放结果的 `risk_events` 只代表本次重放（止损/回撤仍重算）。**③ 默认口径**：API 缺省 `risk=null`（旧会话零变化）；前端 E5b 默认「标准」档（-6% / -10% / 95% / 30%），严格档（-4% / -8% / 80% / 20%）。**④ 验收**：离线 **1690 passed**（+34：纯函数 19 · 重放 9 · API 6）/ 覆盖率 **90.38%**（门槛 88）/ `ruff` 全绿；E5 集成 **3 例**（真库 DDL 幂等 · 风控审计与快照 · 空决策 id 审计）+ M6 集成 **3 例**回归。**E5b 待做**：前端表单 / 风控面板 / 日志、`lib/paper.ts` 纯函数、真机取证与界面走查。**用户已拍板并开工。** |
@@ -1535,3 +1570,136 @@ typecheck / lint 全绿；真机取证 **7/7**（`logs/e5/risk-smoke.md`）；�
 | v2.4 | 2026-10-14 | **E1b 交付 —— 网格/批量迁入任务队列，M5b 的「断线即丢」收掉**。① **交付**：`app/tasks/bus.py`（按 task_id 的累积缓冲 + 订阅者）、`app/tasks/stream.py`（`task_frames`：先订阅再查状态；终态从 `optimization_runs` 回放）、`app/tasks/executors.py` 加 `grid`/`batch`（复用 `run_cells`，逐格 `publish` + `progress`，中止则**不落库**）、`app/api/optimize.py` 两个 POST 改 **202 + `{task_id}`**（执行材料冻结进 `request.exec`）、`app/api/tasks.py` 加 `GET /{id}/events` 与**协作式中止**的取消分支、`worker.request_stop` 中止投递口 + 三态终态帧广播。前端：`lib/optimize-stream.ts`（纯函数视图模型）+ `use-optimize` 重写（提交与订阅分开、`detached` 保留已收到的格、`stop()` 改成真取消）+ 页面去 `beforeunload` 拦截、`?task=` 自动重连。② **与草案的偏差**：`POST` 不再是 SSE 而是 202（理由见 §2.8「与草案的偏差」——请求内开流会挂到终态，离线用例无法驱动），`X-Task-Id` 兜底头随之取消。③ **走查与真机**：`capture-e1b.mjs` **5/5**（`?task=` 入地址栏 / **刷新后结果照常出现** / 跑完照常落库 / 停止后说明「未落库」/ **中止不落库**——记录数 4→4）；`capture-m5b.mjs` 回归 **14/14**（含「点一格重跑」）。④ **实施期逮到两个 bug**：worker 从不广播终态帧（在线订阅者永远停在「运行中」，只有「在线跑完并且在看」才暴露）；`?task=` 重连去重用 `useRef` 在 StrictMode 下失效（effect 双跑 → 一条订阅都没有）。两条都写进 §2.8 防复现。⑤ **回归**：后端离线 **1358 passed**（+12）、集成**全量 106 passed / 0 failed**（含新 `test_optimize_e1b.py` 两条：断开订阅后照跑完并落库 / 中止不落库；`test_optimize_m5b.py` 的辅助件按新契约改写，断言一字未改）、前端 **454 passed**（+10）、typecheck/lint/build 全绿。同轮 P2 SPEC 的 M5b 断线条款划掉并指路（v1.59） |
 | v2.3 | 2026-10-14 | **§2.8（E1b）定稿**：网格/批量迁入 E1a 的 worker，SSE 从执行载体降为进度订阅；新 `app/tasks/bus.py`（按 task_id 的累积缓冲 + 订阅者）、新 `GET /tasks/{id}/events`（三态重连）、`X-Task-Id` 兜底头、取消走 `run_cells(stop=)` 的协作式中止且**结果不落库**；前端去 `beforeunload` 拦截、`?task=` 自动重连。三条已知代价如实写明（单 worker 串行 / 重启仍丢在跑的 / 取消不落库）。**待用户确认后开工** |
 | v2.2 | 2026-10-14 | **E1a + E1c 交付**（执行计划与落地记录 `docs/private/Pn-n/P3-En/P3-E1a.md`）。新增 `tasks` 表（DDL 进 `core/db.py::SCHEMA`，两个索引）、`app/tasks/{executors,worker}.py`（执行体 + 单协程取件循环，取件间隔 200ms，lifespan 起停）、`app/api/tasks.py`（列表/详情/取消）；`POST /api/v1/backtest` 改 202 + `{task_id}`，落 `backtest_runs` 与报告取回路径不变。**实测（本机真栈，2026-10-14）**：ma_cross/600519——旧同步 `build_report` 627–653ms、提交 427–439ms、取件 552–616ms、端到端 1220–1427ms；event_driven/300750 `both`——1168–1668ms / 414–453ms / 451–564ms / 1855–2073ms。读法：**提交 ≈ 0.4s（闸门里 `resolve_window` 真读一次行情），端到端比旧同步多 0.6–0.9s**——E1a 换的是任务契约与状态可查，不是速度（§2.7 边界⑤）。错误通道分界（§2.3 表）：前置闸门仍同步 4xx，运行期错误落任务 `error`（`StrategyRejected` 另带 `line`，与旧 422 响应体同形）。E1c：7 处 `from app.core.llm import complete` 改取用式（常量与异常类保持直接导入），一条用例证明单点注入成立；**不做 `LLMGateway` 类**。回归：离线 1345 passed（+22）、前端 432 passed（+9），16 处既有调用点全部改写 |
+
+## 附录 A. P3 收尾项 5（E9 前）
+
+> 底稿：`docs/private/Pn-n/P3-En/P3-收尾项5-规划评估.md`（2026-10-17 对 Agent/模拟盘/RAG/深研报/
+> 策略代码的逐行核对）。本附录不属于 PRD §2.3 的 E1–E9，是 **E9 之前把会改代码的收尾项做完**；
+> 四项可以独立停止，顺序为 **5b → 5a → 5d → 5c**。
+> **两处拍板（2026-10-17 用户）**：① Agent 提案**逐条审批**，`run(approve="all")` 拒绝且批量 SQL
+> 排除 `origin='agent'`；② 策略版本**在模拟盘创建时锁定**，之后改策略不影响运行中的会话。
+
+### A.1 5a：Agent 下单提案（HITL + E5 风控）
+
+**形态**：Agent 只生成一条**当前 `as_of` 日、待审批**的决策（`origin="agent"`），不推进账户、
+不成交、不改风控；用户用既有 `POST /paper/decisions/{id}/approve|reject` 逐条裁决，下一次
+`step` 的 T+1 开盘按既有撮合成交。**不新建意图表**，不新增审批端点。
+
+**生成**（`app/paper/proposal.py`）：
+
+1. `get_paper_account(user_id, account_id)` 判归属；`status=active`；`as_of < config.end`
+   （否则没有 T+1 可成交）；`symbol in config.symbols`；当日该标的已有任何决策 → 409。
+2. 用 `ScriptedAgentStrategy`（只在该日该标的返回一条 `Signal(origin="agent")`）跑一次
+   `replay(config, decisions=已存决策, through=as_of, strategy=scripted, account_id=...)`，
+   复用 `_propose` / `evaluate_buy` / `decision_id` / 审计生成。
+3. 从结果取目标决策（`origin="agent"`）；被风控拦截时取当日该标的 `origin="agent"` 的
+   block 审计（`decision_id` 用 would-be id，无决策行）。
+4. 新 DB 方法 `add_paper_decision(...)`：一个事务写决策行 + 当日该标的的 Agent 审计行；
+   `INSERT ... SELECT ... FROM paper_accounts WHERE id/user_id/status='active' AND as_of=...
+   ON CONFLICT DO NOTHING`——账户已推进则 0 行 → 409，不静默写到错的日子。
+5. 每个账户每个交易日最多 **5 条** pending Agent 决策；理由 ≤200 字；同一自然键（账户/日/标的/方向）
+   由 `paper_decisions` 既有 `UNIQUE` 兜底。
+
+**replay 两处小适配**（对既有策略默认行为不变）：
+
+- `Signal` 增 `origin: str = "strategy"`；`_propose` 透传进 `Decision`，风控审计的 `origin`
+  也用 `signal.origin`。
+- 日循环开始时 `pending_notional` 先计入**日志里当日已存在的 BUY**（pending/approved、未成交）
+  ——正常 `step` 的当日日志为空，行为不变；Agent 在收盘后追加提案时，必须把当日已有策略买入
+  算进总仓位。
+
+**工具与上下文**：`list_paper_accounts()`（读）+ `propose_paper_order(account_id, symbol, side,
+reason)`（写提案）。新增 `app/agent/context.py` 的 `ContextVar`，`api/chat.py` 的 runner
+`set` / `finally reset`；**`user_id` 绝不作 LLM 可传参数**；上下文缺失/DB 不可用返回人话，不抛异常。
+系统提示与工具描述写明「只能创建待审批决策，不得声称已成交/已批准，用户必须在模拟盘页裁决」。
+
+**API / 前端**：`run` 有 pending Agent 决策 → 409；`set_paper_decisions_bulk` 的 SQL 排除
+`origin='agent'`；决策卡/流水加「Agent 提案」徽章（`--warn` 同族描边，不用红）；
+「全部批准」在有待审批 Agent 提案时禁用并给原因；`origin` 联合类型扩为 `strategy|risk|agent`。
+
+**边界**：不做盘中触发/部分成交/自定义股数/审批时改单（M6 既有边界）；不做 Agent 提案独立列表
+（它就是决策流水的一类）；既有 M6「审批 vs step」竞态不在本项扩张范围，若顺手修则按
+「已有 `decided_at` 且重放侧仍为 pending/expired 时保留用户裁决」的 upsert 条件处理，否则如实登记。
+
+### A.2 5b：Agentic RAG 一轮纠错 + A2A 静态能力卡
+
+**一轮纠错**：新增 `app/rag/correct.py::search_with_correction`（注入 `search_fn` / `rewrite_fn`
+便于离线测试）。**只在第一次检索零命中时**触发一次改写（不用低分阈值：RRF/rerank 分数不同量纲）；
+改写保留标的/时间/事件类型，**`as_of`、`symbol`、`event_type`、`top_k` 逐字不变**；改写空/同原查询/
+二次检索失败 → 返回原空结果并如实说明。Chat `search_events`、深路径 `news` 角色、对外 MCP
+三处统一接入；工具文本/MCP `query` 字段/角色 `notes` 都写明「首次无结果，已改写为…再检索」，
+**不静默换查询**。PIT 红线用离线用例钉死：两次 `SearchQuery.as_of` 相等，只有 `query` 变。
+不改 `news` 角色的 `event_type` 过滤（既有取证面，另开评估）。
+
+**A2A 静态能力卡**：`GET /.well-known/agent-card.json`（公开、只读、静态；A2A 卡形状，
+**不是 A2A 协议实现**——无传输/任务/推送）。放 `app/api/capabilities.py` 并在 `main.py` 注册；
+内容含 name/description/url（按请求 host）/version/capabilities/defaultInputModes/
+defaultOutputModes/skills（PIT 检索、深度研究、模拟盘提案、回测）/`x-quantsage`（PIT 语义、
+HITL、代码风控、MCP stdio 的 tool 与限制）。不写绝对路径/密钥/内部表名；不改 MCP 工具面
+（`verify_quantsage_mcp.py` 断言恰好一个 `search_events`）。文档统一改口径：
+「A2A 协议不做；提供静态能力卡」。
+
+### A.3 5d：策略版本管理（版次 / diff / 回滚）
+
+**模型**：新表 `strategy_versions`（append-only：`id`、`strategy_id` FK CASCADE、`version_no`、
+`name`、`code`、`params`、`created_at`、`UNIQUE(strategy_id, version_no)`、索引
+`(strategy_id, version_no DESC)`）；`strategies` 增 `version INT NOT NULL DEFAULT 1`。
+创建/更新在事务里做；更新 `SELECT ... FOR UPDATE`，**只有 code/params 实际变化才 version+1**
+（只改名不增版，名字快照进版本行）；`init_schema` 幂等回填存量策略的版本 1。
+`StrategyUpdate` 增可选 `expected_version`，不匹配 → 新异常 `StrategyVersionConflict` → 409；
+不传保持现有 last-write-wins。
+
+**端点**：`GET /strategies/{id}/versions`、`GET .../versions/{n}`、
+`GET .../versions/{n}/diff?against={m}`（`difflib.unified_diff`，缺省对当前 head）、
+`POST .../rollback {version_no, expected_version?}`（把目标内容作为**新版本**追加，不物理回退）。
+`list/get/public_row` 增 `version`。
+
+**运行绑定**：回测提交时把 `row["version"]` 冻结进任务行；`backtest_runs` 增
+`strategy_version INT`（可空，旧记录不回填），执行体写库。模拟盘 `PaperConfig`/config JSON 增
+`strategy_id + strategy_version`；续跑优先按 id + 版本从 `strategy_versions` 读源码，
+**改策略不影响运行中的会话**；旧 config 缺键 → 按名字找当前源码（现状兼容）。优化记录
+本轮不绑定版本（源码已在任务行冻结，历史摘要只有参数/指标）——如实写入边界。
+
+**前端**：工作台工具栏「版本 N / 历史」→ 右侧抽屉（版本列表 + 服务端 unified diff +
+回滚二次确认）；回滚后重开策略、清 `clearDescriptorCache()`；保存带 `expected_version`，
+409 提示「策略已在别处更新，请重新打开后再保存」，不覆盖。无新页面/新依赖。
+
+**边界**：不做保留策略/分支/合并；删策略级联删版本行；回测旧记录 `strategy_version` 显示「—」；
+优化记录不绑定版本。
+
+### A.4 5c：深研报评测（rubric 手动轨）
+
+**数据集**：`backend/tests/research/eval_set_v1.json`，**12 题**，每题 `id/question/symbols/as_of/
+focus/rubric_hint`；覆盖单/多标的、新闻/公告/政策、数值、多跳、`as_of` 边界；`as_of` 落在本地
+语料窗口内（2026-07-07–09-29）。
+
+**脚本**：`backend/scripts/build_deep_eval.py`——逐题 `astream_deep_run`（`InMemorySaver`，
+不落库）收集 `report`；**自动项**：`run.status`、`gate.decision`、`gate.stray_numbers`、`gaps`、
+`debate_rounds ≤ 3`、`evidence_count`、每条证据 `available_at ≤ as_of`（PIT 红线）；**主观项**：
+LLM-judge 五维 1–5（PIT 合规/证据充分/数字可追溯/多空平衡/风险与边界），JSON 输出容错解析，
+judge 失败记 null。产物 `logs/p3/deep_eval.{json,md}`；**不设及格线、不进 CI**；`--limit`
+支持先跑 3 题冒烟。评分器/解析/聚合是纯函数，用 fixture report 离线单测（不调模型、不需 `data/`）。
+真实 3 题冒烟产出手动证据，不把一次 LLM 输出写成测试断言。
+
+### A.5 已知边界（如实）
+
+- Agent 不能批准/执行/改风控；不新增意图表；不消费 `run` 的批量路径；`as_of` 已到区间末端时
+  拒绝提案；不部分成交/不加仓/不盘中触发。
+- RAG 纠错只做「零命中 → 一次改写」，不做多轮/低分阈值/HyDE；不改 news 角色的 event_type。
+- A2A 只做静态能力卡，不做协议传输/任务/推送；MCP 工具面不变。
+- 策略版本不做保留策略/分支/合并；优化记录不绑定版本；删策略级联删版本行。
+- 5c 不设及格线、不进 CI；LLM-judge 失败如实记 null；一次运行的质量分数不等于可复现指标。
+- 既有 M6 边界不变：日线收盘生成、T+1 开盘成交、审批时改单/部分成交不做。
+
+### A.6 验收口径
+
+| 项 | 自动 | 真机/手动 |
+|---|---|---|
+| 5b | 离线：空命中改写一次、PIT 两次 as_of 相等、改写失败降级、三处接入、能力卡 200/字段齐全 | 一次真实空命中检索的改写提示；`curl /.well-known/agent-card.json` |
+| 5a | 离线：生成/风控 pass-cap-block/同键冲突/池外/末端/上限/上下文缺失/`run` 409；集成：真库单条插入 + as_of 守卫 | 真实 chat 让 Agent 提案 → `/paper` 批准 → `step` 成交；UI 走查徽章/禁用 |
+| 5d | 离线：创建/更新/只改名不增版/expected_version 409/回滚/差异/删除级联/paper 版本锁定/回测版本绑定；集成：幂等建表 + 回填 | 工作台版本抽屉、diff、回滚后重开；改策略后旧模拟盘仍用旧版本 |
+| 5c | 离线：评分器/解析/聚合单测（fixture） | 3 题真跑 `logs/p3/deep_eval.md`，如实读数；全量 12 题手动 |
+
+**验证命令**：后端离线 `uv run pytest` + `uv run ruff check .`；集成按需 `uv run pytest -m integration`；
+前端 `pnpm test && pnpm typecheck && pnpm lint && pnpm build`；覆盖率按 CI 口径
+`uv run pytest --cov=app --cov-fail-under=88`。

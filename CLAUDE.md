@@ -20,7 +20,7 @@
 | 前端 | Next.js 15 (App Router) + TS + Tailwind + shadcn/ui；K 线用 TradingView Lightweight Charts，其余 ECharts | ✅ 已用（shadcn `components.json` base-nova + cva/base-ui） |
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
 | 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用（E3c 热点缓存 L1/L2） |
-| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | ✅ checkpointer + **Store（M7b 决策记忆）** + 16 张自有表（用户 / 会话 / 自选 / 回测 / 策略 / 优化 / 模拟盘 / 研报 / 任务 / 配额 / 审计等） |
+| 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | ✅ checkpointer + **Store（M7b 决策记忆）** + **17 张自有表**（用户 / 会话 / 自选 / 回测 / 策略 / 策略版本 / 优化 / 模拟盘 / 研报 / 任务 / 配额 / 审计等） |
 | 缓存 | Redis（E3c 数据层热点缓存，可降级） | ✅ 已用（代际键 + L1 进程内 + L2 Redis；**失效 = 换键**，不靠「ETL 之后记得清缓存」；Redis 挂了熔断直读。限流/熔断仍走进程内、不依赖 Redis） |
 | 向量库 | Qdrant | ✅ **P2 起已用**：BGE-M3 双索引 + 服务端 RRF / PIT 过滤；对外 MCP Server 直连 |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | ✅ 两档均已用：辩论 / 综合用 pro，取证 / 路由 / 反思用 flash；E4 降级链 pro → flash |
@@ -31,14 +31,17 @@
 
 1. LangGraph 只做控制流（循环/并行/持久化/HITL）；风控闸门与校验用纯 Python，LLM 不可决定合规
 2. Multi-Agent 深路径：并行取证（节点内 try/except）→ 证据归并 → Bull⇄Bear 辩论（≤3 轮）→ 单点综合 → 代码化风控 → interrupt() HITL。「读」并行「写」单点
-3. A2A 不做：单体无跨运行时需求；**能力元数据不预留空壳**——文档与代码一致，真需要时再加（2026-10-17 订正：全仓无相关代码）
+3. A2A **协议**不做：单体无跨运行时需求；只提供**静态能力卡** `GET /.well-known/agent-card.json`（公开只读、A2A 卡形状，无传输/任务/推送）——2026-10-17 收尾项 5b 落地，不把一张 JSON 说成「支持 A2A」
 4. MCP：消费小石 stdio MCP；内部工具用 function calling；对外暴露「新闻 PIT 检索」MCP Server（P3）
 5. RAG：文档级 + 元数据 header 分块（短摘要不切）；BGE-M3；bge-reranker-v2-m3；Qdrant 服务端 RRF，PIT 过滤写进查询
-6. GraphRAG 不做；Agentic RAG 只做自适应路由 + 一轮纠错（现状：工具选择是自适应的；**显式一轮纠错待收尾项 5 补齐**）
+6. GraphRAG 不做；Agentic RAG 做自适应路由 + **零命中一轮纠错**（2026-10-17 收尾项 5b 落地：改写只动 query，`as_of` / 标的 / 事件类型 / top_k 逐字不变；不做多轮、低分阈值或 HyDE）
 7. 回测自研最小事件驱动引擎；验收含前视偏差两口径差异量化（方向不预设，如实呈现）；退市股覆盖确认转 M2（数据层 ETL 一并做）
 8. Harness = LangGraph；自研补齐：工具执行器、上下文预算管理器、代码执行沙箱
 9. 记忆：设计期 CLAUDE.md → AutoMemory → docs/；运行期 Checkpointer → Store（Postgres，M7b 决策记忆）；Qdrant 用于 RAG 检索，不是记忆存储（2026-10-17 订正）。合规风控规则只进 Git，LLM 不可动态改写
 10. 前视偏差从数据层延伸到策略代码层：M4 内置策略代码 AST 静态检查，拦截 shift(-n)/bfill 等未来函数——护城河的第二道闸门
+11. **Agent 下单只到提案**（5a）：工具只能在当前 `as_of` 日创建一条 `pending`、`origin=agent` 的模拟盘决策，不能批准/成交/改风控；用户逐条裁决，`run(approve="all")` 在有待审批 Agent 提案时 409。`user_id` 只从请求上下文取，绝不作 LLM 参数
+12. **策略版本**（5d）：append-only `strategy_versions` + `strategies.version`；内容变才 +1（只改名不增版）；diff / 回滚（回滚 = 追加新版本，保留当前名字）；模拟盘创建时锁定 `strategy_id + version`，回测记录 `strategy_version`
+13. **能力卡是静态元数据**（5b）：`/.well-known/agent-card.json` 只描述能力与边界，不实现 A2A；MCP 仍是 stdio 单工具 `search_events`
 
 ## 四、数据源（小石）
 

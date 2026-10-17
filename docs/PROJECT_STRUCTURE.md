@@ -9,19 +9,20 @@
 QuantSage/
 ├── backend/                      # FastAPI + LangGraph
 │   ├── app/
-│   │   ├── agent/                # 快路径：ReAct 图、工具白名单、prompt、历史回合合并
+│   │   ├── agent/                # 快路径：ReAct 图、工具白名单、prompt、历史回合合并、请求上下文（5a）
 │   │   │   └── deep/             # 深路径：路由 / 五角色取证 / 归并 / 辩论 / 综合 / 风控闸门 / 预算
-│   │   ├── api/                  # 16 个挂路由的模块：auth · chat · backtest · watchlist · market · events
+│   │   ├── api/                  # 17 个挂路由的模块：auth · chat · backtest · watchlist · market · events
 │   │   │                         #   strategies · optimize · factor · paper · reports · research · etl · tasks
-│   │   │                         #   · admin（E2b）· data（E3 体检/快照）
+│   │   │                         #   · admin（E2b）· data（E3 体检/快照）· capabilities（5b 静态能力卡）
 │   │   │                         #   （idempotency / limits / sse 是共用件，不挂路由）
 │   │   ├── backtest/             # 引擎、PIT 闸门、撮合、成本、指标、报告、A 股规则、批量、过拟合
-│   │   ├── strategy/             # 用户策略沙箱、前视静态检查（R0–R5）、模板库
+│   │   ├── strategy/             # 用户策略沙箱、前视静态检查（R0–R5）、模板库、版本（5d）
 │   │   ├── factor/               # 因子面板与分析（独立于回测引擎的数据管道）
 │   │   ├── paper/                # 模拟盘：账户 / 撮合 / 回放 / 决策六态 / 风控四闸门与审计（E5）
-│   │   ├── report/               # 研报容器：组装 / claim 闸门 / Markdown / PDF / 深研报
+│   │   │                         #   + Agent 下单提案（5a：只创建待审批决策）
+│   │   ├── report/               # 研报容器：组装 / claim 闸门 / Markdown / PDF / 深研报 / 深研报评测（5c）
 │   │   ├── memory/               # 决策记忆：到期结算、教训、跨账户聚合（LangGraph Store）
-│   │   ├── rag/                  # 嵌入 / 检索 / PIT 硬过滤 / 重排 / 离线评测
+│   │   ├── rag/                  # 嵌入 / 检索 / PIT 硬过滤 / 重排 / 离线评测 / 零命中一轮纠错（5b）
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新）；归档 / 物化 / 落库
 │   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环
 │   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止
@@ -30,7 +31,7 @@ QuantSage/
 │   │   ├── mcp/                  # 对外 MCP Server（E8b）：把 PIT 语料检索亮给外部 AI 客户端
 │   │   └── core/                 # 配置、checkpointer、LLM/Langfuse、日志脱敏与 JSON 日志
 │   │                             #   + 鉴权/会话/配额/安全头/注入边界、metrics/observability（E7e）
-│   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py）
+│   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py、build_deep_eval.py）
 │   └── tests/                    # 离线 + tests/integration
 ├── frontend/                     # Next.js 15（App Router）
 │   ├── app/                      # 18 条路由：

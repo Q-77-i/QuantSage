@@ -8,7 +8,9 @@
 
 **阶段**：P2-Mn 的 M1–M10 已全部交付并验收（里程碑 `m-p2`，2026-10-13）。P1-Tn 与 P2-Mn 的浏览器内闭环均可走完。
 
-**最近交付**：**P3-E7e —— 可观测性最小闭环**（2026-10-17，SPEC §7 v2.36）——JSON 日志（`log_format` 默认 text，可切 json）+ request id 透传/回写 + Prometheus `/metrics`（HTTP 计数/耗时、任务表五状态 gauge、缓存 L1/L2 命中/未命中）；纯 ASGI 中间件，路由标签用模板；`prometheus-client==0.26.0`。**边界**：指标进程内、单实例、无 Prometheus server/告警、未引入 OTel SDK；LLM 观测仍在 Langfuse。**验收**：离线 **1695** / 覆盖率 **90.37%** / ruff 全绿 / 真库集成 1 例。**E9 前审计落地第一项；下一步 P3 收尾项 5 → E9**。
+**最近交付**：**P3 收尾项 5 —— 5a Agent 下单提案 · 5b RAG 一轮纠错 + 静态能力卡 · 5d 策略版本 · 5c 深研报评测**（2026-10-17，SPEC 附录 A）——Agent 只能创建待审批决策（逐条裁决，`run(all)` 409）；零命中改写一次查询（`as_of` 不变）；`/.well-known/agent-card.json` 静态能力卡（非 A2A 协议）；append-only 策略版本 + diff/回滚，模拟盘锁定版本、回测绑 `strategy_version`；12 题深研报 rubric（3 题冒烟：PIT 违规 0、judge 均值见 `logs/p3/deep_eval.md`）。**验收**：离线 **1731 passed / 135 deselected**、覆盖率 **89.64%**（门槛 88）、`ruff` 全绿；前端 **503 passed** + typecheck/lint 全绿；新集成 **3 例**（5a 1 + 5d 2）+ E5/M6 回归 **6 例**；界面走查 **13/13**（`logs/5a5d/ui.md`）；真模型 Agent 提案 E2E 成交（`logs/5a5d/agent-e2e.md`）。**下一步 E9 企业级文档**。
+
+**上一交付**：**P3-E7e —— 可观测性最小闭环**（2026-10-17，SPEC §7 v2.36）——JSON 日志（`log_format` 默认 text，可切 json）+ request id 透传/回写 + Prometheus `/metrics`（HTTP 计数/耗时、任务表五状态 gauge、缓存 L1/L2 命中/未命中）；纯 ASGI 中间件，路由标签用模板；`prometheus-client==0.26.0`。**边界**：指标进程内、单实例、无 Prometheus server/告警、未引入 OTel SDK；LLM 观测仍在 Langfuse。**验收**：离线 **1695** / 覆盖率 **90.37%** / ruff 全绿 / 真库集成 1 例。**E9 前审计落地第一项**。
 
 **上一交付**：**P3-E5b —— E5 全节交付完毕**（2026-10-17，SPEC §6 v2.35）——前端：建会话风控档位（关闭 / 标准 / 严格 / 自定义）、账户卡下的风控三读数 + 回撤暂停横幅 + 逐条审计日志、决策卡 / 流水的「风控自动 / 风控」徽章、「全部驳回」确认段写明「风控止损仍会执行」。**真机取证 7/7**（`logs/e5/risk-smoke.md`）：28 次止损触发 / 28 张卖出全部 T+1 成交、2 次回撤 breach、83 条回撤拦截、60 条放行审计、18 条缩量（17 张成交，`fill.qty ≤ est_qty`）；**界面走查 14/14**（`logs/e5/ui.md`）。README 的模拟盘口径与截图同步（`docs/images/paper.png` 重拍为 1440×1000）。**验收**：前端 **498** + typecheck/lint 全绿；后端 1690 / 覆盖率 90.38% / ruff 全绿。**下一步 E9 企业级文档**。
 
@@ -32,7 +34,7 @@
 
 **更早交付**：**P3-E7a**（2026-10-15，SPEC §7 v2.17）——工程化基建落地：**ruff 接入**（中等规则集 + `line-length=120`，存量 **152 条清零**，其中逮到 1 个**真缺陷**：`etl/archive.py` 用了 `subprocess.CompletedProcess[str]` 却从未 import，靠 `from __future__ import annotations` 侥幸不炸）· **GitHub Actions CI**（三 job：后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）· **供应链审计持续化**（`uv export --no-hashes` + `pip-audit -r` 审**清单**，修好了 E8a 记的 hash 校验失败，且覆盖被跳装的 torch）。**CI 已从零跑绿**（2026-10-15 第三跑 `38741094527`：前端 73s / 后端 390s / 审计 36s，总 394 秒）。**三跑共逮到 27 个问题并全部处置**（依据 SPEC §7.10 / §7.11）——首跑 4 个（两个工作流错：审计 job 没装 pnpm、`uv run` 会重复同步把 torch 装回来；两个测试隔离的真缺陷：「离线套件」此前隐含依赖真实 `data/`，且 `-m "not integration"` 挡不住 import 期副作用）；第二跑 23 个**全是宿主环境差异**（时区 / 沙箱内存阈值贴太紧 / 缺 `.env` 配置 / 一条拿未入库文件当路标的测试）⇒ CI 补 `TZ` + 一份最小假配置，测试侧修三处，并把「离线」的边界写清。**口径订正：离线 1491 → 1487、集成 110 → 114**（不是测试少了，是归类错了）。
 
-**下一个动作**：**P3 收尾项 5（Agent 下单 / 策略版本 / Agentic RAG 纠错 / A2A 元数据 / 深研报评测）→ E9 企业级文档**（用户定：先把会改代码的项做完，再写 E9，避免文档刚整理完又变）。
+**下一个动作**：**P3-E9 企业级文档**（收尾项 5 已交付；E9 以 Agent 为主角写架构、风控专题、代码评审记录、事故复盘模板与边界表）。
 
 **待决事项**
 
@@ -80,6 +82,7 @@
 | E7 工程化 | ✅ **E7a CI 骨架 + ruff + 供应链审计**（2026-10-15，**CI 三 job 已跑绿**，run `38741094527`）· **E7b 覆盖率门槛**（2026-10-15，门槛 `fail_under = 88`，按 CI 基线 89.36% 定标；eval gate 口径订正同步进 PRD v0.11）· **E7c Langfuse 四字段 + 补挂 handler**（2026-10-15，四条路径真机核对通过）· **E7d 实验可复现**（2026-10-16，`data_digest` 窗口指纹，同参重跑同指纹真机验证）· **E7e 可观测性最小闭环**（2026-10-17，JSON 日志 + request id + Prometheus `/metrics`；离线 1695 / 真库集成 1）——**全节已交付** |
 | E8 安全 + 对外 MCP | ✅ E8a 服务侧加固 · E8b **对外 MCP Server** · E8c 注入边界标记（三段均于 2026-10-15 交付） |
 | E9 企业级文档 | ⬜ |
+| P3 收尾项 5 | ✅ **全节已交付**（2026-10-17，SPEC 附录 A）：**5a** Agent 下单提案（HITL + E5）· **5b** RAG 一轮纠错 + A2A 静态能力卡 · **5d** 策略版本（diff / 回滚 / 运行绑定）· **5c** 深研报评测（12 题 rubric，3 题冒烟） |
 
 ## P4-Sn · 愿景（不排期）
 

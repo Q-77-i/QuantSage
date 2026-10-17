@@ -74,11 +74,12 @@ cd backend && uv run pytest                                    # 离线
 cd backend && uv run pytest --cov=app --cov-fail-under=88      # 离线 + 覆盖率门槛（CI 口径）
 cd backend && uv run pytest -m integration                     # 集成（需容器与真实密钥）
 cd frontend && pnpm test && pnpm typecheck && pnpm lint
+cd backend && uv run python scripts/build_deep_eval.py --limit 3   # 深研报 rubric（手动轨，真模型/真数据）
 ```
 
 CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + 两端的依赖审计**。集成那一行不在 CI 里——
 它要真容器、真密钥与真实行情语料（`data/` 不入库），所以**徽章变绿不等于全部测试通过**。
-覆盖率门槛是 **88%**（CI 实测基线 89.36%、本机 90.22%——门槛按前者定标；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
+覆盖率门槛是 **88%**（E7b 按当时 CI 基线 89.36% 定标；2026-10-17 全量本机 **89.64%**；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
 
 命令行跑一次回测、复现教程里的数字，命令见[示例策略教程](docs/tutorials/ma_cross.md#3-复现)。
 
@@ -89,13 +90,13 @@ CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + �
 | 能力域 | 内容 |
 |---|---|
 | **数据层** | 全市场 A 股日线：`cn-daily` 21 片 = 2020–2026 × raw/qfq/hfq，DuckDB 直读 Parquet **零 ETL**；PIT 事件语料按日落盘（一条事件一行、标的是数组，带 `source` / `original_source` / `content_hash` 溯源三元组）；交易日历冻结为仓库内文件，运行期零第三方依赖 |
-| **PIT 语义检索（RAG）** | 事件语料建 BGE-M3 双索引（稠密 + 稀疏）落 Qdrant，管线为「`available_at <= as_of` **服务端硬过滤** → 双路召回 → 服务端 RRF → bge-reranker-v2-m3 精排」；Agent 工具 `search_events` 可显式传 `as_of`，回答「那个时点当时能看到什么」 |
-| **Agent 对话（快路径）** | LangGraph 单 Agent，经 LiteLLM 网关调快档模型；小石 11 个工具收敛为 **4 个只读白名单**（动作型工具不进 LLM 工具集）；SSE 流式五类帧；会话列表 / 历史回看；Langfuse 全链路 trace |
+| **PIT 语义检索（RAG）** | 事件语料建 BGE-M3 双索引（稠密 + 稀疏）落 Qdrant，管线为「`available_at <= as_of` **服务端硬过滤** → 双路召回 → 服务端 RRF → bge-reranker-v2-m3 精排」；Agent 工具 `search_events` 可显式传 `as_of`，回答「那个时点当时能看到什么」；**零命中时改写一次查询**（同一 `as_of`，透明告知，不静默换查询） |
+| **Agent 对话（快路径）** | LangGraph 单 Agent，经 LiteLLM 网关调快档模型；小石 11 个工具收敛为 **4 个只读白名单**（动作型工具不进 LLM 工具集）；另有本地行情 / PIT 检索工具与**模拟盘提案工具**（`list_paper_accounts` 只读、`propose_paper_order` 只创建待审批决策，不能批准/成交/改风控）；SSE 流式五类帧；会话列表 / 历史回看；Langfuse 全链路 trace |
 | **回测引擎 + 策略沙箱** | 自研最小事件驱动引擎：信号当根收盘生成、**次根开盘成交**；A 股撮合（100 股整手、佣金万 2.5 最低 5 元、卖出印花税 0.05%、滑点 5bps）与涨跌停规则；用户策略 `on_bar(ctx[, p])` 契约 + 受限命名空间 + 子进程三层配额，**运行前 R0–R5 静态拦未来函数** |
 | **分析输出** | 总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数，基准可选买入持有或**全市场等权代理**；`pit_comparison` 量化两口径差异；参数网格 + 热力图 + **过拟合检验（Deflated Sharpe）**；因子分析（RankIC / 分层 / 多空价差），读数落在噪声区间就如实说 |
-| **模拟盘与研报** | 回放式纸上交易：策略出信号 → **你逐条裁决** → 按次日开盘价成交 → 每日收盘结算；可选 **E5 风控**（总仓位 / 单标的集中度 / 止损 / 回撤，止损单自动批准且不可驳回）；**风控关闭时全部批准 ⇔ 一次回测（逐笔相等）**，风控开启会缩量 / 拦截，不再承诺逐笔相等。绩效研报容器含归因、逐笔复盘（含到期结算后的教训）、**证据追溯**、分享给未登录的人、一键导出 PDF（服务端渲染） |
+| **模拟盘与研报** | 回放式纸上交易：策略出信号 → **你逐条裁决** → 按次日开盘价成交 → 每日收盘结算；可选 **E5 风控**（总仓位 / 单标的集中度 / 止损 / 回撤，止损单自动批准且不可驳回）；**Agent 也能提案，但只能创建待审批决策**——逐条人工裁决，有待审批提案时「一键跑到底」直接拒绝；**风控关闭时全部批准 ⇔ 一次回测（逐笔相等）**，风控开启会缩量 / 拦截，不再承诺逐笔相等。绩效研报容器含归因、逐笔复盘（含到期结算后的教训）、**证据追溯**、分享给未登录的人、一键导出 PDF（服务端渲染） |
 | **深度研究（多 Agent）** | 意图路由 → 五角色**并行取证**（取数是代码、解读是 LLM）→ 证据归并 → Bull⇄Bear 辩论（≤3 轮硬上限）→ 单点综合 → **代码化风控闸门** → 超限 `interrupt()` 人工审批；过程可视化与 Langfuse trace 同源 |
-| **账户与工作台** | 注册登录与**数据隔离**（越权与不存在同返 404）；自选股与分组；个人空间四页签；我的回测重开；在线策略工作台（Monaco **本地资源、零 CDN**）；回测页的策略下拉可选**内置或「我的策略」**（跑的是库里那条源码，先保存才能跑） |
+| **账户与工作台** | 注册登录与**数据隔离**（越权与不存在同返 404）；自选股与分组；个人空间四页签；我的回测重开；在线策略工作台（Monaco **本地资源、零 CDN**）+ **版本历史 / diff / 回滚**（回滚 = 追加新版本；只改名不增版）；回测页的策略下拉可选**内置或「我的策略」**（跑的是库里那条源码，先保存才能跑；回测记录绑定当次 `strategy_version`） |
 
 ---
 
@@ -181,6 +182,8 @@ flowchart LR
 | GET | `/api/v1/market/{symbol}/probe` | 6 位代码体检。**「本地没有」是 200 + `has_data:false`，不是 404** |
 | GET · POST | `/api/v1/etl/status` · `/api/v1/etl/run` 🔑 | 语料覆盖 / 缺口 / 调度器状态；手动触发（后台执行，已在跑 409）。**归 admin**——一次触发是全局动作 |
 | GET | `/api/v1/admin/usage` · `/api/v1/admin/rejections` 🔑 | 配额用量与拒绝记录（**只读**；授撤角色走 `scripts/grant_admin.py`） |
+| GET | `/.well-known/agent-card.json` | 公开只读**静态能力卡**（A2A 卡形状，**不是 A2A 协议**；无传输/任务/推送） |
+| GET · POST | `/api/v1/strategies/{id}/versions` · `.../versions/{n}` · `.../versions/{n}/diff` · `/rollback` 🔒 | 策略版本历史 / 详情 / 统一 diff / 回滚（回滚 = 追加新版本） |
 
 🔒 = 需登录，🔑 = 需管理员（`users.role = "admin"`，脚本改、立即生效）。**除 `market/*` 与 `events`（非用户资产）与 `/health` 外，其余一律要登录**；分享页走 `/api/v1/public/reports/{token}` 单独授权。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
 
@@ -216,6 +219,10 @@ Claude Code 直接读项目根的 `.mcp.json`（重启后 `/mcp` 可见）；Cla
 cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e8/mcp-verification.json
 ```
 
+另有**静态能力卡** `GET /.well-known/agent-card.json`（公开只读）：把 PIT 检索 / 深度研究 /
+模拟盘提案 / 回测四项能力、HITL 与 MCP 的限制写成一份 A2A 卡形状的 JSON。**它不是 A2A 协议实现**
+——没有传输、任务或推送；MCP 仍是 stdio 单工具。
+
 ---
 
 ## 已知边界
@@ -236,6 +243,11 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 - **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例假设**：同一库上起第二个进程时，后起者的启动扫尾会把前者正在跑的任务标成 `failed/interrupted`；被重启打断的任务不自动重跑，如实标失败
 - **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流/熔断仍走进程内，不依赖 Redis（E4 定稿）
 - **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**指标进程内、重启清零、单实例**，没有 Prometheus server / 告警，**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
+- **Agent 下单只到提案**：Agent 工具只能创建**当前交易日、待审批**的模拟盘决策，不能批准 / 成交 / 改数量 / 改风控；用户必须逐条裁决，有待审批 Agent 提案时「跑到结束」直接 409。只支持会话池内标的、等额配额买入 / 全仓卖出（M6 不支持部分成交）；不做盘中触发
+- **RAG 一轮纠错只处理零命中**：第一次检索没有结果才改写一次查询，`as_of` / 标的 / 事件类型 / top_k 不变；不做多轮、低分阈值或 HyDE。改写会如实写进工具返回 / MCP `query` 字段，不静默换查询
+- **策略版本按内容计**：只有 `code` / `params` 实际变化才 +1，只改名不增版；回滚追加新版本并保留当前名字；删除策略会级联删版本行。模拟盘创建时锁定 `strategy_id + version`（旧会话缺键时按名字回落），回测记录绑定 `strategy_version`，**优化记录本轮不绑定版本**（源码已在任务行冻结，但历史摘要无法证明当时版本）
+- **A2A 只有静态能力卡**：`/.well-known/agent-card.json` 是只读元数据，不实现 A2A 协议；MCP 工具面不变（仍是 stdio 单工具 `search_events`）
+- **深研报评测是手动轨**：12 题 rubric 数据集 + 自动项 + LLM-judge，**不设及格线、不进 CI**；仓库里的证据是 3 题冒烟（`logs/p3/deep_eval.md`），全量 12 题需真模型/真 Qdrant/真 `data/` 手动跑
 - **冻结交易日历只剩 75 天（止于 2026-12-31）**：上游 exchange-calendars 目前没有 2027 假期数据（2026-10-17 复查最新为 4.13.2），X1 体检按 90 天告警。到期前等上游更新后重生成；**不用工作日近似硬扩**（春节 / 调休会静默算错交易日）
 - **前端只对纯函数做单测**，未引组件测试框架；界面靠 Playwright 走查脚本人工核对
 
