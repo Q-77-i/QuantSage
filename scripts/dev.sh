@@ -8,7 +8,7 @@
 #   ./scripts/dev.sh restart [--force] # 停应用后重新起；手动起的进程用 --force 清理
 #   ./scripts/dev.sh status           # 基础设施 / 应用端口 / 健康检查
 #   ./scripts/dev.sh logs [backend|frontend]
-#   ./scripts/dev.sh down             # 停应用 + docker compose down
+#   ./scripts/dev.sh down             # 停应用 + 全部 compose 服务（含 observability profile）
 #
 # 约定:
 # - 后端用 backend/.venv/bin/python -m uvicorn（避免 uv run 包装层，PID 可控）
@@ -16,6 +16,9 @@
 # - 日志 logs/dev/{backend,frontend}.log；PID logs/dev/{backend,frontend}.pid
 # - 不自动安装依赖；缺 .env / .venv / node_modules 时给出明确命令
 set -euo pipefail
+
+# 变量紧邻中文/全角标点时一律写 ${var}：非 UTF-8 locale 下 Bash 会把多字节首字节
+# 当成变量名的一部分（实测 `$pid）` 报 `pid�: unbound variable`）。
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/logs/dev"
@@ -79,7 +82,7 @@ start_backend() {
   local pid
   pid="$(read_pid "$BACKEND_PID")"
   if pid_alive "$pid"; then
-    say "后端已在运行（PID $pid）"
+    say "后端已在运行（PID ${pid}）"
     return 0
   fi
   if port_busy "$BACKEND_PORT"; then
@@ -105,7 +108,7 @@ start_frontend() {
   local pid
   pid="$(read_pid "$FRONTEND_PID")"
   if pid_alive "$pid"; then
-    say "前端已在运行（PID $pid）"
+    say "前端已在运行（PID ${pid}）"
     return 0
   fi
   if port_busy "$FRONTEND_PORT"; then
@@ -141,7 +144,7 @@ stop_one() {
   local pid
   pid="$(read_pid "$pidfile")"
   if pid_alive "$pid"; then
-    say "→ 停止$name（PID $pid）"
+    say "→ 停止${name}（PID ${pid}）"
     kill_tree "$pid" TERM
     local i
     for i in {1..20}; do
@@ -169,7 +172,7 @@ kill_listeners() {
     return 0
   fi
   for pid in $pids; do
-    say "→ 清理端口 $port 的监听进程（PID $pid）"
+    say "→ 清理端口 $port 的监听进程（PID ${pid}）"
     kill_tree "$pid" TERM
   done
   sleep 1
@@ -224,14 +227,14 @@ status_all() {
   bpid="$(read_pid "$BACKEND_PID")"
   fpid="$(read_pid "$FRONTEND_PID")"
   if pid_alive "$bpid"; then
-    say "后端：运行中（PID $bpid，端口 $BACKEND_PORT）"
+    say "后端：运行中（PID ${bpid}，端口 ${BACKEND_PORT}）"
   elif port_busy "$BACKEND_PORT"; then
     say "后端：端口 $BACKEND_PORT 被占用（非本脚本 PID 文件）"
   else
     say "后端：未运行"
   fi
   if pid_alive "$fpid"; then
-    say "前端：运行中（PID $fpid，端口 $FRONTEND_PORT）"
+    say "前端：运行中（PID ${fpid}，端口 ${FRONTEND_PORT}）"
   elif port_busy "$FRONTEND_PORT"; then
     say "前端：端口 $FRONTEND_PORT 被占用（非本脚本 PID 文件）"
   else
@@ -261,13 +264,13 @@ case "${1:-start}" in
     ;;
   down)
     stop_apps true
-    say "→ docker compose down"
-    (cd "$ROOT" && docker compose down)
+    say "→ docker compose --profile observability down（含 Langfuse）"
+    (cd "$ROOT" && docker compose --profile observability down)
     ;;
   help | -h | --help)
     sed -n '2,20p' "$0"
     ;;
   *)
-    die "未知命令：$1（用 help 看用法）"
+    die "未知命令：${1}（用 help 看用法）"
     ;;
 esac
