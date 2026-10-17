@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -36,8 +38,54 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
     return Path(data_dir) if data_dir is not None else get_settings().data_dir
 
 
-def connect(data_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
-    """建连接与两个视图。视图体是 glob，查询时才展开，新增分片无需重建。"""
+#: 每线程 × 数据目录一条连接。DuckDB 连接不是线程安全的，故按线程隔离；
+#: 视图体是 glob，查询时才展开，新增分片不必重建，所以同一目录可以长期复用。
+_LOCAL = threading.local()
+
+
+class _CachedConnection:
+    """`connect()` 返回的稳定句柄：底层连接由线程本地缓存持有。
+
+    旧调用方普遍写 `finally: con.close()`；这里的 `close()` 只表示「本次用完」，
+    真正关闭发生在数据目录切换或 `reset_connections()`。这样 21 个调用点不必各改一遍，
+    也不会把共享连接关掉。
+    """
+
+    __slots__ = ("_con", "_base")
+
+    def __init__(self, con: duckdb.DuckDBPyConnection, base: Path) -> None:
+        self._con = con
+        self._base = base
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._con, name)
+
+    def close(self) -> None:
+        """兼容旧调用方；连接由线程本地缓存持有，见 `reset_connections()`。"""
+        return None
+
+    def __enter__(self) -> _CachedConnection:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def reset_connections() -> None:
+    """关闭当前线程缓存的连接（测试与显式回收用）。"""
+    cached = getattr(_LOCAL, "connection", None)
+    if cached is None:
+        return
+    _LOCAL.connection = None
+    cached._con.close()
+
+
+def connect(data_dir: Path | None = None) -> Any:
+    """取本线程在该数据目录上的连接（首次调用时建视图）。
+
+    **数据缺失检查在缓存命中之前**：文件被删掉后，旧连接不能把 `DataNotReady`
+    变成查询期错误。视图体是 glob，新增分片无需重建。
+    """
     base = resolve_data_dir(data_dir)
     missing = [sub for sub in _SUBDIRS.values() if not any((base / sub).glob("*.parquet"))]
     if missing:
@@ -45,6 +93,13 @@ def connect(data_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
             f"{base} 下缺少 {'、'.join(missing)} 的 Parquet；"
             "先跑 scripts/download_bars.py 与 scripts/download_events.py"
         )
+
+    cached = getattr(_LOCAL, "connection", None)
+    if cached is not None and cached._base == base:
+        return cached
+    if cached is not None:
+        cached._con.close()
+        _LOCAL.connection = None
 
     con = duckdb.connect()
     try:
@@ -61,7 +116,9 @@ def connect(data_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
     except Exception:
         con.close()
         raise
-    return con
+    cached = _CachedConnection(con, base)
+    _LOCAL.connection = cached
+    return cached
 
 
 def _fetch(con: duckdb.DuckDBPyConnection, sql: str, params: list) -> list[dict]:

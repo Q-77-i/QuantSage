@@ -15,6 +15,14 @@ from app.data import duckdb_client as dc
 from tests.conftest import ts, write_bars_parquet, write_events_parquet
 
 
+@pytest.fixture(autouse=True)
+def _reset_duckdb_connections():
+    """连接按线程缓存；每条用例前后清掉，避免上一个 tmp 目录的连接串进来。"""
+    dc.reset_connections()
+    yield
+    dc.reset_connections()
+
+
 @pytest.fixture
 def sample_data_dir(tmp_path: Path) -> Path:
     """两标的 × 两复权日线 + 两标的事件，形状与真实落盘一致。"""
@@ -70,6 +78,31 @@ def test_connect_exposes_both_views(sample_data_dir: Path) -> None:
         assert con.execute(f"SELECT count(*) FROM {dc.EVENTS_VIEW}").fetchone()[0] == 4
     finally:
         con.close()
+
+
+def test_connect_reuses_the_connection_for_the_same_thread_and_dir(
+    sample_data_dir: Path,
+) -> None:
+    """同一线程、同一目录重复 connect 不再重建视图；reset 后才真正关闭。"""
+    first = dc.connect(sample_data_dir)
+    second = dc.connect(sample_data_dir)
+
+    assert first is second
+    assert first.execute(f"SELECT count(*) FROM {dc.BARS_VIEW}").fetchone()[0] == 12
+
+    dc.reset_connections()
+    with pytest.raises(duckdb.Error):
+        first.execute("SELECT 1")
+
+
+def test_cached_connection_does_not_hide_missing_data(sample_data_dir: Path) -> None:
+    """文件删掉后必须仍抛 `DataNotReady`，不能拿旧连接去跑一个空查询。"""
+    dc.connect(sample_data_dir)
+    for path in (sample_data_dir / "bars").glob("*.parquet"):
+        path.unlink()
+
+    with pytest.raises(dc.DataNotReady, match="download_bars"):
+        dc.connect(sample_data_dir)
 
 
 def test_connect_raises_when_data_missing(tmp_path: Path) -> None:
