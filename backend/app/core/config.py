@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     app_name: str = "quantsage-backend"
     env: str = "local"
     debug: bool = False
+    # E7e：日志格式——`text` 便于本地阅读（默认），`json` 供采集/检索（一行一个 JSON）
+    log_format: str = "text"
 
     # ── 基础设施（compose 与本文件共用仓库根 .env）──
     postgres_user: str = "quantsage"

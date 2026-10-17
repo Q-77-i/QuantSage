@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.12）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.35 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5 全节交付完毕**（§6，2026-10-17——E5a 后端核心 + 审计 + API；E5b 前端 + 真机取证 + 界面走查）；§9 E9 待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.36 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16 + E7e 2026-10-17）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）、E7e 可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5 全节交付完毕**（§6，2026-10-17——E5a 后端核心 + 审计 + API；E5b 前端 + 真机取证 + 界面走查）；§9 E9 待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -13,7 +13,7 @@
 | [§1](#1-规划基线) | 规划基线（P3 起笔时点的现状核对） |
 | [§2](#2-e1-架构分层) | E1 架构分层（E1a 任务队列 · E1c 接缝 · [§2.8](#28-e1b网格--批量迁入队列2026-10-14-定稿) E1b 网格批量迁入——**全节已交付**） |
 | [§5](#5-e4-可靠性-l0l7) | E4 可靠性 L0–L7（**全节已交付**） |
-| [§7](#7-e7-工程化) | E7 工程化（E7a CI 骨架 + 静态检查 + 供应链审计 · **E7b 覆盖率门槛 + eval gate 口径** · **E7c Langfuse 字段规范化 + 补挂 handler** · **E7d 实验可复现**——全节已交付） |
+| [§7](#7-e7-工程化) | E7 工程化（E7a CI 骨架 + 静态检查 + 供应链审计 · **E7b 覆盖率门槛 + eval gate 口径** · **E7c Langfuse 字段规范化 + 补挂 handler** · **E7d 实验可复现** · **E7e 可观测性最小闭环**——全节已交付） |
 | [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**全节已交付**：E8a 服务侧加固 · E8b 对外 MCP Server · E8c 注入边界标记） |
 | [§3](#3-e2-多用户治理) | E2 多用户治理（**全节已交付**：E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 集中越权矩阵） |
 | [§4](#4-e3-数据工程) | E3 数据工程（**全节已交付**：**E3a** 体检定时化 + X7 源侧停滞告警 + 看板 · **E3b** 快照清单归档 + 按 sha 重物化回滚 · **E3c** 数据层热点缓存（L1 进程内 + L2 Redis，代际键，可降级）） |
@@ -937,9 +937,9 @@ CREATE TABLE IF NOT EXISTS decision_audit (
 | 实验可复现：绑定配置 + **随机种子** + 数据快照版本 | 全仓唯一随机数在 `core/reliability.py:361`（**重试抖动**，不影响结果）⇒ **回测引擎纯确定性**；配置**已绑**（`backtest_runs.request` JSONB 存整个请求体）；**数据快照版本缺失**（`data_snapshot()` 只被研报/深研调用，回测路径没绑） | §7.7：**去掉随机种子**，订正为「配置 + 数据快照版本」，只补后者 |
 | Langfuse：每条 trace 记全模型+版本+prompt hash+工具序列+token 成本+延迟+**用户** | 骨架已在，但**四个字段全空**（`tags` / `user_id` / `session_id` / `trace_name`）；**深路径与报告调用根本没挂 handler**。命名无漂移（`symbol` 全仓 731 处一致，`stock_code`/`ts_code`/`ticker` 零命中），trace 名全英文来自 LangGraph 节点名 | §7.6：**补四个字段 + 补挂 handler**——「字段规范化」的实质是补齐，不是改名 |
 | 集成套件进 CI | 110 项需真容器 + 真密钥 + 真实 `data/`，且打的是**开发库**（非独立测试库） | §7.8：**不进 CI**，如实写明「CI 绿 ≠ 全绿」 |
-| 策略版本管理 / 结构化日志+监控 / 决策审计日志 / LLM-judge 档 | — | **本轮不做**（依据见下） |
+| 策略版本管理 / 结构化日志+监控 / 决策审计日志 / LLM-judge 档 | — | **策略版本管理本轮不做；决策审计随 E5；结构化日志+监控由 E7e 补最小版；LLM-judge 档不做**（依据见下） |
 
-**本轮不做的四条及其依据**：策略版本管理（DB 版次 + diff + 回滚）**后延**——阶段规划已标「可延」，且它是独立功能（新表 + 端点 + diff UI）而非工程化基建；结构化日志 + 监控**后延**（现为纯文本日志 + 零 OTel/Prometheus，是独立一块）；决策审计日志**随 E5**——PRD 自己写死「与 E5 共用一张表」而 E5 尚未开工，现在做会形成跨功能耦合；eval gate 的 LLM-judge 档**不做**（v2.0 既定裁剪，放 `workflow_dispatch`）。
+**本轮不做的四条及其依据**：策略版本管理（DB 版次 + diff + 回滚）**后延**——阶段规划已标「可延」，且它是独立功能（新表 + 端点 + diff UI）而非工程化基建；结构化日志 + 监控由 **E7e 补最小版**（JSON 日志 + request id + Prometheus `/metrics`；**OTel SDK、Prometheus server、告警仍未做**——部署层，不在单机形态内）；决策审计日志**随 E5**——PRD 自己写死「与 E5 共用一张表」而 E5 尚未开工，现在做会形成跨功能耦合；eval gate 的 LLM-judge 档**不做**（v2.0 既定裁剪，放 `workflow_dispatch`）。
 
 ### 7.1 CI 工作流
 
@@ -1127,6 +1127,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 - **CI 跑在 Linux/CPython 上**：本机 macOS 特有行为（MPS 线程锁、`RLIMIT_*` 差异，见 M4/M3 记录）不在覆盖内。
 - **审计例外清单是活文档**：`braces` 那条例外随上游补丁而变；清单里每条都必须带理由，不许默默加白。
 - **ruff 不含 `format`**：代码风格仍是人工的，`ruff check` 绿不代表格式统一（§7.2）。
+- **指标是进程内的（E7e）**：`/metrics` 的计数重启清零；与任务 worker / 限流 / 熔断同一条单实例假设，多实例要聚合（P4）；`/metrics` 不鉴权（本地 scrape，只有路由模板/状态/计数，无业务数据）；**未引入 OTel SDK / Prometheus server / 告警**——它们是部署层，不在单机形态内。
 
 ### 7.9 验收口径
 
@@ -1142,6 +1143,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
    - ⚠ **验收用的读数走 ClickHouse `events_core` 只读查询**（本机 `docker exec`），而不是 UI 里逐条点击——v4 events-only 模式下 `traces`/`observations` 物化表为空、公开 API 也读不到 trace 列表（`/api/public/traces` 404，仅 `/api/public/v2/observations` 可用），**字段本身与 UI 同源**（UI 也读同一批事件）。
 6. **实验可复现**：同一次回测记录能给出数据快照指纹；`data_snapshot()` 的增量成本有实测数字。
 7. **回归**：后端离线 1487 + 集成 114 + 前端 466 + typecheck/lint 全绿。
+8. **可观测性（E7e）**：`/metrics` 200 且含 HTTP / 任务队列 / 缓存指标；`X-Request-Id` 回写（安全/非法值替换）；JSON 日志含 request_id 与访问字段——离线 **5 例** + 真库 **1 例**。
 
 ### 7.10 CI 首跑逮到的两类问题（2026-10-15）
 
@@ -1185,6 +1187,27 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 **回归口径（CI 模拟）**：本地把 `.env` 的键用空环境变量覆盖（环境变量优先级高于 dotenv）+ `DATA_DIR` 指向不存在的路径 + `TZ` 对齐 ⇒ **1487 passed / 0 failed**，与 CI 条件等价。这套「本地复现 CI」的手法可复用。
 
 **第三跑：全绿（2026-10-15，run `38741094527`）**——前端 73s · 后端 390s · 供应链审计 36s，总计 **394 秒**。至此 CI 从零到绿走完三跑，共处置 **27 个问题**（首跑 4 + 第二跑 23）。
+
+### 7.12 E7e 可观测性最小闭环（2026-10-17 交付）
+
+> 由头：E7 最初把「结构化日志 + 监控」后延；E9 前的交付前审计确认这是企业级机制里唯一还缺的一块。
+> 范围：**不引 OTel SDK / Prometheus server / 告警**——单机形态下，JSON 日志 + 一个 `/metrics`
+> 文本端点就够外部 scrape；LLM 的 trace/token/成本仍归 Langfuse，不在这里重复。
+
+| 件 | 内容 |
+|---|---|
+| `app/core/logging.py` | `JsonFormatter`（ts / level / logger / message / request_id + 访问字段）；`log_format` 配置默认 `text`，需要 JSON 时在 `.env` 写 LOG_FORMAT=json（大小写不敏感） |
+| `app/core/observability.py` | 纯 ASGI `ObservabilityMiddleware`：request id（客户端传的 `X-Request-Id` 只接受 `[A-Za-z0-9._-]{1,64}`，否则重生成）、HTTP 计数/耗时直方图、一行访问日志；响应头回写 `X-Request-Id`（CORS `expose_headers` 已加） |
+| `app/core/metrics.py` + `GET /metrics` | `quantsage_http_requests_total` / `quantsage_http_request_duration_seconds`（method / route / status）、`quantsage_tasks{status}`（scrape 时现查 `tasks` 表，五个状态补齐）、`quantsage_cache_hits_total{tier}` / `quantsage_cache_misses_total`（L1/L2 命中与 producer 执行） |
+
+**两条设计口径**
+
+- **路由标签用模板不用原始路径**（`/api/v1/paper/accounts/{account_id}`）：否则每个账户/策略 id 都会长成一条时间序列；404 统一记 `unmatched`。
+- **`/metrics` 不鉴权**：本地单机 scrape 面，只暴露路由模板/状态/计数，不含用户数据（与 `/health` 同一口径）；`include_in_schema=False` 不进 OpenAPI。
+
+**边界（如实）**：指标是**进程内**累计，重启清零；单实例假设（与任务 worker / 限流 / 熔断同一条），多实例要聚合（P4）；没有告警/看板（外部 Prometheus 负责）；**未引入 OTel SDK**——OTel 留作部署形态升级时的选项，当前用 Prometheus 文本端点；LLM 观测不在这里重复。
+
+**验收**：离线 **1695 passed**（+5：`/metrics`、request id 透传/替换、JSON 格式化器、缓存 L1 命中/未命中计数）、覆盖率 **90.37%**（门槛 88）、`ruff` 全绿；真库集成 **1 例**（`/metrics` 读到 `tasks` 状态 gauge）。
 
 ## 8. E8 安全 + 对外 MCP
 
@@ -1383,13 +1406,14 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 - **chat 侧（E4c）**：`tests/test_chat_guard.py` 8 例（token/成本/墙钟三个上限各自即停且**部分正文保留**、不发 `done`；未超限时行为一字不变；到限文案点名是哪个计数器；失败分类五档；**数据源熔断时角色降级写明的就是熔断**）。⚠ 造「熔断」必须用 `reliability.trip(name)`（按当前时钟开路）——`trip(0.0)` 会让 `allow()` 认为冷却早已过而放行探测，用例会真发一次网络调用。
 - **演练**：`scripts/drill_reliability.py` 四幕，产物 `logs/e4-drill/<时间戳>/`（`report.md` + `journal.log`）。
 
-### E7（全节已交付：E7a–E7d）
+### E7（全节已交付：E7a–E7e）
 
 - **CI 即测试载体**（§7.1、§7.5）：本节的「落点」与前几节不同——前几节登记用例**落在哪些文件**，本节登记**哪些用例被 CI 执行**。CI 跑 = 后端离线全量 + 前端 vitest/typecheck/lint/build + ruff + 覆盖率门槛 + 审计；**不跑**集成套件、真语料评测集、演练、MCP 握手（§7.8）。
 - **ruff**（§7.2）：无新用例——它是**存量清零 + 防回退**。防回退由 CI 的 `ruff check .` 承担（退出码即断言）；`line-length=120` 与模板排除是本仓储的**口径值**，改它们等于改闸门宽度，需在 SPEC 留痕。
 - **覆盖率**（§7.3，E7b）：**无新用例**——它把既有 1487 项离线用例的**读数**变成闸门（`fail_under = 88`，按 CI 基线 89.36% 定标）。门槛本身是「防回退」：新增代码即须带测试，除非在 SPEC 留下一处**记录在案的真实缺口**。排除项只有 `templates/` 一处，依据同 ruff。
 - **Langfuse**（§7.6，E7c 已交付）：`tests/test_langfuse_metadata.py` **12 例**（离线，**不连 Langfuse**）——四键形状（三个 str、tags 是 list）/ `TraceConfig` 的两样同行与 `kwargs()` 展开 / 未挂载 handler 时降级为空 / chat 的 config 四键齐全（含无登录用户给空串）/ 深路径把 callbacks 与 metadata 送进图 config / narrative 的 trace 透传 / **裸模型调用的具名壳**（挂了 handler 且有 run_name 才套壳、离线不套）。真机逐字段核对是验收期动作（§7.9 第 5 条），不在用例里。
 - **实验可复现**（§7.7，E7d 已交付）：`tests/test_snapshot_window.py` **9 例**（全是假数据目录，不碰真实 `data/`）+ `test_task_worker.py` 的接线 1 例。**「同一份数据得同一个指纹」是核心断言**——它是「实验可复现」在测试层的唯一可验证形态；边界用例覆盖：窗口外分片改动**不影响**指纹、窗口内分片改动**必影响**、复权轴不同必不同、空窗口稳定不抛、执行体把同一个值写进记录列与报告 meta 两处。
+- **可观测性**（§7.12，E7e 已交付）：`tests/test_metrics.py` **5 例**——`/metrics` 暴露 HTTP / 任务 / 缓存指标、`X-Request-Id` 透传与非法值替换、JSON 格式化器带 request_id 与访问字段、缓存 `through` 的 L1 命中/未命中计数；集成 `tests/integration/test_metrics_e7e.py` **1 例**——真库上 `/metrics` 读到 `tasks` 状态 gauge（离线用例的 `app.state.db` 为 None，证明不了那条 SQL）。
 
 ### E2（全节已交付：E2a + E2b + E2c）
 
@@ -1474,6 +1498,7 @@ typecheck / lint 全绿；真机取证 **7/7**（`logs/e5/risk-smoke.md`）；�
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.36 | 2026-10-17 | **§7（E7）E7e 交付——可观测性最小闭环（JSON 日志 + request id + Prometheus `/metrics`）**。**由头**：E9 前审计把技术栈逐项核了一遍——`LCEL` 从未落地、`OTel` P3 未补、Qdrant/Store 是 P1 快照旧状态；其中 **OTel / 结构化日志 / 服务指标**是企业级机制里唯一还缺的一块 ⇒ 先补最小版，E9 文档才有东西可写。**落地**：`core/logging.py` 的 `JsonFormatter`（`log_format` 默认 `text`，需要 JSON 时在 `.env` 写 LOG_FORMAT=json）；`core/observability.py` 纯 ASGI 中间件（request id 透传/替换、HTTP 计数与耗时直方图、访问日志、响应头 `X-Request-Id`，CORS expose 已加）；`core/metrics.py` + `GET /metrics`（`include_in_schema=False`、不鉴权、路由模板标签，404 记 `unmatched`；任务队列 scrape 时现查 `tasks` 表，五状态补齐；缓存 L1/L2 命中与 producer 执行计数）；`prometheus-client==0.26.0` 精确 pin。**两条设计口径**：路由标签用模板不用原始路径（UUID 会撑爆时间序列）；LLM 的 trace/token/成本仍归 Langfuse，不在 Prometheus 重复。**边界（如实）**：指标进程内、重启清零、单实例假设（同任务 worker / 限流 / 熔断）；无 Prometheus server/告警；**未引入 OTel SDK**（留作部署形态升级选项）。**验收**：离线 **1695 passed**（+5）/ 覆盖率 **90.37%**（门槛 88）/ `ruff` 全绿；真库集成 **1 例**（`/metrics` 读到 `tasks` 状态 gauge）。**E9 前审计的第一项落地。** |
 | v2.35 | 2026-10-17 | **§6（E5）E5b 交付——前端风控档位 / 状态 / 审计日志 + 真机取证 + 界面走查，E5 全节交付完毕**。**① 前端**：`lib/types.ts` 增 `PaperRiskLimits` / `PaperRiskState` / `PaperRiskEvent` / `PaperDecision.origin` 与 config/detail/step 的风控字段；`lib/paper.ts` 增四档预设（标准 95/30/6/10、严格 80/20/4/8）、`riskRows` 三读数、闸门/处置文案与 `--warn` 语气、`paperRequest` 的 `risk` 与本地 0–100 校验；`paper-form.tsx` 增风控档位与四个自定义输入；新 `risk-panel.tsx`（三读数 + 回撤暂停横幅 + 风控日志，最近 12 条可展开）；决策卡/流水加 `data-risk-badge`「风控自动 / 风控」；`step-controls.tsx` 的「全部驳回」确认段补「风控止损仍会执行」；`paper/page.tsx` 把面板放在账户卡与决策闸门之间。**② 真机取证**（`scripts/run_paper_risk.py`，真实行情）：**7/7** 全过——28 次止损触发、28 张风控卖出全部 T+1 成交；2 次回撤 breach；83 条回撤拦截；60 条放行审计；18 条集中度缩量（17 张成交，全部 `fill.qty ≤ est_qty`）；风控关闭零审计；206 条事件重放逐 id 相等。**③ 界面走查**（`capture-e5.mjs`，真浏览器 + 真后端）：**14/14**——自定义档提示回显四个值、建会话后三读数与接口一致、「全部驳回」确认段写明风控止损仍会执行、跑到结束后日志 verdict 集合与接口一致（block/breach/cap/pass/trigger）、回撤暂停横幅可见、流水里 3 张风控单各带徽章且无 pending 态。**④ 文档同步**：README 的模拟盘功能行 / 截图说明 / 设计取向 / 已知边界四处补风控与「风控关闭才平价」的口径；`docs/images/paper.png` 按 2026-10-13 规格（1440 宽 / 浅色 / 非整页 1000 高）重拍；`getting-started.md` 增 8.2 风控与档位说明、8.3 账户与曲线；FAQ 增 D7（止损为何不能驳回）/ D8（风控开启为何不再等于回测）并在 D2 补风控变体。**⑤ 验收**：前端 **498 passed** + typecheck / lint 全绿；后端 1690 / 覆盖率 90.38% / ruff 全绿（E5a 基线）；真机 7/7；界面 14/14。**E5 至此全节交付。** |
 | v2.34 | 2026-10-17 | **§6（E5）E5a 交付——风控后端核心 + 审计 + API 响应面**（E5b 前端与取证未做）。**① 落地物**：新模块 `app/paper/risk.py`（四闸门纯函数 + `BuyCheck` / `StopLossHit` / `RiskState`）；`paper.types` 增 `RiskLimits` / `RiskEvent` / `RiskState` / `Decision.origin` / `PaperConfig.risk` / `DayOutcome.risk_exits` / `ReplayResult.risk_events\|risk_state`；`replay` 在收盘后、策略前跑止损 → 回撤 → 逐提案闸门；`store` 增风控信封与 `origin`；`account` 增 `valuation_price()`（风控与 `mark` 同一批价）；`broker.execute(qty_cap=...)`；`core/db.py` 增 `paper_accounts.risk_state` / `paper_decisions.origin` / `decision_audit` 表与 `paper_audit`；`api/paper.py` 增 `risk` 创建参数、`risk_state` / `risk_events` 响应与 step 当日事件。**② 两条实施期发现**：**(a) 缩量必须在成交时仍是硬上限**——M6 的成交股数由 `affordable_qty` 在次日开盘重算，只改提案的 `est_qty` 会让跳空低开把仓位买回上限以上 ⇒ `Broker.execute(qty_cap=...)`，风控开启时 `est_qty` 是股数硬上限（跳空高开按可负担股数成交，可能买不满）；风控关闭不传，M6 口径原样。**(b) 审计不是决策日志的纯函数**——被拦截的提案不在 `paper_decisions` 里，已落日志的信号日在重放时被 `logged` 跳过 ⇒ 从决策日志重放只能重建账户与 `as_of` 风险快照，不能重建全部提案审计；`decision_audit` 是生成期事实的权威记录（`ON CONFLICT DO NOTHING`），重放结果的 `risk_events` 只代表本次重放（止损/回撤仍重算）。**③ 默认口径**：API 缺省 `risk=null`（旧会话零变化）；前端 E5b 默认「标准」档（-6% / -10% / 95% / 30%），严格档（-4% / -8% / 80% / 20%）。**④ 验收**：离线 **1690 passed**（+34：纯函数 19 · 重放 9 · API 6）/ 覆盖率 **90.38%**（门槛 88）/ `ruff` 全绿；E5 集成 **3 例**（真库 DDL 幂等 · 风控审计与快照 · 空决策 id 审计）+ M6 集成 **3 例**回归。**E5b 待做**：前端表单 / 风控面板 / 日志、`lib/paper.ts` 纯函数、真机取证与界面走查。**用户已拍板并开工。** |
 | v2.33 | 2026-10-17 | **§6（E5 风控）规格定稿（待实施）**——底稿 `docs/private/Pn-n/P3-En/P3-E5-规划评估.md`（M6 代码逐行核对 + **20 标的 × 250 交易日真实行情实测**）。**三处口径订正**：① **数量不由策略决定**（`affordable_qty(min(现金, 等额配额))`，`Signal` 无数量）⇒ 仓位/集中度**先缩量、缩到不足一手才拦截**，否则等额配额下要么不触发、要么把标的永久锁死；② **止损必须自动执行**（否则用户驳回即失效）⇒ 风控退出生来 `approved`（`origin=risk`），是「未审批不成交」的唯一窄例外，`run(approve="none")` 也执行；③ **回撤只禁新开仓、不强平**（止损管个股、回撤管总闸）。**实测决定默认档**：-10% 止损仅触发 ma_cross **0.7%** / event_driven **2.8%**，-20% 回撤 250 天**从未触及**；-6% 触发 10.9% / 8.5%；20 标的等额组合最大回撤 ma_cross **10.69%** / event_driven **3.02%** ⇒ 标准档 -6% / -10% / 95% / 30%，严格档 -4% / -8% / 80% / 20%。**设计**：四闸门（总仓位 / 单标的 / 止损 / 回撤）+ `decision_audit` 审计表（E7 复用，`ON CONFLICT DO NOTHING`，随 `paper_advance` 同事务）+ `paper_decisions.origin` + `paper_accounts.risk_state`；风控配置冻结在 `PaperConfig`，旧会话缺 `risk` ⇒ 关闭、平价断言原样；风控开启不再承诺与回测逐笔相等。**切分**：E5a 后端核心 + 审计 + 测试 → E5b API + 前端 + 取证，E5a 为可停止损位。**用户已拍板，待写代码。** |

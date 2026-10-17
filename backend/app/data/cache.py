@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.core.metrics import CACHE_HITS, CACHE_MISSES
 from app.core.reliability import get_dep
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ def through(
     key = (str(_base(data_dir)), generation(data_dir), name, *(_part(p) for p in parts))
     blob = _local_get(key)
     if blob is not _MISS:
+        CACHE_HITS.labels(tier="l1").inc()
         # ⚠ **每次解码一副新对象**，不是直接把缓存里的那份递出去。理由：`bars()` 这类
         # 返回值是嵌套的 list[dict]，按引用递出去之后调用方一次原地改写就会**静默污染缓存**
         # （改一次，之后所有请求都读错——本项目最忌的就是「静默返回错数据」）。实测代价：
@@ -112,8 +114,11 @@ def through(
         return _decode(blob)
     value = _redis_get(key)
     if value is _MISS:
+        CACHE_MISSES.inc()
         value = producer()
         _redis_set(key, value)
+    else:
+        CACHE_HITS.labels(tier="l2").inc()
     _local_put(key, _encode(value))
     return value
 

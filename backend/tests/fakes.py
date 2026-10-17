@@ -825,6 +825,13 @@ class FakeDatabase:
 
     # ── 用户配额（E2）──────────────────────────────────────
 
+    async def task_status_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in self.tasks.values():
+            status = str(row["status"])
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
     async def count_active_tasks(self, user_id: int) -> int:
         return sum(
             1

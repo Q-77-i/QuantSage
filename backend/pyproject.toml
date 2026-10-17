@@ -44,6 +44,7 @@ dependencies = [
     "FlagEmbedding==1.4.2",
     "torch==2.14.1",
     "redis==7.1.0",
+    "prometheus-client~=0.26",
 ]
 
 [dependency-groups]

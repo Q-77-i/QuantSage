@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent.graph import build_agent
 from app.agent.tools import load_xiaoshi_tools, query_market_bars, search_events
@@ -57,6 +58,8 @@ from app.core.db import (
 )
 from app.core.langfuse import build_langfuse_handler
 from app.core.logging import setup_logging
+from app.core.metrics import TASK_STATUSES, TASKS
+from app.core.observability import ObservabilityMiddleware
 from app.core.quota import QuotaExceeded
 from app.core.security import SecurityHeadersMiddleware
 from app.core.session import SessionRenewalMiddleware
@@ -225,14 +228,16 @@ app.add_middleware(
     allow_credentials=True,
     # 兜底通道靠响应头回传（SPEC §6 会话号 / M8 运行号）；**跨源下浏览器读不到未暴露的响应头**
     # ——这是同类坑的第三次（前两次：CORS 漏放行 PUT、缺 X-Thread-Id），新增一个要读的头就回这里加
-    expose_headers=["X-Thread-Id", "X-Run-Id"],
+    expose_headers=["X-Thread-Id", "X-Run-Id", "X-Request-Id"],
 )
 
-# E8a 的两个纯 ASGI 中间件（为什么不用 `BaseHTTPMiddleware` 见各自模块的 docstring）。
-# `add_middleware` 的**后加者在更外层**：续期先加、安全头后加 ⇒ 安全头覆盖最广（连续期
-# 中间件自己的响应也带上），而续期只管「成功响应上换 cookie」，谁在外层都不改它的判据。
+# E8a / E7e 的三个纯 ASGI 中间件（为什么不用 `BaseHTTPMiddleware` 见各自模块的 docstring）。
+# `add_middleware` 的**后加者在更外层**：续期 → 安全头 → 可观测性。可观测性在最外层，
+# 看到的是最终状态码与完整耗时（含 SSE 流）；安全头覆盖续期自己的响应；续期只管「成功响应
+# 上换 cookie」，谁在外层都不改它的判据。
 app.add_middleware(SessionRenewalMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(ObservabilityMiddleware)
 
 for router in (
     admin_router,
@@ -413,3 +418,22 @@ async def ready(response: Response) -> dict:
     if not db_ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "ready" if db_ready else "degraded", "postgres": db_ready}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    """Prometheus 文本端点（E7e）。任务队列是**scrape 时现查**，不靠进程内缓存猜。
+
+    不鉴权：本地单机 scrape 面；只暴露路由模板 / 状态 / 计数，不含用户数据（与 `/health`
+    同一条口径）。LLM 的 trace/token/成本仍在 Langfuse，这里不重复。
+    """
+    db = getattr(app.state, "db", None)
+    if db is not None:
+        try:
+            counts = await db.task_status_counts()
+        except Exception as exc:  # noqa: BLE001 —— 指标读不到不该让整个 scrape 失败
+            log.warning("任务队列指标读取失败（%s），本次跳过", type(exc).__name__)
+        else:
+            for task_status in TASK_STATUSES:
+                TASKS.labels(status=task_status).set(counts.get(task_status, 0))
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
