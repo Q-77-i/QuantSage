@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -96,14 +96,18 @@ class MemoryHolder:
         async with self._lock:
             if self._store is not None and self._loop is loop:
                 return DecisionMemory(self._store)
+            stack = AsyncExitStack()
             try:
                 await self.aclose()
-                stack = AsyncExitStack()
                 store = await stack.enter_async_context(
                     AsyncPostgresStore.from_conn_string(self._dsn)
                 )
                 await store.setup()
             except Exception as exc:  # noqa: BLE001 —— 记忆不可用不是请求的错，调用方降级
+                # 已经进入的 exit stack 必须关：`from_conn_string` 会开一条 AsyncConnection，
+                # 不关就留给 GC；每个失败请求再漏一条，直到进程退出。
+                with suppress(Exception):
+                    await stack.aclose()
                 # 降级可以，但**原因必须留痕**：静默吞掉它，503 就成了一句无从下手的空话
                 log.warning("决策记忆建不起来（%s: %s），本次降级", type(exc).__name__, exc)
                 return None
@@ -111,9 +115,12 @@ class MemoryHolder:
         return DecisionMemory(self._store)
 
     async def aclose(self) -> None:
-        if self._stack is not None:
-            stack, self._stack, self._store, self._loop = self._stack, None, None, None
-            await stack.aclose()
+        stack = self._stack
+        if stack is None:
+            return
+        # 先清引用再关：即使 `aclose()` 自己抛，也不会留下一个“看似仍可用”的 Store
+        self._stack = self._store = self._loop = None
+        await stack.aclose()
 
 
 async def memory_for(state: Any) -> DecisionMemory:

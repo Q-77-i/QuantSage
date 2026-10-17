@@ -13,7 +13,12 @@ from datetime import date
 import pytest
 from langgraph.store.memory import InMemoryStore
 
-from app.memory.decision_store import DecisionMemory, is_current, memory_namespace
+from app.memory.decision_store import (
+    DecisionMemory,
+    MemoryHolder,
+    is_current,
+    memory_namespace,
+)
 from app.memory.reflection import Reflection
 from app.memory.settle import SettledTrip
 
@@ -45,6 +50,37 @@ def _settled(
 
 def _memory() -> DecisionMemory:
     return DecisionMemory(InMemoryStore())
+
+
+class _BrokenStore:
+    async def setup(self) -> None:
+        raise RuntimeError("建表失败")
+
+
+class _StoreContext:
+    def __init__(self) -> None:
+        self.exited = False
+
+    async def __aenter__(self) -> _BrokenStore:
+        return _BrokenStore()
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.exited = True
+
+
+def test_memory_holder_closes_the_connection_when_setup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`from_conn_string` 已经开了连接，`setup()` 失败时也必须关掉 exit stack。"""
+    from langgraph.store.postgres import AsyncPostgresStore
+
+    context = _StoreContext()
+    monkeypatch.setattr(AsyncPostgresStore, "from_conn_string", lambda _dsn: context)
+    holder = MemoryHolder("postgresql://unused")
+
+    assert asyncio.run(holder.get()) is None
+    assert context.exited is True
+    assert holder._stack is None
 
 
 def test_save_and_get_round_trip_carries_identity() -> None:
