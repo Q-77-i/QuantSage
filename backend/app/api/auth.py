@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
@@ -34,6 +35,8 @@ from app.core.auth import (
 )
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+log = logging.getLogger(__name__)
 
 #: 刻意不引 email-validator：本项目只要「形如邮箱」，多一个依赖不值当
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -122,7 +125,16 @@ async def logout(request: Request, response: Response) -> dict[str, bool]:
     session = decode_session(token) if token else None
     db = getattr(request.app.state, "db", None)
     if session is not None and db is not None:
-        await db.bump_token_version(session.user_id)
+        try:
+            # **只撤销「当前有效」的那一版**：一张早已过期的旧 token 若也能 bump，
+            # 攻击者就能拿它反复把用户刚登录的会话踢下线（版本号被无限加一）。
+            user = await db.find_user_by_id(session.user_id)
+            if user is not None and int(user.get("token_version") or 0) == session.version:
+                await db.bump_token_version(session.user_id, expected=session.version)
+        except Exception as exc:  # noqa: BLE001 —— 撤销失败也必须清 cookie
+            # 退化成旧语义（只清 cookie），但不能让「库抖一下」把登出整成 500：
+            # 用户视角只有一句话——点了登出，浏览器里的会话必须消失。
+            log.warning("登出撤销失败（%s），本次仅清 cookie", type(exc).__name__)
 
     clear_session_cookie(response)
     return {"ok": True}

@@ -176,10 +176,14 @@ class FakeDatabase:
     async def find_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         return self.users.get(user_id)
 
-    async def bump_token_version(self, user_id: int) -> None:
+    async def bump_token_version(self, user_id: int, *, expected: int | None = None) -> bool:
         user = self.users.get(user_id)
-        if user is not None:
-            user["token_version"] += 1
+        if user is None:
+            return False
+        if expected is not None and user["token_version"] != expected:
+            return False
+        user["token_version"] += 1
+        return True
 
     async def claim_thread(self, thread_id: str, user_id: int) -> None:
         self.threads.setdefault(thread_id, user_id)

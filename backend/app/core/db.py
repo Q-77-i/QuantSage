@@ -513,14 +513,24 @@ class Database:
             "SELECT id, email, token_version, role FROM users WHERE id = %s", (user_id,)
         )
 
-    async def bump_token_version(self, user_id: int) -> None:
+    async def bump_token_version(self, user_id: int, *, expected: int | None = None) -> bool:
         """把用户的撤销版本加一：此前签发的所有 token 立即失效（登出/改密用，E8a）。
 
-        用户不存在时是空操作——登出不该因为「会话早已无效」而报错。
+        **`expected` 是条件更新**：只有库里的版本仍等于调用方手里那张票的版本时才加一。
+        否则一张早已被撤销的旧 token 可以反复调用登出，把用户刚登录的新会话无限踢下线。
+        返回是否真的加了一（`expected=None` 时恒 True，保留旧语义）。
         """
-        await self._exec(
-            "UPDATE users SET token_version = token_version + 1 WHERE id = %s", (user_id,)
+        if expected is None:
+            await self._exec(
+                "UPDATE users SET token_version = token_version + 1 WHERE id = %s", (user_id,)
+            )
+            return True
+        row = await self._one(
+            "UPDATE users SET token_version = token_version + 1 "
+            "WHERE id = %s AND token_version = %s RETURNING id",
+            (user_id, expected),
         )
+        return row is not None
 
     # ── 会话归属 ────────────────────────────────────────────
 

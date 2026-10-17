@@ -52,11 +52,11 @@ def aged_token(user_id: int = USER_ID, *, days: float = 4.0, version: int = 0) -
 
 
 def test_half_life_token_is_renewed(client: TestClient) -> None:
-    """过半程即换新票——且**不挑端点**：`/health` 这种不需鉴权的响应照样续。"""
+    """过半程即换新票——但只对**真正通过 `require_user`** 的请求。"""
     old = aged_token()
     client.cookies.set(COOKIE_NAME, old)
 
-    response = client.get("/health")
+    response = client.get("/api/v1/auth/me")
 
     assert response.status_code == 200
     fresh = response.cookies.get(COOKIE_NAME)
@@ -73,8 +73,18 @@ def test_fresh_token_is_not_renewed(client: TestClient) -> None:
     """**过半程才换**：刚签的票不换——否则每个响应都带 `Set-Cookie`。"""
     client.cookies.set(COOKIE_NAME, issue_token(USER_ID))
 
+    response = client.get("/api/v1/auth/me")
+
+    assert COOKIE_NAME not in response.cookies
+
+
+def test_public_endpoint_does_not_renew(client: TestClient) -> None:
+    """公开端点不续期——否则登出后一次 `/health` 就能把旧 token 再签回来。"""
+    client.cookies.set(COOKIE_NAME, aged_token())
+
     response = client.get("/health")
 
+    assert response.status_code == 200
     assert COOKIE_NAME not in response.cookies
 
 
@@ -93,7 +103,63 @@ def test_invalid_tokens_are_never_renewed(client: TestClient) -> None:
     expired = issue_token(USER_ID, now=datetime.now(UTC) - timedelta(days=8))
     for token in ("not-a-jwt", expired):
         client.cookies.set(COOKIE_NAME, token)
-        assert COOKIE_NAME not in client.get("/health").cookies
+        response = client.get("/api/v1/auth/me")
+        assert response.status_code == 401
+        assert COOKIE_NAME not in response.cookies
+
+
+def test_logout_does_not_resurrect_the_cookie(client: TestClient) -> None:
+    """登出必须真的清掉 cookie：续期中间件不许在删除之后又补一张新票。"""
+    client.cookies.set(COOKIE_NAME, aged_token())
+
+    response = client.post("/api/v1/auth/logout")
+
+    assert response.status_code == 200
+    # 删除 cookie 的值是空串；关键是**不能**出现一张可解码的新票
+    fresh = response.cookies.get(COOKIE_NAME)
+    assert not fresh or decode_session(fresh) is None
+
+
+def test_stale_token_cannot_bump_the_version(client: TestClient, db: FakeDatabase) -> None:
+    """一张早已被撤销的旧票不能继续 bump——否则它能反复踢掉用户的新会话。"""
+    db.users[USER_ID]["token_version"] = 5
+    client.cookies.set(COOKIE_NAME, aged_token(version=0))
+
+    response = client.post("/api/v1/auth/logout")
+
+    assert response.status_code == 200
+    assert db.users[USER_ID]["token_version"] == 5
+
+
+def test_logout_twice_only_bumps_once(client: TestClient, db: FakeDatabase) -> None:
+    """同一张票重复登出是幂等的：版本只加一，不随调用次数增长。"""
+    token = aged_token(version=0)
+    client.cookies.set(COOKIE_NAME, token)
+
+    client.post("/api/v1/auth/logout")
+    assert db.users[USER_ID]["token_version"] == 1
+
+    client.cookies.set(COOKIE_NAME, token)  # 模拟旧票被再次拿来用
+    client.post("/api/v1/auth/logout")
+    assert db.users[USER_ID]["token_version"] == 1
+
+
+def test_logout_clears_cookie_even_when_version_bump_fails(
+    client: TestClient, db: FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """库抖动时退化成旧语义（只清 cookie），不能把登出变成 500。"""
+    client.cookies.set(COOKIE_NAME, aged_token())
+
+    async def boom(_user_id: int) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "bump_token_version", boom)
+
+    response = client.post("/api/v1/auth/logout")
+
+    assert response.status_code == 200
+    fresh = response.cookies.get(COOKIE_NAME)
+    assert not fresh or decode_session(fresh) is None
 
 
 def test_renewal_also_lands_on_sse_routes(client: TestClient, db: FakeDatabase) -> None:

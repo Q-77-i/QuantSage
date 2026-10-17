@@ -7,10 +7,13 @@ background）——续期 cookie 挂在依赖上会在三条流式路由上**静
 
 **纯 ASGI**：理由同 `app/core/security.py`（不复述）。
 
-两条判据写死：
+三条判据写死：
   * **过半程才换**（`Session.renewal_due`）——每个响应都发 `Set-Cookie` 会让缓存与调试都变脏，
     而收益为零：半程判据已经保证活跃用户走不到过期；
-  * **只在成功响应（<400）上换**——401/503 是「这次请求没成」，不该顺手续命。
+  * **只在成功响应（<400）上换**——401/503 是「这次请求没成」，不该顺手续命；
+  * **只给真正通过 `require_user` 的请求续**：公开端点不续。否则登出/改密之后，一次
+    `/health` 就能把刚清掉的 cookie 用旧 token 再签回来（库不可用时尤其致命）。
+    响应里已有 `Set-Cookie: qs_session=…` 时也一律不续——登出必须能真正清掉 cookie。
 
 签发用的版本取自 token 自身：成功响应意味着 `require_user` 已比对过版本，所以这里**不读库**
 （读库会把每个响应都拖上一次查询，而中间件看得到所有请求，包括不需要鉴权的那些）。
@@ -54,6 +57,10 @@ class SessionRenewalMiddleware:
                 renewal is not None
                 and message["type"] == "http.response.start"
                 and int(message["status"]) < 400
+                # 标志在端点里由 `require_user` 设置，必须在**响应头**这一刻读，
+                # 不能在请求开始算 renewal 时读（那时鉴权还没跑）
+                and scope.get("qs_session_verified")
+                and not _sets_session_cookie(message)
             ):
                 message = {
                     **message,
@@ -64,8 +71,21 @@ class SessionRenewalMiddleware:
         await self.app(scope, receive, send_with_cookie)
 
 
+def _sets_session_cookie(message: Message) -> bool:
+    """响应已经自己写了 `qs_session` 的 Set-Cookie（登出/登录）——续期不许再覆盖它。"""
+    marker = f"{COOKIE_NAME}=".encode("latin-1")
+    return any(
+        key.lower() == b"set-cookie" and marker in value
+        for key, value in message.get("headers", [])
+    )
+
+
 def _renewal_cookie(scope: Scope) -> bytes | None:
-    """该续就给出 Set-Cookie 的头值，否则 None。纯解码，不读库（理由见模块 docstring）。"""
+    """该续就给出 Set-Cookie 的头值，否则 None。纯解码，不读库（理由见模块 docstring）。
+
+    「这次请求是否真的通过了鉴权」在**响应头阶段**才由 `send_with_cookie` 判——`require_user`
+    要等端点执行时才写 `qs_session_verified`，此处读不到。
+    """
     token = _cookie(scope, COOKIE_NAME)
     if not token:
         return None

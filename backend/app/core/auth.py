@@ -182,6 +182,9 @@ async def require_user(request: Request) -> dict[str, Any]:
     if int(user.get("token_version") or 0) != session.version:
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
 
+    # 续期中间件只给**真正通过鉴权**的响应续命（见 `core/session.py`）。公开端点不续：
+    # 否则登出后的一次 `/health` 就能把刚被删掉的 cookie 用旧 token 再签回来。
+    request.scope["qs_session_verified"] = True
     return user
 
 
