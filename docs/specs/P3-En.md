@@ -175,7 +175,7 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 - 16 处既有用例直接打 `POST /api/v1/backtest` 并断言内联报告（离线 8 + 集成 8），**全部按新契约改写**为「提交 → 驱动 worker / 等任务 → 取 run」，断言语义不降级（报告仍逐项比对）。
 - **语义迁移一并写进用例**：`test_backtest_user.py` 的故障矩阵按「提交期拦 / 运行期落任务」两栏重排（`BAD_CODES` 的 stage 字段），跨字段参数约束（`fast < slow`，跑在沙箱里）与运行期异常改断言任务的 `error` + `line`。
 - `test_api_endpoints.py` 的鉴权/越权矩阵加任务三端点。
-- 已知边界：① 单 worker 串行；② `running` 任务重启即中断（如实标失败）；③ 任务不设保留期与清理（单人项目量小，只加索引）；④ 无幂等键与重试（E4 的 L7/L2 落地）；⑤ **异步化对单次回测是「契约统一」不是提速**——端到端比旧同步路径多 0.6–0.9s（闸门里 `resolve_window` 那次读盘 + 取件轮询 + 落库，实测见 §11 v2.2）；⑥ 单实例假设（见 §2.4）。
+- 已知边界：① 单 worker 串行；② `running` 任务重启即中断（如实标失败）；③ 任务不设保留期与清理（单人项目量小，只加索引）；④ 无幂等键与重试（E4 的 L7/L2 落地）；⑤ **异步化对单次回测是「契约统一」不是提速**——端到端比旧同步路径多 0.6–0.9s（闸门里 `resolve_window` 那次读盘 + 取件轮询 + 落库，实测见 §11 v2.2）；⑥ 单实例契约（见 §2.4）。
 
 
 ### 2.8 E1b：网格 / 批量迁入队列（2026-10-14 定稿）
@@ -188,7 +188,7 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 |---|---|
 | 提交 | `POST /optimize/{grid,batch}` → **202 + `{task_id}`**（实施期订正，见下「与草案的偏差」）；闸门（`_prepare` / `grid_cells` / 窗口解析 / 参数）照旧同步做完，展开结果 `CellSpec[]` + `RunOptions` + `start` 帧**冻结进任务行**的 `request.exec` 子键，落 `optimization_runs.request` 时由执行体剔掉（与 `_EXECUTION_ONLY` 同一手法） |
 | 执行 | worker 的 `EXECUTORS` 加 `grid` / `batch`：复用**既有** `run_cells`（连 `CONCURRENCY=2` 的进程级闸门一起——它本就是「E1 异步队列的前置形态」）；每完成一格 `bus.publish(task_id, cell)` 并推一格 `progress`；收尾落 `optimization_runs` **一次**（语义与今天一字不变）→ `finish_task(result=done 帧载荷)` → **广播终态帧**（`done` / `error` / `cancelled`，三态都发——漏了它在线订阅者会一直停在「运行中」，见下「实施期逮到的两个 bug」） |
-| 进度总线 | 新 `app/tasks/bus.py`：按 `task_id` 的**累积缓冲 + 订阅者队列**。订阅者先收回放（断线重连补齐已有格）再收新帧；缓冲在**最后一个订阅者离开且任务已终结**时释放。进程内（单实例假设同 E1a——服务重启则任务标 failed、缓冲消失，如实） |
+| 进度总线 | 新 `app/tasks/bus.py`：按 `task_id` 的**累积缓冲 + 订阅者队列**。订阅者先收回放（断线重连补齐已有格）再收新帧；缓冲在**最后一个订阅者离开且任务已终结**时释放。进程内（单实例契约同 §2.4——服务重启则任务标 failed、缓冲消失；非主实例只保证终态回放，逐格实时不跨进程，如实） |
 | 重连 | 新 `GET /api/v1/tasks/{task_id}/events`（SSE，受保护，越权/不存在 404）：**已终结** → 从 `optimization_runs.summary.cells` 回放 + 补一帧 `done`（无记录 = 失败/取消 → `error` 帧）；**仍在跑** → 订阅总线回放 + 续流。帧形状与 `POST /optimize/*` 的流**逐字同形**（同一编码件），前端两条路共用一个消费器 |
 | 兜底通道 | **不需要**：提交回的是 202 + `{task_id}` JSON，任务号在响应体里就拿到了——不存在「流断了还没拿到号」的窗口（把提交与订阅分开的副产品） |
 | 取消 | `running` 的网格/批量 → **协作式中止**（`run_cells(stop=)` 已有：停止派发新格，已在跑的最多 2 格自然跑完）→ 任务标 `cancelled`。**中止的结果不落库**（与 M5b「中止的结果不是一份可引用的记录」一致），前端保留本地已收到的格并标注「未落库」 |
@@ -1206,7 +1206,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 - **路由标签用模板不用原始路径**（`/api/v1/paper/accounts/{account_id}`）：否则每个账户/策略 id 都会长成一条时间序列；404 统一记 `unmatched`。
 - **`/metrics` 不鉴权**：本地单机 scrape 面，只暴露路由模板/状态/计数，不含用户数据（与 `/health` 同一口径）；`include_in_schema=False` 不进 OpenAPI。
 
-**边界（如实）**：指标是**进程内**累计，重启清零；单实例假设（与任务 worker / 限流 / 熔断同一条），多实例要聚合（P4）；没有告警/看板（外部 Prometheus 负责）；**未引入 OTel SDK**——OTel 留作部署形态升级时的选项，当前用 Prometheus 文本端点；LLM 观测不在这里重复。
+**边界（如实）**：指标是**进程内**累计，重启清零；单实例契约（§2.4）——调度器与 task worker 已收口到后台主实例，指标仍按进程计算，多实例要聚合（P4）；没有告警/看板（外部 Prometheus 负责）；**未引入 OTel SDK**——OTel 留作部署形态升级时的选项，当前用 Prometheus 文本端点；LLM 观测不在这里重复。
 
 **验收**：离线 **1695 passed**（+5：`/metrics`、request id 透传/替换、JSON 格式化器、缓存 L1 命中/未命中计数）、覆盖率 **90.37%**（门槛 88）、`ruff` 全绿；真库集成 **1 例**（`/metrics` 读到 `tasks` 状态 gauge）。
 
@@ -1406,6 +1406,8 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 | 输入 | 请求体 1MB 硬上限（chunked 同限）；`axes[].values` / `params` 等集合字段上限 50；NaN/Infinity 在模型层拒绝，422 错误体不再序列化失败 | `core/body_limit.py`、`MAX_REQUEST_BYTES` |
 | 前端/部署 | `safeNextPath` 拦反斜杠开放重定向；`source_url` 服务端只放行 http(s)；前端加 CSP（折中版，见 §8.2）；Cookie 支持 `Secure`；能力卡用 `PUBLIC_BASE_URL`，支持 `TRUSTED_HOSTS`；`/metrics` 按 token/回环访问；chat 锁表改弱引用 | `SESSION_COOKIE_SECURE`、`PUBLIC_BASE_URL`、`TRUSTED_HOSTS`、`METRICS_TOKEN` |
 
+**E 批（2026-10-17）**：后台主实例锁——task worker、ETL/行情/体检调度器、结算调度器只由持锁进程启动；非持锁进程只服务 HTTP，`POST /etl/run` 与 `POST /data/rollback` 返回 409；`/etl/status` 增 `owner/active`；非主实例的进度流在 keepalive 超时后从库回放终态。完整边界见 §2.4。
+
 **仍未做**：完整容器化 / 独立低权限用户；多 worker 不是受支持形态——调度器与 task worker 已收口到后台主实例，但限流/熔断/running 取消/逐格进度/指标/并发闸门仍按进程计算（见 §2.4 的单实例契约与 §8.7）。
 
 ## 10. 测试策略
@@ -1554,6 +1556,7 @@ E5/M6 回归 **6 例**；
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.42 | 2026-10-17 | **E 批交付——单实例契约与后台主实例锁**：把 task worker 的单实例锁扩展为“后台主实例锁”（`BACKGROUND_LOCK_KEY`，**数值不变**）；只有持锁进程启动 task worker + ETL/行情/体检调度器 + 结算调度器，非持锁进程只服务 HTTP；业务库不可用时后台任务与调度器均不启动。`GET /etl/status` 增 `owner/active`；`POST /etl/run` 与 `POST /data/rollback` 在非主实例返回 409；任务进度流在 keepalive 超时后查库回放终态；未知 task kind 收尾释放 bus 缓冲。**边界**：限流/熔断/running 取消/逐格进度/指标/并发闸门仍按进程计算，多 worker 不是受支持形态；主实例退出后不自动晋升，由 supervisor 重启重新竞选。**验收**：离线 **1784 passed / 135 deselected**、`ruff` 全绿；新增 `tests/test_background_owner.py` 6 例，ETL/数据端点/进度流/worker 用例同步；E0–E5 六次推送 CI 全绿。 |
 | v2.41 | 2026-10-17 | **收尾项 5c 交付——深研报 rubric 评测（手动轨）**：`app/report/deep_eval.py`（自动项 + judge 解析 + 聚合 + 一页纸纯函数）+ `scripts/build_deep_eval.py` + `tests/research/eval_set_v1.json`（12 题）；自动项含 PIT 红线（证据 `available_at ≤ as_of`）、闸门、缺口、辩论 ≤3 轮、证据数、预算；judge 五维 1–5，失败记 null。**真跑 3 题冒烟**（D01–D03）：报告 **3/3**、PIT 违规 **0**、辩论 ≤3 **3/3**；judge 均值 PIT **4.67** / 证据 **4.0** / 数字 **3.67** / 平衡 **4.0** / 风险 **4.33**（`logs/p3/deep_eval.md`）；**不设及格线、不进 CI、不把 3 题说成 12 题**。judge 在 D02 抓到一条无关证据（*ST 清越混入）——如实留在读数里，新闻角色 `event_type` 过滤另开评估。离线 **6** 例（`tests/test_report_deep_eval.py`）。 |
 | v2.40 | 2026-10-17 | **收尾项 5d 交付——策略版本管理 + 运行绑定**：`strategy_versions`（append-only，`UNIQUE(strategy_id, version_no)`）+ `strategies.version`（head + 乐观锁）；创建/更新事务化，`SELECT ... FOR UPDATE`，**只有 code/params 实际变化才 +1**（只改名不增版），`expected_version` 不匹配 → `StrategyVersionConflict` 409；启动回填幂等。端点：`GET /versions` / `/versions/{n}` / `/versions/{n}/diff?against=`（`difflib.unified_diff`）/ `POST /rollback`（追加新版本，保留当前名字）。运行绑定：`backtest_runs.strategy_version`（提交时冻结进任务行）、`PaperConfig.strategy_id + strategy_version`（模拟盘锁版本，旧 config 按名字回落）；优化记录**不绑定版本**（如实写边界）。前端工作台「版本 N / 历史」抽屉（列表 + diff + 回滚，回滚后清 descriptor 缓存）、保存带 `expected_version`。**验收**：离线 2 例（版本/回滚/只改名）+ paper user 1 例（锁版本）+ 前端 4 例；集成 2 例（真库 DDL/回填/回滚、回测绑定）——见 §10；界面走查 13/13（含回滚追加 v3）。 |
 | v2.39 | 2026-10-17 | **收尾项 5a 交付——Agent 下单提案（HITL + E5）**：不新建意图表——Agent 工具 `list_paper_accounts` / `propose_paper_order` 直接在当前 `as_of` 日写一条 `pending`、`origin=agent` 的决策；`ScriptedAgentStrategy` 跑一次 replay 复用 `_propose` / `evaluate_buy` / 审计；`add_paper_decision` 单事务写决策 + 当日该标的审计（`user_id + as_of + status='active'` 守卫、`FOR UPDATE`、`ON CONFLICT DO NOTHING`）。`Signal.origin` 与「当日日志已有买入计入 `pending_notional`」两处适配。**HITL**：`run(approve="all")` 有 pending Agent 决策 → 409，`set_paper_decisions_bulk` 排除 `origin='agent'`；前端「Agent 提案」徽章、「跑到结束」禁用并给原因。请求上下文用 `ContextVar`（`user_id` 绝不作 LLM 参数）。**验收**：离线 **14** 例（生成/风控 block/同键/池外/末端/上限/工具文本/`run` 409）+ 真库集成 1 例（单条插入 + `as_of` 守卫 + 批量排除）；**真模型 E2E**：list → propose → pending 2700 股 → 人工批准 → step → 2025-09-23 @ 361.1922 成交，回答明确「待审批、不能批准」（`logs/5a5d/agent-e2e.md`）；界面走查 13/13。 |
