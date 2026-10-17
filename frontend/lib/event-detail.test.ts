@@ -114,6 +114,13 @@ describe("detailGroups", () => {
     expect(without?.href).toBeUndefined();
   });
 
+  it("只给 http(s) 外链，其它协议不产生 href", () => {
+    const bad = group("source", { source_url: "javascript:alert(1)" }).find(
+      (row) => row.label === "原文",
+    );
+    expect(bad?.href).toBeUndefined();
+  });
+
   it("修订四件照原样列，不加工成「已修订 N 次」", () => {
     expect(valueOf("revision", "记录版本", { record_version: 3 })).toBe("3");
     expect(valueOf("revision", "是否修订过", { is_corrected: true })).toBe("是");

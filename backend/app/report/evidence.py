@@ -17,6 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.urls import safe_source_url
 from app.data import duckdb_client as dc
 
 
@@ -136,7 +137,7 @@ def resolve_evidence(
             source=_text(snapshot.get("source")),
             original_source=_text(snapshot.get("original_source")),
             content_hash=snapshot_hash,
-            source_url=_text(snapshot.get("source_url")),
+            source_url=safe_source_url(snapshot.get("source_url")),
             # 语料行补充（快照里没有的两列）+ 对照结论
             summary=_text(row.get("summary")) if row else None,
             industries=tuple(row.get("industries") or ()) if row else (),

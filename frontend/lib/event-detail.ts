@@ -50,6 +50,17 @@ function text(value: unknown): string {
   return String(value);
 }
 
+/** 外部链接只认 http(s)：React 会挡 `javascript:`，但那是框架兜底，不是契约。 */
+function safeHref(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function yesNo(value: boolean | null): string {
   if (value === null) return EMPTY;
   return value ? "是" : "否";
@@ -99,6 +110,7 @@ export function factorText(scores: Record<string, unknown>): string {
 }
 
 export function detailGroups(detail: EventDetail): DetailGroup[] {
+  const sourceHref = safeHref(detail.source_url);
   return [
     {
       key: "source",
@@ -109,7 +121,7 @@ export function detailGroups(detail: EventDetail): DetailGroup[] {
         {
           label: "原文",
           value: detail.source_url ?? EMPTY,
-          ...(detail.source_url ? { href: detail.source_url } : {}),
+          ...(sourceHref ? { href: sourceHref } : {}),
           wide: true,
         },
         { label: "内容指纹", value: detail.content_hash ? shortHash(detail.content_hash) : EMPTY },

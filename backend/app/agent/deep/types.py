@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from app.core.urls import safe_source_url
+
 #: 角色名（= 过程事件的节点名 = 报告里「缺口清单」的键）。顺序即渲染顺序。
 ROLES: tuple[str, ...] = ("market", "news", "fundamental", "policy", "factor")
 
@@ -96,7 +98,7 @@ class EvidenceRef:
             summary=payload.get("summary"),
             source=payload.get("source"),
             original_source=payload.get("original_source"),
-            source_url=payload.get("source_url"),
+            source_url=safe_source_url(payload.get("source_url")),
             content_hash=payload.get("content_hash"),
             industries=tuple(payload.get("industries") or ()),
             direction_norm=payload.get("direction_norm"),

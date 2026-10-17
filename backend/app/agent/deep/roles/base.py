@@ -29,6 +29,7 @@ from app.core import llm
 from app.core.config import get_settings
 from app.core.reliability import CircuitOpen
 from app.core.untrusted import wrap_untrusted
+from app.core.urls import safe_source_url
 
 #: 解读的统一硬要求：数字只能来自给定材料，不许算、不许编（claim 闸门在角色层的预演）
 INTERPRET_RULES = (
@@ -184,7 +185,7 @@ def event_ref(row: Mapping[str, object]) -> EvidenceRef:
         summary=(str(row["summary"]) if row.get("summary") else None),
         source=(str(row["source"]) if row.get("source") else None),
         original_source=(str(row["original_source"]) if row.get("original_source") else None),
-        source_url=(str(row["source_url"]) if row.get("source_url") else None),
+        source_url=safe_source_url(row.get("source_url")),
         content_hash=(str(row["content_hash"]) if row.get("content_hash") else None),
         industries=tuple(row.get("industries") or ()),
         direction_norm=(str(row["direction_norm"]) if row.get("direction_norm") else None),

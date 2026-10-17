@@ -25,6 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from app.core.logging import setup_logging
+from app.core.urls import safe_source_url
 from app.rag import RagNotReady, retrieve
 from app.rag.correct import correction_note, search_with_correction
 
@@ -85,7 +86,7 @@ def _hit(event: retrieve.RetrievedEvent) -> dict[str, Any]:
         "source": {
             "name": event.source,
             "original": event.original_source,
-            "url": event.source_url,
+            "url": safe_source_url(event.source_url),
         },
         "content_hash": event.content_hash,
         "score": round(float(event.score), 6),

@@ -18,6 +18,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.backtest.events import parse_factor_score
+from app.core.urls import safe_source_url
 from app.data import duckdb_client as dc
 from app.data import naming
 
@@ -90,7 +91,7 @@ def _feed_row(row: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
         "importance_score": row.get("importance_score"),
         "source": row.get("source"),
         "original_source": row.get("original_source"),
-        "source_url": row.get("source_url"),
+        "source_url": safe_source_url(row.get("source_url")),
         "content_hash": row.get("content_hash"),
         "symbols": [
             {"code": code, "name": names.get(code)}
@@ -159,7 +160,7 @@ def _detail_row(row: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
         "person": [str(name) for name in _json_column(row.get("person"), list)],
         "source": row.get("source"),
         "original_source": row.get("original_source"),
-        "source_url": row.get("source_url"),
+        "source_url": safe_source_url(row.get("source_url")),
         "content_hash": row.get("content_hash"),
         "quality_status": row.get("quality_status"),
         "source_time_quality": row.get("source_time_quality"),
