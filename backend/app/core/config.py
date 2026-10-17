@@ -260,6 +260,11 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3001",
         "http://localhost:3001",
     ]
+    # 反向代理/公网部署时填真实对外地址；能力卡据此生成 `url`，不再回显 Host 头。
+    # 留空 = 本地开发，沿用请求的 base_url。
+    public_base_url: str = ""
+    # TrustedHost 白名单：默认 `["*"]`（本地/测试）；公网部署填真实域名，挡 Host 头注入。
+    trusted_hosts: list[str] = ["*"]
 
     @field_validator("jwt_secret")
     @classmethod

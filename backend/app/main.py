@@ -25,6 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.agent.graph import build_agent
 from app.agent.tools import (
@@ -248,6 +249,13 @@ app.add_middleware(
     # ——这是同类坑的第三次（前两次：CORS 漏放行 PUT、缺 X-Thread-Id），新增一个要读的头就回这里加
     expose_headers=["X-Thread-Id", "X-Run-Id", "X-Request-Id"],
 )
+
+# Host 头白名单：默认 `["*"]`（本地/测试）；公网部署在 .env 填真实域名，
+# 让 Host 注入（能力卡回显、绝对 URL 生成）在入口就失败。
+if set(get_settings().trusted_hosts) != {"*"}:
+    app.add_middleware(
+        TrustedHostMiddleware, allowed_hosts=get_settings().trusted_hosts
+    )
 
 # 请求体上限放在路由之前、安全头之内：413 也带安全响应头。它先读后回放（纯 ASGI），
 # 不改变 SSE 的响应路径。

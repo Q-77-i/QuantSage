@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main import app
 
 client = TestClient(app)
@@ -29,6 +31,22 @@ def test_card_is_public_and_lists_skills() -> None:
         "backtest",
     }
     assert all(skill["description"] for skill in body["skills"])
+
+
+def test_card_uses_configured_public_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """配置了对外地址就不回显 Host 头——挡缓存污染/钓鱼。"""
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://quantsage.example")
+    get_settings.cache_clear()
+    try:
+        body = client.get(
+            "/.well-known/agent-card.json", headers={"host": "evil.example"}
+        ).json()
+    finally:
+        get_settings.cache_clear()
+
+    assert body["url"] == "https://quantsage.example"
 
 
 def test_card_states_pit_hitl_and_risks() -> None:

@@ -14,6 +14,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from app.core.config import get_settings
+
 router = APIRouter(tags=["capabilities"])
 
 #: 卡片的字段形状版本（不是 A2A 协议版本；协议支持见 `x-quantsage.a2a`）。
@@ -75,7 +77,8 @@ SKILLS: tuple[dict[str, Any], ...] = (
 
 
 def card(request: Request) -> dict[str, Any]:
-    """能力卡内容。`url` 按请求 host 现算，不把 localhost 写死。"""
+    """能力卡内容。`url` 优先取 `PUBLIC_BASE_URL`，未配置才回落到请求 base_url。"""
+    base = get_settings().public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
     return {
         "schemaVersion": SCHEMA,
         "name": "知策 QuantSage",
@@ -83,7 +86,7 @@ def card(request: Request) -> dict[str, Any]:
             "前视偏差为零的 AI 投研 Agent：多 Agent 并行取证、PIT 约束语义检索、"
             "结论可回测验证；风控与审批由纯 Python/人工闸门决定，LLM 不可改写。"
         ),
-        "url": str(request.base_url).rstrip("/"),
+        "url": base,
         "version": "0.1.0",
         "capabilities": {
             "streaming": True,
