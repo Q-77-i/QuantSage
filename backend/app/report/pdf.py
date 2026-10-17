@@ -18,9 +18,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import logging
+import os
+import signal
 import sys
 import tempfile
 import time
@@ -35,6 +38,29 @@ EXPORT_TTL_SECONDS = 600
 
 #: 渲染超时（秒）：冷启动 Chrome 约 1–3s，RAG 预热那类大页面也远用不到 120s
 RENDER_TIMEOUT_SECONDS = 120.0
+
+#: 并发闸门按事件循环缓存（原因同 `api/paper.py::replay_gate`）。每次渲染是一个 Chrome，
+#: 匿名分享链接也能触发——没有上限时几十个并发请求就能把单机内存打穿。
+_RENDER_GATE: asyncio.Semaphore | None = None
+_RENDER_GATE_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def render_gate() -> asyncio.Semaphore:
+    global _RENDER_GATE, _RENDER_GATE_LOOP
+    loop = asyncio.get_running_loop()
+    if _RENDER_GATE is None or _RENDER_GATE_LOOP is not loop:
+        _RENDER_GATE = asyncio.Semaphore(max(1, get_settings().pdf_concurrency))
+        _RENDER_GATE_LOOP = loop
+    return _RENDER_GATE
+
+
+def _kill_tree(process: asyncio.subprocess.Process) -> None:
+    """杀整个进程组：Chrome 会 fork 出 renderer/zygote，只 kill worker 会留孤儿进程。"""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    if process.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
 
 
 class PdfRenderError(RuntimeError):
@@ -78,30 +104,41 @@ def print_page_url(report_id: str, token: str, *, base_url: str | None = None) -
 async def render_report_pdf(
     report_id: str, *, base_url: str | None = None, timeout: float = RENDER_TIMEOUT_SECONDS
 ) -> bytes:
-    """渲染打印页为 PDF 字节。**在子进程里跑**（`app.report.pdf_worker`），失败抛 `PdfRenderError`。"""
+    """渲染打印页为 PDF 字节。**在子进程里跑**（`app.report.pdf_worker`），失败抛 `PdfRenderError`。
+
+    **并发上限**：全局 `render_gate()`（默认 2）挡住「匿名分享链接/登录用户循环点导出」把
+    单机内存打穿；**超时/异常都杀进程组**，Chrome 的 renderer/zygote 不留在后台。
+    """
     url = print_page_url(report_id, issue_export_token(report_id), base_url=base_url)
-    with tempfile.TemporaryDirectory(prefix="quantsage-pdf-") as tmp:
-        out = Path(tmp) / "report.pdf"
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "app.report.pdf_worker",
-            "--url",
-            url,
-            "--out",
-            str(out),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except TimeoutError as exc:
-            process.kill()
-            await process.wait()
-            raise PdfRenderError(f"渲染超时（>{timeout:.0f}s）") from exc
-        if process.returncode != 0:
-            reason = (stderr or b"").decode("utf-8", "ignore").strip().splitlines()[-1:] or [""]
-            raise PdfRenderError(f"渲染失败（退出码 {process.returncode}）：{reason[0][:200]}")
-        if not out.exists() or out.stat().st_size == 0:
-            raise PdfRenderError("渲染进程没有产出文件")
-        return out.read_bytes()
+    async with render_gate():
+        with tempfile.TemporaryDirectory(prefix="quantsage-pdf-") as tmp:
+            out = Path(tmp) / "report.pdf"
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "app.report.pdf_worker",
+                "--url",
+                url,
+                "--out",
+                str(out),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # 自成进程组：超时/异常时能连 Chrome 子孙一起收
+            )
+            try:
+                _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            except TimeoutError as exc:
+                _kill_tree(process)
+                await process.wait()
+                raise PdfRenderError(f"渲染超时（>{timeout:.0f}s）") from exc
+            except BaseException:
+                # 取消（客户端断连/服务停机）也要收掉浏览器，不能留孤儿
+                _kill_tree(process)
+                await process.wait()
+                raise
+            if process.returncode != 0:
+                reason = (stderr or b"").decode("utf-8", "ignore").strip().splitlines()[-1:] or [""]
+                raise PdfRenderError(f"渲染失败（退出码 {process.returncode}）：{reason[0][:200]}")
+            if not out.exists() or out.stat().st_size == 0:
+                raise PdfRenderError("渲染进程没有产出文件")
+            return out.read_bytes()

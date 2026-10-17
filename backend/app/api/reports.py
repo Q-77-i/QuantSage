@@ -24,6 +24,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
+from app.api.limits import limit, limit_ip
 from app.backtest.benchmark import market_benchmark
 from app.core import quota
 from app.core.auth import require_db, require_user
@@ -389,6 +390,7 @@ async def report_pdf(
     report_id: uuid.UUID,
     user: dict[str, Any] = Depends(require_user),
     db: Any = Depends(require_db),
+    _: None = Depends(limit("pdf")),
 ) -> Response:
     """**一键导出 PDF**（服务端渲染，与屏幕同款）。越权与不存在同为 404。"""
     row = await db.get_research_report(user["id"], str(report_id))
@@ -402,7 +404,11 @@ async def report_pdf(
 
 
 @router.get("/public/reports/{token}/pdf")
-async def public_report_pdf(token: str, db: Any = Depends(require_db)) -> Response:
+async def public_report_pdf(
+    token: str,
+    db: Any = Depends(require_db),
+    _: None = Depends(limit_ip("pdf-public")),
+) -> Response:
     """**匿名**导出：分享链接里的「导出 PDF」走这条（凭 share token）。"""
     row = await db.get_report_by_token(token)
     if row is None:

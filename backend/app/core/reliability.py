@@ -261,6 +261,8 @@ def _bucket_of(name: str) -> Bucket:
         "llm-research": (settings.rate_limit_research, settings.rate_limit_research_window),
         "task-submit": (settings.rate_limit_task_submit, settings.rate_limit_task_submit_window),
         "paper-run": (settings.rate_limit_paper, settings.rate_limit_paper_window),
+        "pdf": (settings.rate_limit_pdf, settings.rate_limit_pdf_window),
+        "pdf-public": (settings.rate_limit_pdf_public, settings.rate_limit_pdf_window),
     }
     if name not in table:
         raise KeyError(f"未知的限流桶：{name}")

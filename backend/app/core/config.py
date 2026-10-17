@@ -208,6 +208,12 @@ class Settings(BaseSettings):
     # 同时跑几段模拟盘 replay。与网格共用「进程级闸门」的理由相同：一个用户不能
     # 用并发请求把 CPU/内存打满；单段 replay 本身有沙箱墙钟/CPU/内存上限。
     paper_concurrency: int = 2
+    # PDF 导出：每次起一个 Chrome。并发上限 + 两条限流桶（登录用户 / 匿名分享链接）；
+    # 匿名那条尤其要收紧——分享链接本身就是凭据，不能让它变成免费的 Chrome 启动器。
+    pdf_concurrency: int = 2
+    rate_limit_pdf: int = 10
+    rate_limit_pdf_window: float = 60.0
+    rate_limit_pdf_public: int = 5
 
     # ── 用户配额（E2）：**累计用量**，跨重启持久（与上面 L0 的「速率」边界见 SPEC §3.1）──
     # 两个维度：在飞任务数（queued + running，**排队即占额**）、每日 Agent 请求数（自然日 +08）。
