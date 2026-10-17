@@ -117,9 +117,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             cash=100_000.0,
             as_of=days[10],
             rules={},
+            risk_state={},
             positions=[],
             decisions=[decision_to_row(d) for d in decisions],
             equity=equity,
+            risk_events=[],
         )
     )
     db.paper_accounts["acct"]["realized_pnl"] = 0.0

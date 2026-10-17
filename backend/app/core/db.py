@@ -183,12 +183,16 @@ SCHEMA = (
         realized_pnl NUMERIC(18, 4) NOT NULL DEFAULT 0,
         as_of        DATE        NOT NULL,
         rules        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+        risk_state   JSONB       NOT NULL DEFAULT '{}'::jsonb,
         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
     "CREATE INDEX IF NOT EXISTS paper_accounts_user_created_idx "
     "ON paper_accounts (user_id, created_at DESC)",
+    # E5：风控快照是派生量，跟着每次推进重写；旧库补列走另起的迁移语句。
+    "ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS risk_state "
+    "JSONB NOT NULL DEFAULT '{}'::jsonb",
     """
     CREATE TABLE IF NOT EXISTS paper_positions (
         account_id   UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
@@ -216,6 +220,7 @@ SCHEMA = (
         reason         TEXT NOT NULL DEFAULT '',
         event_id       TEXT,
         sources        JSONB,
+        origin         TEXT NOT NULL DEFAULT 'strategy',
         status         TEXT NOT NULL,
         decided_at     TIMESTAMPTZ,
         fill_date      DATE,
@@ -232,6 +237,9 @@ SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS paper_decisions_account_date_idx "
     "ON paper_decisions (account_id, trade_date DESC)",
+    # E5：风控退出的来源标记（strategy / risk）；旧库补列走另起的迁移语句。
+    "ALTER TABLE paper_decisions ADD COLUMN IF NOT EXISTS origin "
+    "TEXT NOT NULL DEFAULT 'strategy'",
     """
     CREATE TABLE IF NOT EXISTS paper_equity (
         account_id   UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
@@ -242,6 +250,29 @@ SCHEMA = (
         PRIMARY KEY (account_id, trade_date)
     )
     """,
+    # ── E5 风控：决策审计（E7 的决策审计日志复用同一张表）────────────
+    # `decision_id` **不设外键**：被拦截的提案在 paper_decisions 里没有行，但审计要留下
+    # would-be id；放行/缩量/止损触发的行则与真实决策一一对应。`metrics` 存当时的读数
+    # （百分比与金额），让一行审计可复算判据，而不是只看到一句结论。
+    """
+    CREATE TABLE IF NOT EXISTS decision_audit (
+        id           UUID PRIMARY KEY,
+        account_id   UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+        decision_id  UUID,
+        trade_date   DATE NOT NULL,
+        symbol       TEXT,
+        side         TEXT,
+        origin       TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        verdict      TEXT NOT NULL,
+        gate         TEXT,
+        metrics      JSONB NOT NULL DEFAULT '{}'::jsonb,
+        detail       TEXT NOT NULL DEFAULT '',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS decision_audit_account_date_idx "
+    "ON decision_audit (account_id, trade_date DESC)",
     # ── M7 绩效研报：一次生成即冻结（分享链接永远看同一份）────────────
     # `snapshot` / `report` 都是冻结产物正文；两个 hash 由服务端算好落库，
     # `share_token` 为 NULL 表示未分享（撤销即置回 NULL，公开端点随之 404）。
@@ -765,18 +796,32 @@ class Database:
         cash: float,
         as_of: date,
         rules: dict[str, Any],
+        risk_state: dict[str, Any],
         positions: list[dict[str, Any]],
         decisions: list[dict[str, Any]],
         equity: list[dict[str, Any]],
+        risk_events: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """建会话 + 首批决策/持仓/净值点，一个事务。"""
+        """建会话 + 首批决策/持仓/净值点/风控审计，一个事务。"""
         async with self.pool.connection() as conn, conn.transaction():
             await conn.execute(
-                "INSERT INTO paper_accounts (id, user_id, name, config, cash, as_of, rules) "
-                "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s)",
-                (account_id, user_id, name, Jsonb(config), cash, as_of, Jsonb(rules)),
+                "INSERT INTO paper_accounts "
+                "(id, user_id, name, config, cash, as_of, rules, risk_state) "
+                "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    account_id,
+                    user_id,
+                    name,
+                    Jsonb(config),
+                    cash,
+                    as_of,
+                    Jsonb(rules),
+                    Jsonb(risk_state or {}),
+                ),
             )
-            await _write_paper_state(conn, account_id, positions, decisions, equity)
+            await _write_paper_state(
+                conn, account_id, positions, decisions, equity, risk_events
+            )
         row = await self.get_paper_account(user_id, account_id)
         assert row is not None  # 刚插进去的行必然取得到
         return row
@@ -792,18 +837,29 @@ class Database:
         as_of: date,
         status: str,
         rules: dict[str, Any],
+        risk_state: dict[str, Any],
         positions: list[dict[str, Any]],
         decisions: list[dict[str, Any]],
         equity: list[dict[str, Any]],
+        risk_events: list[dict[str, Any]],
     ) -> bool:
         """推进一个交易日（一个事务）。返回 False = 守卫没中（已被别的请求推进过），**什么都没写**。"""
         async with self.pool.connection() as conn, conn.transaction():
             cursor = await conn.execute(
                 "UPDATE paper_accounts SET cash = %s, realized_pnl = %s, as_of = %s, "
-                "status = %s, rules = %s, updated_at = now() "
+                "status = %s, rules = %s, risk_state = %s, updated_at = now() "
                 "WHERE id = %s::uuid AND user_id = %s AND as_of = %s RETURNING id",
-                (cash, realized_pnl, as_of, status, Jsonb(rules), account_id, user_id,
-                 expected_as_of),
+                (
+                    cash,
+                    realized_pnl,
+                    as_of,
+                    status,
+                    Jsonb(rules),
+                    Jsonb(risk_state or {}),
+                    account_id,
+                    user_id,
+                    expected_as_of,
+                ),
             )
             if await cursor.fetchone() is None:
                 return False
@@ -811,7 +867,9 @@ class Database:
             await conn.execute(
                 "DELETE FROM paper_positions WHERE account_id = %s::uuid", (account_id,)
             )
-            await _write_paper_state(conn, account_id, positions, decisions, equity)
+            await _write_paper_state(
+                conn, account_id, positions, decisions, equity, risk_events
+            )
         return True
 
     async def list_paper_accounts(self, user_id: int, limit: int) -> list[dict[str, Any]]:
@@ -843,8 +901,8 @@ class Database:
         `app.paper.store` 的职责，让驱动类型只在一处被翻译。
         """
         return await self._one(
-            "SELECT id, name, config, status, cash, realized_pnl, as_of, rules, created_at, "
-            "updated_at FROM paper_accounts WHERE id = %s::uuid AND user_id = %s",
+            "SELECT id, name, config, status, cash, realized_pnl, as_of, rules, risk_state, "
+            "created_at, updated_at FROM paper_accounts WHERE id = %s::uuid AND user_id = %s",
             (account_id, user_id),
         )
 
@@ -870,6 +928,14 @@ class Database:
             "SELECT account_id, trade_date, cash, market_value, equity FROM paper_equity "
             "WHERE account_id = %s::uuid ORDER BY trade_date",
             (account_id,),
+        )
+
+    async def paper_audit(self, account_id: str, limit: int) -> list[dict[str, Any]]:
+        """风控审计（新的在前）。`limit` 是展示面防呆——完整台账在库里，按账户级联删除。"""
+        return await self._all(
+            "SELECT * FROM decision_audit WHERE account_id = %s::uuid "
+            "ORDER BY trade_date DESC, created_at DESC, id LIMIT %s",
+            (account_id, limit),
         )
 
     async def paper_decision(self, user_id: int, decision_id: str) -> dict[str, Any] | None:
@@ -1371,12 +1437,14 @@ async def _write_paper_state(
     positions: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
     equity: list[dict[str, Any]],
+    risk_events: list[dict[str, Any]],
 ) -> None:
-    """把一批持仓 / 决策 / 净值点写进库。**调用方负责开事务**（见 `paper_advance`）。
+    """把一批持仓 / 决策 / 净值点 / 风控审计写进库。**调用方负责开事务**（见 `paper_advance`）。
 
     行 dict 由 `app.paper.store` 造好（本层不 import 业务包）。决策走 upsert：
     重放每次都会把**全量**决策交回来，同 id 重写一遍是幂等的——
     而 `decided_at` 由重放从日志里带回来，故用户做过的动作不会被抹掉。
+    审计行走 `DO NOTHING`：它是**不可变事实**，过去的日子重放也不重写（与净值表同一条纪律）。
     """
     if positions:
         await _executemany(
@@ -1402,12 +1470,13 @@ async def _write_paper_state(
             conn,
             "INSERT INTO paper_decisions "
             "(id, account_id, trade_date, symbol, side, est_qty, est_price, reason, event_id, "
-            " sources, status, decided_at, fill_date, fill_qty, fill_price, fill_ref_price, "
-            " commission, stamp_tax, cash_delta, reject_code, reject_reason) "
-            "VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-            "        %s, %s, %s, %s, %s) "
+            " sources, origin, status, decided_at, fill_date, fill_qty, fill_price, "
+            " fill_ref_price, commission, stamp_tax, cash_delta, reject_code, reject_reason) "
+            "VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "        %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (id) DO UPDATE SET "
-            " status = EXCLUDED.status, decided_at = EXCLUDED.decided_at, "
+            " origin = EXCLUDED.origin, status = EXCLUDED.status, "
+            " decided_at = EXCLUDED.decided_at, "
             " est_qty = EXCLUDED.est_qty, est_price = EXCLUDED.est_price, "
             " reason = EXCLUDED.reason, event_id = EXCLUDED.event_id, sources = EXCLUDED.sources, "
             " fill_date = EXCLUDED.fill_date, fill_qty = EXCLUDED.fill_qty, "
@@ -1427,6 +1496,7 @@ async def _write_paper_state(
                     d["reason"],
                     d["event_id"],
                     Jsonb(d["sources"]) if d["sources"] else None,
+                    d["origin"],
                     d["status"],
                     d["decided_at"],
                     d["fill_date"],
@@ -1440,6 +1510,32 @@ async def _write_paper_state(
                     d["reject_reason"],
                 )
                 for d in decisions
+            ],
+        )
+    if risk_events:
+        await _executemany(
+            conn,
+            "INSERT INTO decision_audit "
+            "(id, account_id, decision_id, trade_date, symbol, side, origin, kind, verdict, "
+            " gate, metrics, detail) "
+            "VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING",
+            [
+                (
+                    e["id"],
+                    e["account_id"],
+                    e["decision_id"],
+                    e["trade_date"],
+                    e["symbol"],
+                    e["side"],
+                    e["origin"],
+                    e["kind"],
+                    e["verdict"],
+                    e["gate"],
+                    Jsonb(e["metrics"]),
+                    e["detail"],
+                )
+                for e in risk_events
             ],
         )
     if equity:

@@ -176,9 +176,11 @@ def test_advance_guards_on_as_of_and_rolls_back_on_failure(real_stack: TestClien
                     as_of=as_of + timedelta(days=1),
                     status="active",
                     rules={},
+                    risk_state={},
                     positions=[],
                     decisions=[decision_to_row(clash), decision_to_row(twin)],
                     equity=[],
+                    risk_events=[],
                 )
             after = await db.get_paper_account(user_id, account_id)
             assert after is not None
@@ -193,9 +195,11 @@ def test_advance_guards_on_as_of_and_rolls_back_on_failure(real_stack: TestClien
                 realized_pnl=0.0,
                 status="active",
                 rules={},
+                risk_state={},
                 positions=[],
                 decisions=[],
                 equity=[],
+                risk_events=[],
             )
             assert await db.paper_advance(
                 **staged, expected_as_of=as_of, as_of=as_of + timedelta(days=1)

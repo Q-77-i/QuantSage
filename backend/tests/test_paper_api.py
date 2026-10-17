@@ -320,3 +320,73 @@ def test_list_shows_own_accounts_only(paper_env: list[date], signed_in: object) 
 
     signed_in.paper_accounts[next(iter(signed_in.paper_accounts))]["user_id"] = 999  # 换个主人
     assert client.get("/api/v1/paper/accounts").json() == []
+
+
+# ── E5 风控 ─────────────────────────────────────────────────
+
+
+RISK = {
+    "max_gross_exposure": 100.0,
+    "max_position": 30.0,
+    "stop_loss": 10.0,
+    "max_drawdown": 20.0,
+}
+
+
+def test_create_with_risk_exposes_state_and_audit(paper_env: list[date]) -> None:
+    detail = create(risk=RISK).json()
+    assert detail["account"]["config"]["risk"]["max_position"] == 30.0
+    assert detail["risk_state"]["equity"] == pytest.approx(200_000.0)
+    assert detail["risk_state"]["blocked_by_drawdown"] is False
+    assert len(detail["decisions"]) == 1
+    decision = detail["decisions"][0]
+    assert decision["origin"] == "strategy"
+    assert decision["est_qty"] == 500  # 30% × 20 万 / 100.05 ≈ 500 股
+    caps = [event for event in detail["risk_events"] if event["verdict"] == "cap"]
+    assert len(caps) == 1
+    assert caps[0]["gate"] == "concentration"
+    assert caps[0]["metrics"]["requested_qty"] == 1900
+    assert caps[0]["metrics"]["final_qty"] == 500
+
+
+def test_risk_off_detail_has_empty_state_and_events(paper_env: list[date]) -> None:
+    detail = create().json()
+    assert detail["account"]["config"]["risk"] is None
+    assert detail["risk_state"] == {}
+    assert detail["risk_events"] == []
+    assert detail["decisions"][0]["origin"] == "strategy"
+
+
+def test_invalid_risk_is_422(paper_env: list[date]) -> None:
+    assert create(risk={**RISK, "max_position": 0}).status_code == 422
+    missing = {key: value for key, value in RISK.items() if key != "stop_loss"}
+    assert create(risk=missing).status_code == 422
+    assert create(risk={**RISK, "max_drawdown": 101}).status_code == 422
+
+
+def test_risk_budget_must_afford_one_lot(paper_env: list[date]) -> None:
+    response = create(risk={**RISK, "max_position": 4.0})
+    assert response.status_code == 422
+    assert "风控上限下" in response.json()["detail"]
+    assert "买不起一手" in response.json()["detail"]
+
+
+def test_step_reports_risk_events_and_exits(paper_env: list[date]) -> None:
+    detail = create(risk=RISK).json()
+    account_id = detail["account"]["id"]
+    stepped = client.post(f"/api/v1/paper/accounts/{account_id}/step").json()
+    assert isinstance(stepped["this_step"]["risk_events"], list)
+    assert isinstance(stepped["this_step"]["risk_exits"], list)
+    assert isinstance(stepped["risk_state"], dict)
+    assert stepped["risk_state"]["as_of"] == stepped["account"]["as_of"]
+
+
+def test_run_with_risk_keeps_audit(paper_env: list[date]) -> None:
+    detail = create(risk=RISK).json()
+    final = client.post(
+        f"/api/v1/paper/accounts/{detail['account']['id']}/run",
+        json={"approve": "all"},
+    ).json()
+    assert final["account"]["status"] == "finished"
+    assert final["risk_state"]["equity"] > 0
+    assert any(event["verdict"] == "cap" for event in final["risk_events"])

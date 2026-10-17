@@ -54,6 +54,56 @@ def decision_id(account_id: str, trade_date: date, symbol: str, side: Side) -> s
     return str(uuid.uuid5(NAMESPACE, key))
 
 
+#: 风控审计事件的命名空间（与决策 id 分开：审计行不是决策）
+NAMESPACE_RISK = uuid.uuid5(uuid.NAMESPACE_URL, "quantsage/paper/risk")
+
+
+def risk_event_id(
+    account_id: str,
+    trade_date: date,
+    symbol: str | None,
+    side: Side | None,
+    kind: str,
+    gate: str | None,
+) -> str:
+    """审计事件 id = `uuid5(账户 | 日期 | 标的 | 方向 | 类型 | 闸门)`。
+
+    **确定性**让重放可以幂等落库（`ON CONFLICT DO NOTHING`）；`-` 占位让空标的 / 空方向
+    （回撤状态切换）也有稳定的键。同一天同一标的同一闸门只会有一行。
+    """
+    key = "|".join(
+        [
+            account_id,
+            trade_date.isoformat(),
+            symbol or "-",
+            side.value if side else "-",
+            kind,
+            gate or "-",
+        ]
+    )
+    return str(uuid.uuid5(NAMESPACE_RISK, key))
+
+
+@dataclass(frozen=True, slots=True)
+class RiskLimits:
+    """风控上限（**百分比**，0–100；内部换算成小数）。
+
+    四个值必须同时给——不做「有的开有的关」的隐式组合：一个半开的配置在界面上说不清。
+    创建后随 `PaperConfig` 冻结；改风控 = 新建会话。LLM 没有任何工具能写它。
+    """
+
+    max_gross_exposure: float
+    max_position: float
+    stop_loss: float
+    max_drawdown: float
+
+    def __post_init__(self) -> None:
+        for name in ("max_gross_exposure", "max_position", "stop_loss", "max_drawdown"):
+            value = getattr(self, name)
+            if not 0 < value <= 100:
+                raise ValueError(f"{name} 必须在 (0, 100] 区间（收到 {value}）")
+
+
 @dataclass(frozen=True, slots=True)
 class Decision:
     """一张决策单：**同时是订单、日志与账本条目**（SPEC §7，M7 只读它）。
@@ -78,6 +128,8 @@ class Decision:
     fill: Fill | None = None
     reject_code: str | None = None
     reject_reason: str | None = None
+    #: `strategy` / `risk`——风控退出（止损）由系统自动批准，界面据此显示「风控自动」
+    origin: str = "strategy"
 
     @property
     def label(self) -> str:
@@ -103,6 +155,8 @@ class PaperConfig:
     costs: CostModel = field(default_factory=CostModel)
     #: 用户策略的名字（内置策略为 None）——进报告与界面，服务端不据此做分支
     strategy_name: str | None = None
+    #: E5 风控上限；`None` = 关闭（旧会话与不填该字段的新会话都走这条，行为与 M6 一致）
+    risk: RiskLimits | None = None
 
     @property
     def quota(self) -> float:
@@ -135,18 +189,63 @@ class EquityMark:
 
 @dataclass(frozen=True, slots=True)
 class DayOutcome:
-    """一天推进下来发生了什么（供 `step` 的响应与前端逐日展示）。"""
+    """一天推进下来发生了什么（供 `step` 的响应与前端逐日展示）。
+
+    `generated` 只装**策略生成**的新决策；风控止损单单独放 `risk_exits`——前者是待审批，
+    后者生来就是 `approved`，混在一起会让「新生成 N 条待审批」这句话变成假话。
+    """
 
     trade_date: date
     filled: tuple[Decision, ...] = ()
     expired: tuple[Decision, ...] = ()
     unfilled: tuple[Decision, ...] = ()
     generated: tuple[Decision, ...] = ()
+    risk_exits: tuple[Decision, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RiskEvent:
+    """一行风控审计：放行 / 缩量 / 拦截 / 触发 / 回撤状态切换。
+
+    `decision_id` 对**被拦截的提案**是 would-be id（库里没有对应决策行），对放行/缩量/
+    止损触发的行则是真实决策 id。`metrics` 存当时的读数（百分比与原始金额），让人能从
+    一行审计复算判据，而不是只看到一句结论。
+    """
+
+    id: str
+    account_id: str
+    trade_date: date
+    kind: str
+    verdict: str
+    gate: str | None = None
+    decision_id: str | None = None
+    symbol: str | None = None
+    side: Side | None = None
+    origin: str = "strategy"
+    metrics: Mapping[str, float | int | None] = field(default_factory=dict)
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RiskState:
+    """`as_of` 收盘时的风控快照（派生量，落 `paper_accounts.risk_state`）。
+
+    比率一律是**百分比**（10.5 = 10.5%）；权益 ≤ 0 时三个比率都是 `None`——界面显示「—」，
+    不编一个 0 出来。
+    """
+
+    as_of: date
+    peak_equity: float
+    equity: float
+    drawdown_pct: float | None
+    gross_exposure_pct: float | None
+    max_position_pct: float | None
+    blocked_by_drawdown: bool
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayResult:
-    """重放的产物：账户状态 + 全量决策日志 + 净值曲线 + 逐日发生了什么。"""
+    """重放的产物：账户状态 + 全量决策日志 + 净值曲线 + 逐日发生了什么 + 风控审计。"""
 
     state: AccountState
     decisions: tuple[Decision, ...]
@@ -156,6 +255,10 @@ class ReplayResult:
     #: 放这里而不是只留在内存里：降级（判不出板别 / 缺 raw 序列）必须如实带出去，
     #: 否则「规则跑了但没生效」在界面上看不出来（M5a 的 `meta.a_share_rules` 同一条理由）。
     rules: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    #: 风控审计（只读派生；风控关闭时为空）——落 `decision_audit` 与 step 响应
+    risk_events: tuple[RiskEvent, ...] = ()
+    #: `as_of` 收盘的风控快照（风控关闭时为 None）
+    risk_state: RiskState | None = None
 
     @property
     def as_of(self) -> date:

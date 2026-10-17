@@ -45,19 +45,41 @@ class Broker:
     def costs(self) -> CostModel:
         return self._costs
 
-    def execute(self, signal: Signal, bar: Bar, portfolio: Portfolio) -> Fill | None:
-        """撮合一根 bar 的开盘价；返回 None 表示拒单（已记日志，不抛异常）。"""
+    def execute(
+        self,
+        signal: Signal,
+        bar: Bar,
+        portfolio: Portfolio,
+        *,
+        qty_cap: int | None = None,
+    ) -> Fill | None:
+        """撮合一根 bar 的开盘价；返回 None 表示拒单（已记日志，不抛异常）。
+
+        `qty_cap` 是 E5 风控缩量后的**股数硬上限**（已按整手对齐）：只用于买入，默认 None
+        （回测与风控关闭的模拟盘行为不变）。风控开启时，决策日的 `est_qty` 就是次日成交的
+        上限——跳空低开不会多买（多买会让实际仓位超过决策日的风控上限），跳空高开则按
+        实际可负担股数成交（可能买不满）。
+        """
         if signal.side is Side.BUY:
-            return self._buy(signal, bar, portfolio)
+            return self._buy(signal, bar, portfolio, qty_cap=qty_cap)
         return self._sell(signal, bar, portfolio)
 
-    def _buy(self, signal: Signal, bar: Bar, portfolio: Portfolio) -> Fill | None:
+    def _buy(
+        self,
+        signal: Signal,
+        bar: Bar,
+        portfolio: Portfolio,
+        *,
+        qty_cap: int | None = None,
+    ) -> Fill | None:
         if not portfolio.position.is_flat:
             log.info("拒单：已持仓，忽略买入信号（%s）", signal.reason or "无原因")
             return None
 
         price = self._costs.fill_price(Side.BUY, bar.open)
         qty = self._affordable_qty(portfolio.cash, price)
+        if qty_cap is not None:
+            qty = min(qty, qty_cap)
         if qty <= 0:
             log.info("拒单：现金不足以买入一手（现金 %.2f，价格 %.4f）", portfolio.cash, price)
             return None

@@ -118,9 +118,11 @@ def seeded(signed_in: FakeDatabase) -> dict[str, str]:
             cash=100_000.0,
             as_of=date(2026, 9, 30),
             rules={},
+            risk_state={},
             positions=[],
             decisions=[],
             equity=[],
+            risk_events=[],
         )
     )
     asyncio.run(

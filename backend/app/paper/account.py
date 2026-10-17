@@ -112,6 +112,20 @@ class PaperAccount:
         self._realized_pnl += (fill.price * fill.qty - fill.fees) - cost
         self._positions.pop(symbol, None)
 
+    def valuation_price(self, symbol: str) -> float | None:
+        """该标的当前估值价（**与 `mark` 同一口径**）：最近已知收盘价，缺了退回持仓成本价。
+
+        风控的止损/回撤判定必须走这个出口，否则停牌日的兜底口径会在两处各写一份。
+        无持仓且无价格时返回 None。
+        """
+        price = self._last_close.get(symbol)
+        if price is not None:
+            return price
+        position = self._positions.get(symbol)
+        if position is not None and not position.is_flat:
+            return position.entry_price
+        return None
+
     def mark(self, trade_date: date, closes: Mapping[str, float]) -> EquityMark:
         """按收盘价估值并返回当日估值点。
 
@@ -126,11 +140,12 @@ class PaperAccount:
         for symbol, position in self._positions.items():
             if position.is_flat:
                 continue
-            price = self._last_close.get(symbol)
-            if price is None:
+            price = self.valuation_price(symbol)
+            if price is None:  # 结构上不可能：持仓必然有 entry_price；防御性跳过
+                continue
+            if symbol not in self._last_close:
                 # 结构上不该发生（建仓那天必然写过 last_close）。真拿到脏数据时按成本价估值
                 # 并把事实记下来——静默当 0 会把净值砸出一个假坑。
-                price = position.entry_price
                 log.warning("标的 %s 无已知收盘价，按成本价 %.4f 估值", symbol, price)
             market_value += position.shares * price
 

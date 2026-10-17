@@ -26,6 +26,9 @@ from app.paper.types import (
     EquityMark,
     PaperConfig,
     ReplayResult,
+    RiskEvent,
+    RiskLimits,
+    RiskState,
 )
 
 # ── 配置 ────────────────────────────────────────────────────
@@ -49,6 +52,16 @@ def config_to_payload(config: PaperConfig) -> dict[str, Any]:
             "fee_enabled": config.costs.fee_enabled,
             "slippage_enabled": config.costs.slippage_enabled,
         },
+        "risk": (
+            {
+                "max_gross_exposure": config.risk.max_gross_exposure,
+                "max_position": config.risk.max_position,
+                "stop_loss": config.risk.stop_loss,
+                "max_drawdown": config.risk.max_drawdown,
+            }
+            if config.risk is not None
+            else None
+        ),
     }
 
 
@@ -63,6 +76,7 @@ def config_from_payload(data: Mapping[str, Any]) -> PaperConfig:
         params=dict(data.get("params") or {}),
         costs=CostModel(**data["costs"]),
         strategy_name=data.get("strategy_name"),
+        risk=RiskLimits(**data["risk"]) if data.get("risk") else None,
     )
 
 
@@ -156,6 +170,7 @@ def decision_to_payload(decision: Decision) -> dict[str, Any]:
         "fill": fill_to_payload(decision.fill) if decision.fill else None,
         "reject_code": decision.reject_code,
         "reject_reason": decision.reject_reason,
+        "origin": decision.origin,
     }
 
 
@@ -179,6 +194,7 @@ def decision_from_payload(data: Mapping[str, Any]) -> Decision:
         fill=_fill_from_payload(fill, side) if fill else None,
         reject_code=data.get("reject_code"),
         reject_reason=data.get("reject_reason"),
+        origin=str(data.get("origin") or "strategy"),
     )
 
 
@@ -221,6 +237,7 @@ def decision_to_row(decision: Decision) -> dict[str, Any]:
         "cash_delta": fill.cash_delta if fill else None,
         "reject_code": decision.reject_code,
         "reject_reason": decision.reject_reason,
+        "origin": decision.origin,
     }
 
 
@@ -257,6 +274,121 @@ def decision_from_row(row: Mapping[str, Any]) -> Decision:
         fill=fill,
         reject_code=row.get("reject_code"),
         reject_reason=row.get("reject_reason"),
+        origin=str(row.get("origin") or "strategy"),
+    )
+
+
+# ── 风控审计与快照 ──────────────────────────────────────────
+
+
+def risk_event_to_payload(event: RiskEvent) -> dict[str, Any]:
+    """审计事件 → JSON 信封（API 响应与沙箱回传共用，与决策同一套纪律）。"""
+    return {
+        "id": event.id,
+        "account_id": event.account_id,
+        "decision_id": event.decision_id,
+        "trade_date": event.trade_date.isoformat(),
+        "symbol": event.symbol,
+        "side": event.side.value if event.side else None,
+        "origin": event.origin,
+        "kind": event.kind,
+        "verdict": event.verdict,
+        "gate": event.gate,
+        "metrics": dict(event.metrics),
+        "detail": event.detail,
+    }
+
+
+def risk_event_from_payload(data: Mapping[str, Any]) -> RiskEvent:
+    side = data.get("side")
+    return RiskEvent(
+        id=str(data["id"]),
+        account_id=str(data["account_id"]),
+        trade_date=_date(data["trade_date"]),
+        kind=str(data["kind"]),
+        verdict=str(data["verdict"]),
+        gate=data.get("gate"),
+        decision_id=data.get("decision_id"),
+        symbol=data.get("symbol"),
+        side=Side(side) if side else None,
+        origin=str(data.get("origin") or "strategy"),
+        metrics=dict(data.get("metrics") or {}),
+        detail=str(data.get("detail") or ""),
+    )
+
+
+def risk_event_to_row(event: RiskEvent) -> dict[str, Any]:
+    """审计事件 → `decision_audit` 的一行（列名与 DDL 同源，见 `core/db.py`）。"""
+    return {
+        "id": event.id,
+        "account_id": event.account_id,
+        "decision_id": event.decision_id,
+        "trade_date": event.trade_date,
+        "symbol": event.symbol,
+        "side": event.side.value if event.side else None,
+        "origin": event.origin,
+        "kind": event.kind,
+        "verdict": event.verdict,
+        "gate": event.gate,
+        "metrics": dict(event.metrics),
+        "detail": event.detail,
+    }
+
+
+def risk_event_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """审计行 → API 形状。`decision_id` 可能为空——被拦截的提案在 `paper_decisions` 里没有行。"""
+    return {
+        "id": str(row["id"]),
+        "account_id": str(row["account_id"]),
+        "decision_id": str(row["decision_id"]) if row.get("decision_id") else None,
+        "trade_date": _as_date(row["trade_date"]).isoformat(),
+        "symbol": row.get("symbol"),
+        "side": row.get("side"),
+        "origin": str(row.get("origin") or "strategy"),
+        "kind": str(row["kind"]),
+        "verdict": str(row["verdict"]),
+        "gate": row.get("gate"),
+        "metrics": dict(row.get("metrics") or {}),
+        "detail": str(row.get("detail") or ""),
+        "created_at": _text(row.get("created_at")),
+    }
+
+
+def risk_state_to_payload(state: RiskState | None) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    return {
+        "as_of": state.as_of.isoformat(),
+        "peak_equity": state.peak_equity,
+        "equity": state.equity,
+        "drawdown_pct": state.drawdown_pct,
+        "gross_exposure_pct": state.gross_exposure_pct,
+        "max_position_pct": state.max_position_pct,
+        "blocked_by_drawdown": state.blocked_by_drawdown,
+    }
+
+
+def risk_state_from_payload(data: Mapping[str, Any] | None) -> RiskState | None:
+    if not data:
+        return None
+    return RiskState(
+        as_of=_date(data["as_of"]),
+        peak_equity=float(data["peak_equity"]),
+        equity=float(data["equity"]),
+        drawdown_pct=(
+            float(data["drawdown_pct"]) if data.get("drawdown_pct") is not None else None
+        ),
+        gross_exposure_pct=(
+            float(data["gross_exposure_pct"])
+            if data.get("gross_exposure_pct") is not None
+            else None
+        ),
+        max_position_pct=(
+            float(data["max_position_pct"])
+            if data.get("max_position_pct") is not None
+            else None
+        ),
+        blocked_by_drawdown=bool(data.get("blocked_by_drawdown")),
     )
 
 
@@ -361,10 +493,13 @@ def result_to_payload(result: ReplayResult) -> dict[str, Any]:
                 "expired": [d.id for d in day.expired],
                 "unfilled": [d.id for d in day.unfilled],
                 "generated": [d.id for d in day.generated],
+                "risk_exits": [d.id for d in day.risk_exits],
             }
             for day in result.days
         ],
         "rules": {symbol: dict(rule) for symbol, rule in result.rules.items()},
+        "risk_events": [risk_event_to_payload(event) for event in result.risk_events],
+        "risk_state": risk_state_to_payload(result.risk_state),
     }
 
 
@@ -393,6 +528,7 @@ def result_from_payload(data: Mapping[str, Any]) -> ReplayResult:
             expired=tuple(by_id[i] for i in day["expired"]),
             unfilled=tuple(by_id[i] for i in day["unfilled"]),
             generated=tuple(by_id[i] for i in day["generated"]),
+            risk_exits=tuple(by_id[i] for i in day.get("risk_exits") or []),
         )
         for day in data["days"]
     )
@@ -406,6 +542,10 @@ def result_from_payload(data: Mapping[str, Any]) -> ReplayResult:
         equity_curve=curve,
         days=days,
         rules={str(k): dict(v) for k, v in (data.get("rules") or {}).items()},
+        risk_events=tuple(
+            risk_event_from_payload(event) for event in data.get("risk_events") or []
+        ),
+        risk_state=risk_state_from_payload(data.get("risk_state")),
     )
 
 

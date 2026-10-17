@@ -34,6 +34,7 @@ from app.backtest.broker import Broker, affordable_qty
 from app.backtest.strategies import Strategy, build_strategy
 from app.backtest.types import Bar, BarContext, Mode, Side, Signal
 from app.paper import MAX_DEFER_DAYS, PaperError
+from app.paper import risk as risk_gates
 from app.paper.account import PaperAccount
 from app.paper.market import MarketData, SymbolData, load_market_data
 from app.paper.types import (
@@ -43,7 +44,10 @@ from app.paper.types import (
     EquityMark,
     PaperConfig,
     ReplayResult,
+    RiskEvent,
+    RiskState,
     decision_id,
+    risk_event_id,
 )
 
 log = logging.getLogger(__name__)
@@ -75,6 +79,11 @@ def replay(
     broker = Broker(config.costs)
     account = PaperAccount(config)
     feeds = {symbol: data.feed_for(symbol, Mode.PIT) for symbol in config.symbols}
+    limits = config.risk
+    risk_events: list[RiskEvent] = []
+    peak = config.initial_cash
+    drawdown_breached = False
+    last_state: RiskState | None = None
 
     logged = {(d.trade_date, d.symbol) for d in decisions}
     book: dict[str, Decision] = {}
@@ -114,6 +123,8 @@ def replay(
         expired: list[Decision] = []
         unfilled: list[Decision] = []
         generated: list[Decision] = []
+        risk_exits: list[Decision] = []
+        pending_notional = 0.0
 
         # ① 开盘：先记回日志里已成交的，再成交已批准的、过掉仍待审批的
         for symbol in config.symbols:
@@ -131,7 +142,21 @@ def replay(
             # 天然不会撞上这个判断；但日志里带回来的「已批准」是从头开始跑的，
             # 少了这个守卫它会在**决策日当天**就成交（2026-10-10 由端点用例逮到）。
             if carry is not None and carry.trade_date < day:
-                resolved = _resolve_carry(carry, symbol_data, day, account, broker, deferred)
+                resolved = _resolve_carry(
+                    carry,
+                    symbol_data,
+                    day,
+                    account,
+                    broker,
+                    deferred,
+                    # 风控开启时把决策日的预估股数当**成交硬上限**：跳空低开不会多买
+                    # （多买会让实际仓位超过决策日的风控上限），跳空高开按可负担股数成交。
+                    qty_cap=(
+                        carry.est_qty
+                        if limits is not None and carry.side is Side.BUY
+                        else None
+                    ),
+                )
                 if resolved is not None:
                     book[resolved.id] = resolved
                     carries.pop(symbol, None)
@@ -150,8 +175,109 @@ def replay(
         }
         mark = account.mark(day, closes)
         equity_curve.append(mark)
+        peak = max(peak, mark.equity)
 
-        # ③ 收盘后：事件推进 + 问策略（过去的日子以日志为准）
+        # ③ 风控：止损退出 → 回撤状态（都在策略信号之前）
+        if limits is not None:
+            prices = {
+                symbol: price
+                for symbol in config.symbols
+                if (price := account.valuation_price(symbol)) is not None
+            }
+            for hit in risk_gates.stop_loss_hits(account.positions, prices, limits.stop_loss):
+                if carries.get(hit.symbol) is not None:
+                    continue  # 该标的已有挂单（含上一日顺延的风控卖出），不重复下单
+                decision = Decision(
+                    id=decision_id(account_id, day, hit.symbol, Side.SELL),
+                    account_id=account_id,
+                    symbol=hit.symbol,
+                    trade_date=day,
+                    side=Side.SELL,
+                    est_qty=hit.shares,
+                    est_price=config.costs.fill_price(Side.SELL, prices[hit.symbol]),
+                    reason=(
+                        f"risk:止损触发（浮亏 {hit.loss_pct:.2f}% ≥ "
+                        f"{limits.stop_loss:.2f}%）"
+                    ),
+                    status=DecisionStatus.APPROVED,
+                    origin="risk",
+                )
+                if decision.id in book:
+                    continue
+                book[decision.id] = decision
+                carries[hit.symbol] = decision
+                risk_exits.append(decision)
+                risk_events.append(
+                    _risk_event(
+                        account_id=account_id,
+                        day=day,
+                        symbol=hit.symbol,
+                        side=Side.SELL,
+                        kind="stop_loss",
+                        verdict="trigger",
+                        gate="stop_loss",
+                        decision_id=decision.id,
+                        origin="risk",
+                        metrics={
+                            "shares": hit.shares,
+                            "entry_price": hit.entry_price,
+                            "entry_fees": hit.entry_fees,
+                            "cost_basis": hit.cost_basis,
+                            "market_value": hit.market_value,
+                            "loss_pct": hit.loss_pct,
+                            "stop_loss": limits.stop_loss,
+                        },
+                        detail=(
+                            f"止损触发：浮亏 {hit.loss_pct:.2f}% ≥ {limits.stop_loss:.2f}%，"
+                            f"生成风控卖出 {hit.shares} 股（T+1 开盘）"
+                        ),
+                    )
+                )
+
+            last_state = risk_gates.risk_state(
+                as_of=day,
+                positions=account.positions,
+                prices=prices,
+                cash=account.cash,
+                peak=peak,
+                limits=limits,
+            )
+            if last_state.blocked_by_drawdown != drawdown_breached:
+                drawdown_breached = last_state.blocked_by_drawdown
+                drawdown_text = (
+                    f"{last_state.drawdown_pct:.2f}%"
+                    if last_state.drawdown_pct is not None
+                    else "无定义（权益 ≤ 0）"
+                )
+                if drawdown_breached:
+                    detail = (
+                        f"回撤 {drawdown_text} ≥ 上限 {limits.max_drawdown:.2f}%，暂停开新仓"
+                    )
+                else:
+                    detail = (
+                        f"回撤 {drawdown_text} < 上限 {limits.max_drawdown:.2f}%，恢复开新仓"
+                    )
+                risk_events.append(
+                    _risk_event(
+                        account_id=account_id,
+                        day=day,
+                        symbol=None,
+                        side=None,
+                        kind="drawdown_state",
+                        verdict="breach" if drawdown_breached else "clear",
+                        gate="drawdown",
+                        decision_id=None,
+                        metrics={
+                            "drawdown_pct": last_state.drawdown_pct,
+                            "peak_equity": last_state.peak_equity,
+                            "equity": last_state.equity,
+                            "max_drawdown": limits.max_drawdown,
+                        },
+                        detail=detail,
+                    )
+                )
+
+        # ④ 收盘后：事件推进 + 问策略（过去的日子以日志为准）
         for symbol in config.symbols:
             symbol_data = data.symbols[symbol]
             bar = symbol_data.bar_at(day)
@@ -173,13 +299,112 @@ def replay(
                 new_events=fresh,
             )
             for signal in strategy.on_bar(context):
+                would_be = decision_id(account_id, day, symbol, signal.side)
+                if would_be in book:
+                    continue
+                check: risk_gates.BuyCheck | None = None
+                if limits is not None and signal.side is Side.BUY:
+                    budget = min(account.cash, account.budget(symbol))
+                    est_price = config.costs.fill_price(Side.BUY, bar.close)
+                    requested = affordable_qty(config.costs, budget, est_price)
+                    if requested <= 0:
+                        continue  # 一手都买不起：沿用 M6 的「不生成注定被拒的单」
+                    price_now = account.valuation_price(symbol) or bar.close
+                    current_carry = carries.get(symbol)
+                    check = risk_gates.evaluate_buy(
+                        limits=limits,
+                        costs=config.costs,
+                        requested_qty=requested,
+                        budget=budget,
+                        est_price=est_price,
+                        equity=mark.equity,
+                        market_value=mark.market_value,
+                        symbol_value=account.position(symbol).shares * price_now,
+                        pending_notional=pending_notional,
+                        drawdown=(
+                            last_state.drawdown_pct if last_state is not None else None
+                        ),
+                        has_position=not account.position(symbol).is_flat,
+                        stop_loss_pending=(
+                            current_carry is not None and current_carry.side is Side.SELL
+                        ),
+                    )
+                    if check.blocked:
+                        risk_events.append(
+                            _risk_event(
+                                account_id=account_id,
+                                day=day,
+                                symbol=symbol,
+                                side=signal.side,
+                                kind="proposal",
+                                verdict="block",
+                                gate=check.gate,
+                                decision_id=would_be,
+                                metrics=check.metrics,
+                                detail=check.detail,
+                            )
+                        )
+                        continue
+
                 decision = _propose(
-                    config, account, symbol, day, bar, signal, account_id, data, auto
+                    config,
+                    account,
+                    symbol,
+                    day,
+                    bar,
+                    signal,
+                    account_id,
+                    data,
+                    auto,
+                    qty_cap=(
+                        check.qty
+                        if check is not None and check.verdict == "cap"
+                        else None
+                    ),
                 )
                 if decision is None or decision.id in book:
                     continue
                 book[decision.id] = decision
                 generated.append(decision)
+                if limits is not None:
+                    if signal.side is Side.BUY:
+                        risk_events.append(
+                            _risk_event(
+                                account_id=account_id,
+                                day=day,
+                                symbol=symbol,
+                                side=signal.side,
+                                kind="proposal",
+                                verdict=check.verdict if check is not None else "pass",
+                                gate=check.gate if check is not None else None,
+                                decision_id=decision.id,
+                                metrics=check.metrics if check is not None else {},
+                                detail=check.detail if check is not None else "",
+                            )
+                        )
+                        if decision.status in (
+                            DecisionStatus.PENDING,
+                            DecisionStatus.APPROVED,
+                        ):
+                            pending_notional += decision.est_qty * decision.est_price
+                    else:
+                        risk_events.append(
+                            _risk_event(
+                                account_id=account_id,
+                                day=day,
+                                symbol=symbol,
+                                side=signal.side,
+                                kind="exit",
+                                verdict="pass",
+                                gate=None,
+                                decision_id=decision.id,
+                                metrics={
+                                    "est_qty": decision.est_qty,
+                                    "est_price": decision.est_price,
+                                },
+                                detail="卖出放行（退出不受风控拦截）",
+                            )
+                        )
                 if decision.status is DecisionStatus.APPROVED:
                     carries[symbol] = decision  # 一键全批：下一交易日开盘成交
 
@@ -190,17 +415,30 @@ def replay(
                 expired=tuple(expired),
                 unfilled=tuple(unfilled),
                 generated=tuple(generated),
+                risk_exits=tuple(risk_exits),
             )
         )
 
     state = account.snapshot()
     ordered = tuple(sorted(book.values(), key=lambda d: (d.trade_date, d.symbol, d.side.value)))
+    events = tuple(
+        sorted(
+            risk_events,
+            key=lambda event: (
+                event.trade_date,
+                event.symbol or "",
+                event.kind,
+                event.gate or "",
+            ),
+        )
+    )
     log.info(
-        "模拟盘重放：%s 标的=%d 交易日=%d 决策=%d 期末净值=%.2f",
+        "模拟盘重放：%s 标的=%d 交易日=%d 决策=%d 风控事件=%d 期末净值=%.2f",
         config.strategy,
         len(config.symbols),
         len(days),
         len(ordered),
+        len(events),
         equity_curve[-1].equity,
     )
     return ReplayResult(
@@ -209,6 +447,8 @@ def replay(
         equity_curve=tuple(equity_curve),
         days=tuple(outcomes),
         rules={symbol: dict(d.rule.to_dict()) for symbol, d in data.symbols.items()},
+        risk_events=events,
+        risk_state=last_state,
     )
 
 
@@ -222,17 +462,21 @@ def _propose(
     account_id: str,
     data: MarketData,
     auto: DecisionStatus | None,
+    qty_cap: int | None = None,
 ) -> Decision | None:
     """把一个 `Signal` 变成一张决策单（还**没有**成交——那要等下一交易日开盘）。
 
     `est_qty` 按**当日收盘价**预估（买用含滑点的价，与成交口径同源），并如实标注它是预估：
     真正的股数在次日开盘价上按同一个 `affordable_qty()` 重算。
+    `qty_cap` 是 E5 风控缩量后的上限（已按整手对齐）：只可能把 `est_qty` 压小，不会再放大。
     """
     costs = config.costs
     if signal.side is Side.BUY:
         est_price = costs.fill_price(Side.BUY, bar.close)
         budget = min(account.cash, account.budget(symbol))
         est_qty = affordable_qty(costs, budget, est_price)
+        if qty_cap is not None:
+            est_qty = min(est_qty, qty_cap)
     else:
         est_price = costs.fill_price(Side.SELL, bar.close)
         est_qty = account.position(symbol).shares
@@ -287,6 +531,7 @@ def _resolve_carry(
     account: PaperAccount,
     broker: Broker,
     deferred: dict[str, int],
+    qty_cap: int | None = None,
 ) -> Decision | None:
     """今天这根 bar 上，这张已批准的单能不能成交？返回 None 表示还成交不了（继续挂着）。"""
     symbol = carry.symbol
@@ -320,7 +565,7 @@ def _resolve_carry(
         )
 
     signal = Signal(carry.side, reason=carry.reason, event_id=carry.event_id)
-    fill = broker.execute(signal, bar, account.view(symbol))
+    fill = broker.execute(signal, bar, account.view(symbol), qty_cap=qty_cap)
     if fill is None:
         # broker 返 None 只有三种来路：已持仓 / 空仓卖出 / 资金不足一手。
         # 只有最后一种算 A 股规则的 `REJECT_LOT`（同引擎的判据）。
@@ -337,6 +582,37 @@ def _resolve_carry(
 
     account.settle(symbol, fill, index)
     return carry.replace(status=DecisionStatus.FILLED, fill=fill)
+
+
+def _risk_event(
+    *,
+    account_id: str,
+    day: date,
+    symbol: str | None,
+    side: Side | None,
+    kind: str,
+    verdict: str,
+    gate: str | None,
+    decision_id: str | None,
+    metrics: Mapping[str, float | int | None],
+    detail: str,
+    origin: str = "strategy",
+) -> RiskEvent:
+    """造一行审计。id 由 `(账户, 日期, 标的, 方向, 类型, 闸门)` 决定——重放幂等落库。"""
+    return RiskEvent(
+        id=risk_event_id(account_id, day, symbol, side, kind, gate),
+        account_id=account_id,
+        trade_date=day,
+        kind=kind,
+        verdict=verdict,
+        gate=gate,
+        decision_id=decision_id,
+        symbol=symbol,
+        side=side,
+        origin=origin,
+        metrics=dict(metrics),
+        detail=detail,
+    )
 
 
 __all__ = ["replay"]

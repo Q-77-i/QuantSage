@@ -129,6 +129,8 @@ class FakeDatabase:
         self.paper_positions_rows: dict[str, list[dict[str, Any]]] = {}
         self.paper_decision_rows: dict[str, dict[str, Any]] = {}
         self.paper_equity_rows: dict[str, list[dict[str, Any]]] = {}
+        # E5 风控审计：id → 行（`DO NOTHING` 语义 = 已存在的 id 不覆盖）
+        self.paper_audit_rows: dict[str, dict[str, Any]] = {}
         # 绩效研报（M7）：report_id → 行；顺序另记，列表倒序给「最新在前」
         self.reports: dict[str, dict[str, Any]] = {}
         self._report_order: list[str] = []
@@ -422,9 +424,9 @@ class FakeDatabase:
 
     async def create_paper_account(
         self, *, account_id: str, user_id: int, name: str, config: dict[str, Any],
-        cash: float, as_of: date, rules: dict[str, Any],
+        cash: float, as_of: date, rules: dict[str, Any], risk_state: dict[str, Any],
         positions: list[dict[str, Any]], decisions: list[dict[str, Any]],
-        equity: list[dict[str, Any]],
+        equity: list[dict[str, Any]], risk_events: list[dict[str, Any]],
     ) -> dict[str, Any]:
         row = {
             "id": account_id,
@@ -436,6 +438,7 @@ class FakeDatabase:
             "realized_pnl": 0.0,
             "as_of": as_of,
             "rules": rules,
+            "risk_state": risk_state,
             "created_at": datetime.now(UTC),
             "updated_at": datetime.now(UTC),
         }
@@ -444,13 +447,15 @@ class FakeDatabase:
         self.paper_positions_rows[account_id] = list(positions)
         self.paper_decision_rows.update({d["id"]: d for d in decisions})
         self.paper_equity_rows[account_id] = list(equity)
+        self._write_audit(risk_events)
         return row
 
     async def paper_advance(
         self, *, account_id: str, user_id: int, expected_as_of: date, cash: float,
         realized_pnl: float, as_of: date, status: str, rules: dict[str, Any],
-        positions: list[dict[str, Any]], decisions: list[dict[str, Any]],
-        equity: list[dict[str, Any]],
+        risk_state: dict[str, Any], positions: list[dict[str, Any]],
+        decisions: list[dict[str, Any]], equity: list[dict[str, Any]],
+        risk_events: list[dict[str, Any]],
     ) -> bool:
         row = self.paper_accounts.get(account_id)
         if row is None or row["user_id"] != user_id or row["as_of"] != expected_as_of:
@@ -462,6 +467,7 @@ class FakeDatabase:
                 "as_of": as_of,
                 "status": status,
                 "rules": rules,
+                "risk_state": risk_state,
                 "updated_at": datetime.now(UTC),
             }
         )
@@ -470,7 +476,13 @@ class FakeDatabase:
         merged = {e["trade_date"]: e for e in self.paper_equity_rows.get(account_id, [])}
         merged.update({e["trade_date"]: e for e in equity})  # 已写过的日子不改（不可变事实）
         self.paper_equity_rows[account_id] = [merged[d] for d in sorted(merged)]
+        self._write_audit(risk_events)
         return True
+
+    def _write_audit(self, rows: list[dict[str, Any]]) -> None:
+        """审计行 `ON CONFLICT DO NOTHING`：已存在的 id 不覆盖（不可变事实）。"""
+        for row in rows:
+            self.paper_audit_rows.setdefault(row["id"], {**row, "created_at": datetime.now(UTC)})
 
     async def list_paper_accounts(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -527,6 +539,14 @@ class FakeDatabase:
 
     async def paper_equity(self, account_id: str) -> list[dict[str, Any]]:
         return list(self.paper_equity_rows.get(account_id, []))
+
+    async def paper_audit(self, account_id: str, limit: int) -> list[dict[str, Any]]:
+        rows = [r for r in self.paper_audit_rows.values() if r["account_id"] == account_id]
+        # 与真库 `ORDER BY trade_date DESC, created_at DESC, id` 同义：先按 id 升序，
+        # 再做稳定倒序（两次排序比给每个键取反可读）。
+        rows.sort(key=lambda r: r["id"])
+        rows.sort(key=lambda r: (r["trade_date"], r.get("created_at")), reverse=True)
+        return rows[:limit]
 
     async def paper_decision(self, user_id: int, decision_id: str) -> dict[str, Any] | None:
         row = self.paper_decision_rows.get(decision_id)

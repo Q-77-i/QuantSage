@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.12）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.32 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；§6 / §9 其余节待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
+> 版本 v2.34 ｜ 2026-10-17 ｜ 状态：**规划已评估拍板**（四处裁剪 + E6 砍，PRD v0.10 已同步）；**E3 规格定稿**（§4，2026-10-16——三处口径订正：快照改「清单归档 + 内容寻址重物化」/ Redis 收益方向改「跨请求」并加容量与淘汰约束 / 「结构化日志」落成 `_meta/health_runs.jsonl`；范围 = 体检定时化 + 告警（含新增 X7 源侧停滞）+ 看板（`/admin` 内）+ 快照与回滚 + Redis 缓存（代际键 + L1/L2 分层 + 可降级）；三段切 E3a / E3b / E3c，**E3a 为可停止损位**）；**E3a 已交付**（X7 源侧停滞告警 · 体检定时化与落档 · 数据看板两端点 + `/admin` 内一块 · G2 销账与目录卫生，2026-10-16，§11 v2.27）；**E3b 已交付**（快照清单归档 + 按 sha 重物化回滚 · 两个 admin 端点 · 真数据双通道还原 13.5s，2026-10-17，§11 v2.28）；**E3c 已交付、E3 全节交付完毕**（数据层热点缓存 L1+L2 + 代际键 + 可降级，2026-10-17，§11 v2.31）；**E2 规格定稿、E2a 已交付**（§3，2026-10-16——三处口径订正 + 两个配额维度 + RBAC 简版含 ETL 门 + 隔离盘点，PRD v0.12 已同步；**E2 全节交付完毕**（E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 隔离矩阵收口）；**E1 全节交付完毕**——E1a（任务队列）/ E1c（接缝）/ E1b（网格批量迁入队列）均已落地；**E4 全节交付完毕**——E4a（统一 policy + LLM 侧）/ E4b（L0 限流 / 数据源熔断 / L7 幂等键）/ E4c（chat 护栏 + 告知面 + 演练脚本）（§5，2026-10-14/15）；**E7 全节交付完毕**（§7，2026-10-15/16）——E7a CI 骨架 + ruff + 供应链审计、E7b 覆盖率门槛（`fail_under = 88`）、E7c Langfuse 四字段 + 两条路径补挂 handler、E7d 实验可复现（数据指纹，同参重跑同指纹真机验证）；**E8 全节交付完毕**——E8a（响应头 / 会话续期与撤销 / 清单核验 / 一次性审计）/ E8b（**对外 MCP Server**）/ E8c（**注入边界标记**）（§8，2026-10-15）；**E5a 已交付**（§6，2026-10-17——后端核心 + 审计 + API 响应面；E5b 前端与取证待做）；§9 E9 待滚动。正文按功能 ID 滚动填写（同 P2 SPEC 的滚动方式）；每个功能的规格、实测读数与拍板记录随交付追加到 §11 变更记录。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -17,7 +17,8 @@
 | [§8](#8-e8-安全--对外-mcp) | E8 安全 + 对外 MCP（**全节已交付**：E8a 服务侧加固 · E8b 对外 MCP Server · E8c 注入边界标记） |
 | [§3](#3-e2-多用户治理) | E2 多用户治理（**全节已交付**：E2a 配额底座 · E2b RBAC + admin 视图 · E2c 分页搜索 + 集中越权矩阵） |
 | [§4](#4-e3-数据工程) | E3 数据工程（**全节已交付**：**E3a** 体检定时化 + X7 源侧停滞告警 + 看板 · **E3b** 快照清单归档 + 按 sha 重物化回滚 · **E3c** 数据层热点缓存（L1 进程内 + L2 Redis，代际键，可降级）） |
-| §6 / §9 其余 | E5 / E9 规格（正文待滚动填写；E6 已砍不设节） |
+| [§6](#6-e5-风控) | E5 风控（**E5a 已交付**：后端核心 + 审计 + API 响应面 · **E5b 待做**：前端 + 取证） |
+| §9 | E9 企业级文档（正文待滚动填写；E6 已砍不设节） |
 | [§10](#10-测试策略) | 测试策略（待随各功能滚动补充） |
 | [§11](#11-变更记录) | 变更记录 |
 
@@ -751,6 +752,174 @@ L6：深路径的 `Budget` 并进 policy 的「运行级」半边（**定义不�
 - **降级链不保证质量等价**：flash 顶上的段落如实标注，报告读者自行权衡。
 - **幂等键不覆盖 research runs**（§5.5），该端点的重复提交仍会各跑一遍。
 
+## 6. E5 风控
+
+> 规格底稿：`docs/private/Pn-n/P3-En/P3-E5-规划评估.md`（2026-10-17 现状核对 + 真实行情实测）。
+> **拍板（2026-10-17）**：四闸门（总仓位 / 单标的集中度 / 止损 / 回撤）；止损**自动批准、不可驳回**；回撤**只禁新开仓、不强平**；仓位/集中度**先缩量、不足一手才拦截**；切 **E5a**（后端核心 + 审计 + 测试）→ **E5b**（API + 前端 + 取证），E5a 为可停止损位。风控配置冻结在 `PaperConfig`，LLM 不可改写。
+> **默认口径**：API 缺省 `risk=null`（关闭，旧会话零变化）；前端表单默认「标准」档 = 止损 -6% / 回撤 -10% / 总仓位 95% / 单标的 30%；严格档 = -4% / -8% / 80% / 20%。
+> **E5a 已交付**（2026-10-17，见 §11 v2.34）——后端核心 + 审计 + API 响应面；E5b 前端与取证待做。
+
+### 6.0 与 PRD 假设的核对订正
+
+| PRD 条目 | 2026-10-17 代码核对 | 本 SPEC 的处理 |
+|---|---|---|
+| 仓位限制、止损、集中度、回撤——挂 M6 持仓与下单路径 | M6 的买入数量由 `affordable_qty(min(现金, 等额配额))` 决定，**策略不参与数量**；已持仓时买入被 Broker 拒绝（不加仓）；卖出全仓 | 仓位/集中度只能「缩量或拦截」；采用**先缩量、不足一手才拦截**。已持仓买入直接拦截 |
+| 止损 | M6 只有策略卖出；没有按浮亏触发的退出 | **风控退出生来 `approved`**（`origin=risk`），T+1 开盘全仓卖出；这是「未审批不成交」的唯一窄例外 |
+| 回撤控制 | 只有净值曲线，没有峰值/回撤状态；账户无 `peak` 字段 | replay 内跟踪峰值，峰值含初始资金；回撤超限只禁新开仓，不强平 |
+| 越限策略被闸门拦截；拦截与放行均有决策日志可审计 | `paper_decisions` 是决策流水，但没有风控审计；E7 的决策审计已后延且 PRD 写死「与 E5 共用一张表」 | 新增 `decision_audit`：每次提案/退出/状态切换一行；E7 后续复用 |
+| 风控关闭的既有会话 | 旧 `config` 没有 `risk` 键；头号断言要求全批 == 回测 | 缺键 = 关闭，旧会话零变化；**风控开启的会话不再承诺与回测逐笔相等**，另立断言 |
+
+**关键实测（决定默认档）**：20 标的 × 250 交易日（2025-09-22 → 2026-10-09），止损按持仓期收盘价相对成本判定——-10% 仅触发 ma_cross **0.7%** / event_driven **2.8%**，-20% 回撤两种策略**从未触及**；-6% 触发 10.9% / 8.5%，-3% 触发 40.1% / 33.8%。20 标的等额组合最大回撤：ma_cross **10.69%**、event_driven **3.02%**。故标准档取 -6% / -10%，严格档 -4% / -8%。
+
+### 6.1 四个闸门
+
+统一用百分比（0–100）配置，内部换算成小数；`E` = 当日收盘权益，`MV` = 持仓市值，`P_i` = 单标的市值，`N` = 拟买入名义金额。
+
+| 闸门 | 判据 | 处置 | 说明 |
+|---|---|---|---|
+| 总仓位限制 | `(MV + N + 当日待成交买入) / E > max_gross_exposure` | 缩量到不越线；不足一手 → 拦截 | 含当日已生成的待成交买入，防止多笔单独合规、合起来越线 |
+| 单标的集中度 | `(P_i + N) / E > max_position` | 缩量到不越线；不足一手 → 拦截 | 只管新开仓；已持仓不加仓 |
+| 止损 | `(成本 - 市值) / 成本 ≥ stop_loss`，成本 = `entry_price × shares + entry_fees` | 生成风控卖出（`approved`，`origin=risk`），T+1 开盘全仓卖出 | 收盘价判定；跳空低开按实际开盘价成交 |
+| 回撤控制 | `(峰值 - E) / 峰值 ≥ max_drawdown`，峰值含 `initial_cash` | 禁新开仓；恢复到阈值下自动解禁 | 不强平；止损负责个股退出 |
+
+补充口径：
+- **缩量**：`final_qty = affordable_qty(costs, min(budget, risk_budget), est_price)`，其中
+  `risk_budget = min(E × max_position − P_i, E × max_gross_exposure − MV − pending)`；
+  `final_qty < LOT_SIZE` → 拦截，不生成决策。
+- **成交上限（实施期补记）**：风控开启时，决策日的 `est_qty` 是次日成交的**股数硬上限**
+  （`Broker.execute(qty_cap=...)`）：跳空低开不会多买（多买会让实际仓位超过决策日的风控上限），
+  跳空高开按实际可负担股数成交（可能买不满）。风控关闭时不传 `qty_cap`，M6 的成交口径原样。
+- **风控退出优先于同日策略卖出**：止损检查在策略信号之前；同日同标的只保留风控那张
+  （同一 `decision_id`）。
+- **买入时已持仓 / 有止损挂单**：硬拦截（`gate=position_open` / `stop_loss_pending`）。
+- **阈值是硬顶不是目标**：单标的 30% 在 5 只以上池子里通常不触发；总仓位 95% 是安全网。
+- **权益 ≤ 0**：比率返回 `null`，界面显示「—」，不编 0。
+
+### 6.2 挂载点与顺序（replay 日循环）
+
+```
+① 开盘：成交昨日 approved（含风控退出）→ 过期 pending
+② 收盘：mark → 更新峰值 / 回撤
+③ 风控（收盘后、策略之前）：
+   a. 止损：逐持仓判定 → 生成 approved 风控卖出（进 carries + book）
+   b. 回撤：判定状态 → 写一次状态切换审计（仅变化时）
+④ 策略信号（现有循环）：
+   BUY：position_open / stop_loss_pending → block
+        总仓位 / 集中度 → 缩量或 block
+        回撤超限 → block
+   SELL：pass
+   → 生成 Decision（带 origin）→ 审计一行
+```
+
+**纯函数边界**：风控判定只读 `(config.risk, 账户状态, 当日收盘价, 当日已生成买入, 待成交买入)`，不写状态、不调模型、不查库。审计事件是 `ReplayResult` 的输出；风控卖出决策进决策日志，是下一次重放的输入。
+
+**审计不是决策日志的纯函数**（实施期补记）：被拦截的提案不在 `paper_decisions` 里，已落日志的信号日在重放时被 `logged` 跳过——所以「从决策日志重放」只能重建账户与 `as_of` 风险快照，不能重建全部提案审计。`decision_audit` 是**生成期事实的权威记录**（`ON CONFLICT DO NOTHING` 只增不改）；重放结果里的 `risk_events` 是**本次重放**产生的那些（止损/回撤状态仍会重算），两者不要求集合相等。
+
+`PaperAccount` 补只读出口 `last_close(symbol)`（或 `valuation_prices()`），让风控状态与 `mark()` 用同一批收盘价——停牌日沿用最近已知价的口径不能两处各写一份。
+
+### 6.3 数据模型与持久化
+
+**`RiskLimits`（进 `PaperConfig`，冻结）**
+
+```python
+risk: RiskLimits | None = None
+RiskLimits(max_gross_exposure, max_position, stop_loss, max_drawdown)  # 0–100
+```
+
+- `config_to_payload` / `config_from_payload` 增 `risk`；旧 config 缺键 → `None`。
+- 创建后不可改；改风控 = 新建会话。LLM 没有任何工具能写这个字段。
+- `PaperAccountRequest.risk` 四个值必须同时给，范围 `0 < x ≤ 100`；缺省 `null`。
+
+**`Decision.origin`**
+
+- `strategy`（默认）/ `risk`；`paper_decisions` 幂等加列
+  `origin TEXT NOT NULL DEFAULT 'strategy'`。
+- 六态与 `decision_id` 不变；风控卖出与同日策略卖出同 id，天然去重。
+
+**`decision_audit`（审计表，E7 复用）**
+
+```sql
+CREATE TABLE IF NOT EXISTS decision_audit (
+    id           UUID PRIMARY KEY,
+    account_id   UUID NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+    decision_id  UUID,
+    trade_date   DATE NOT NULL,
+    symbol       TEXT,
+    side         TEXT,
+    origin       TEXT NOT NULL,
+    kind         TEXT NOT NULL,   -- proposal | exit | stop_loss | drawdown_state
+    verdict      TEXT NOT NULL,   -- pass | cap | block | trigger | breach | clear
+    gate         TEXT,            -- gross_exposure | concentration | stop_loss | drawdown | position_open | stop_loss_pending
+    metrics      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    detail       TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+```
+
+- `id = uuid5(NAMESPACE_AUDIT, account|date|symbol|side|kind|gate)`；`ON CONFLICT DO NOTHING`
+  （审计行不可变，与净值表同一条纪律）。
+- 索引 `(account_id, trade_date DESC)`；随 `paper_advance` 同一事务写。
+- 证据：放行/缩量/拦截/触发各一行；blocked 提案的 `decision_id` 是 would-be id，无外键。
+
+**`risk_state`（派生快照）**
+
+- `paper_accounts` 幂等加列 `risk_state JSONB NOT NULL DEFAULT '{}'::jsonb`：
+  `{peak_equity, equity, drawdown_pct, gross_exposure_pct, max_position_pct, blocked_by_drawdown, as_of}`。
+- 由 replay 在 `as_of` 收盘算出；`create` / `step` / `run` 落库；详情端点直接读。
+- 不另建历史表：历史可从净值曲线 + 审计行重建。
+
+### 6.4 与 M6 语义的交互
+
+| 场景 | 处理 |
+|---|---|
+| 风控关闭（旧会话 / 新建时不填） | 零变化；`test_all_approved_is_the_backtest` 原样通过 |
+| 风控开启 + 全批 | 缩量/拦截会改变成交，不再承诺与回测逐笔相等；另立「风控关闭才平价」断言 |
+| `run(approve="none")` | 策略决策照旧全驳；风控退出仍执行 |
+| 用户策略沙箱 | `config` 带 `risk`、`ReplayResult` 带 `risk_events` / `risk_state`；零 IPC 改造 |
+| 推进 / 一键跑 | 审计行随 `paper_advance` 同一事务写；过去日子不重写 |
+| 决策状态机 | 六态不变；风控退出是 `approved`，界面加「风控自动」标识，不可驳回 |
+| 数据缺失 | 缺收盘价的持仓沿用最近已知收盘价（与 `mark` 同口径）；权益 ≤ 0 时比率 `null` |
+
+### 6.5 API 与前端
+
+**API**
+- `POST /paper/accounts` 增可选 `risk`（四值，缺省 `null`）；创建期按缩量后的预算校验每只标的
+  买得起一手，买不起 → 422 指出是哪只。
+- `GET /paper/accounts/{id}` 增 `risk_state` 与 `risk_events`（最近 200 条，新在前）。
+- `POST /paper/accounts/{id}/step` 的 `this_step` 增 `risk_events`（当日）。
+- 不新增「改风控」端点（配置冻结）。
+
+**前端**
+- 建会话表单：风控档位（关闭 / 标准 / 严格 / 自定义）+ 四个百分比输入；档位只做预设填充。
+- 账户卡下方 / 决策闸门之前：风控状态条（总仓位、单标的、回撤、是否禁新开仓）。
+- 新增「风控日志」区块：日期 / 标的 / 闸门 / 处置 / 读数 vs 上限 / 说明；放行、缩量、拦截、
+  触发都显示。
+- 决策卡与流水：`origin=risk` 显示「风控」徽章；`lib/paper.ts` 的 `REASON_PREFIXES` 加
+  `risk: "风控"`。
+- `run` 的「全部驳回」提示补「风控止损仍会执行」。
+- 动手前出 design brief。
+
+### 6.6 已知边界（如实）
+
+- 只有日线收盘价，**不模拟盘中触发**；跳空低开按实际开盘价成交，止损可能成交在更差的价位。
+- 不做移动止损、分批止盈、加仓、部分成交（M6 既有边界）。
+- 不做回撤强平、风控指标历史曲线、多会话汇总、审计分页端点（可延）。
+- 不做风控配置的运行期修改；不做 LLM 读写风控（红线）。
+- 审计表不是防篡改哈希链（M6 已明确不做）。
+- 风控开启的会话不与回测逐笔平价——设计取舍，界面与文档都要说。
+
+### 6.7 验收口径
+
+- **PRD 验收**：「越限策略被闸门拦截」= 回撤超限 / 总仓位无空间 / 止损挂单中三类硬拦截各一条；
+  「拦截与放行均有决策日志可审计」= `decision_audit` 的 `block` 与 `pass` 行，真机取证打印
+  同日放行 / 拦截 / 触发三类行（`logs/e5/risk-smoke.md`）。
+- **回归红线**：风控关闭时，`test_all_approved_is_the_backtest` 原样通过；风控开启另立断言。
+- **测试分层**：离线纯函数 / 重放 / API；集成真库（幂等建表、事务、级联、重放对账）；
+  前端纯函数 + typecheck/lint/vitest；真机取证 + 界面走查。
+- **E5a 已交付**（2026-10-17）：后端核心 + 审计 + API 响应面完成；E5b 只做前端与取证。
+- **E5a 验证**：离线 **1690 passed**（+34）/ `ruff` 全绿；E5 集成 **3 例**（真库 DDL、
+  风控审计与快照、空决策 id 审计）+ M6 集成 **3 例**回归；覆盖率门槛随全量离线跑。
+
 ## 7. E7 工程化
 
 > 规格底稿：`docs/private/Pn-n/P3-En/P3-E7-规划评估.md`（2026-10-15 现状核对与 16 项实测）。
@@ -1277,10 +1446,33 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。**E8 不做容器
 
 
 
+### E5（E5a 已交付；E5b 前端与取证待做）
+
+**E5a 已交付（2026-10-17）**：纯函数 **19** 例 · 重放 **9** 例 · API **6** 例 · 集成 **3** 例
+（真库 DDL / 审计与快照 / 空决策 id）+ M6 集成 **3** 例回归；离线 **1690 passed**、
+覆盖率 **90.38%**（门槛 88）、`ruff` 全绿。
+
+- **离线纯函数（`tests/test_paper_risk.py`）**：四闸门公式 / 缩量取整（缩到不足一手即拦）/
+  止损成本口径（含 `entry_fees`）/ 回撤峰值（含初始资金）/ 权益 ≤ 0 / 无持仓 / 确定性。
+- **离线重放（`tests/test_paper_replay.py` 增补或新文件）**：风控关闭平价（既有头号断言原样）/
+  风控开启缩量或拦截 / 止损卖出 T+1 成交 / 回撤禁买与恢复 / 同日策略卖出被风控替代 /
+  多次重放逐字段相等。
+- **离线 API（`tests/test_paper_api.py` 增补）**：创建校验 422（风控上限下买不起一手，指出是哪只）/
+  详情 `risk_state` 与 `risk_events` / step 当日事件 / 旧 config 无 `risk` 兼容。
+- **集成（`tests/integration/test_paper_e5.py`）**：`decision_audit` 与 `origin` 列幂等建表 /
+  `paper_advance` 同事务写审计 / 级联删除 / 真数据重放对账。
+- **前端（`frontend/lib/paper.test.ts` 增补）**：风控状态视图 / 请求体构造 / 风控日志文案与语气 /
+  `origin=risk` 徽章。
+- **真机（`scripts/run_paper_risk.py` + `frontend/scripts/capture-e5.mjs`）**：真实行情上跑出
+  「缩量 / 拦截 / 止损成交 / 回撤解禁」四类事件（`logs/e5/risk-smoke.md`）；界面走查断言
+  风控状态数字、日志行、风控徽章、风控单不可驳回。
+
 ## 11. 变更记录
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.34 | 2026-10-17 | **§6（E5）E5a 交付——风控后端核心 + 审计 + API 响应面**（E5b 前端与取证未做）。**① 落地物**：新模块 `app/paper/risk.py`（四闸门纯函数 + `BuyCheck` / `StopLossHit` / `RiskState`）；`paper.types` 增 `RiskLimits` / `RiskEvent` / `RiskState` / `Decision.origin` / `PaperConfig.risk` / `DayOutcome.risk_exits` / `ReplayResult.risk_events\|risk_state`；`replay` 在收盘后、策略前跑止损 → 回撤 → 逐提案闸门；`store` 增风控信封与 `origin`；`account` 增 `valuation_price()`（风控与 `mark` 同一批价）；`broker.execute(qty_cap=...)`；`core/db.py` 增 `paper_accounts.risk_state` / `paper_decisions.origin` / `decision_audit` 表与 `paper_audit`；`api/paper.py` 增 `risk` 创建参数、`risk_state` / `risk_events` 响应与 step 当日事件。**② 两条实施期发现**：**(a) 缩量必须在成交时仍是硬上限**——M6 的成交股数由 `affordable_qty` 在次日开盘重算，只改提案的 `est_qty` 会让跳空低开把仓位买回上限以上 ⇒ `Broker.execute(qty_cap=...)`，风控开启时 `est_qty` 是股数硬上限（跳空高开按可负担股数成交，可能买不满）；风控关闭不传，M6 口径原样。**(b) 审计不是决策日志的纯函数**——被拦截的提案不在 `paper_decisions` 里，已落日志的信号日在重放时被 `logged` 跳过 ⇒ 从决策日志重放只能重建账户与 `as_of` 风险快照，不能重建全部提案审计；`decision_audit` 是生成期事实的权威记录（`ON CONFLICT DO NOTHING`），重放结果的 `risk_events` 只代表本次重放（止损/回撤仍重算）。**③ 默认口径**：API 缺省 `risk=null`（旧会话零变化）；前端 E5b 默认「标准」档（-6% / -10% / 95% / 30%），严格档（-4% / -8% / 80% / 20%）。**④ 验收**：离线 **1690 passed**（+34：纯函数 19 · 重放 9 · API 6）/ 覆盖率 **90.38%**（门槛 88）/ `ruff` 全绿；E5 集成 **3 例**（真库 DDL 幂等 · 风控审计与快照 · 空决策 id 审计）+ M6 集成 **3 例**回归。**E5b 待做**：前端表单 / 风控面板 / 日志、`lib/paper.ts` 纯函数、真机取证与界面走查。**用户已拍板并开工。** |
+| v2.33 | 2026-10-17 | **§6（E5 风控）规格定稿（待实施）**——底稿 `docs/private/Pn-n/P3-En/P3-E5-规划评估.md`（M6 代码逐行核对 + **20 标的 × 250 交易日真实行情实测**）。**三处口径订正**：① **数量不由策略决定**（`affordable_qty(min(现金, 等额配额))`，`Signal` 无数量）⇒ 仓位/集中度**先缩量、缩到不足一手才拦截**，否则等额配额下要么不触发、要么把标的永久锁死；② **止损必须自动执行**（否则用户驳回即失效）⇒ 风控退出生来 `approved`（`origin=risk`），是「未审批不成交」的唯一窄例外，`run(approve="none")` 也执行；③ **回撤只禁新开仓、不强平**（止损管个股、回撤管总闸）。**实测决定默认档**：-10% 止损仅触发 ma_cross **0.7%** / event_driven **2.8%**，-20% 回撤 250 天**从未触及**；-6% 触发 10.9% / 8.5%；20 标的等额组合最大回撤 ma_cross **10.69%** / event_driven **3.02%** ⇒ 标准档 -6% / -10% / 95% / 30%，严格档 -4% / -8% / 80% / 20%。**设计**：四闸门（总仓位 / 单标的 / 止损 / 回撤）+ `decision_audit` 审计表（E7 复用，`ON CONFLICT DO NOTHING`，随 `paper_advance` 同事务）+ `paper_decisions.origin` + `paper_accounts.risk_state`；风控配置冻结在 `PaperConfig`，旧会话缺 `risk` ⇒ 关闭、平价断言原样；风控开启不再承诺与回测逐笔相等。**切分**：E5a 后端核心 + 审计 + 测试 → E5b API + 前端 + 取证，E5a 为可停止损位。**用户已拍板，待写代码。** |
 | v2.32 | 2026-10-17 | **外部件升级：小石 CLI `2026.10.3.1` → `2026.10.6.2`（用户授权），并修掉它带来的一个静默换轨风险**。**升级本身**：`update apply --version 2026.10.6.2 --approve 2026.10.6.2`（两段式确认；可 `rollback`，旧版保留在 `managed/releases/`）；回执 `key_read_or_modified: false`（没碰密钥）、`mcp_restart_required: true`。**⚠ 升级的连带风险（本轮最有价值的一条）**：**新版把 `download --quality` 的默认值改了**——`{complete,available}` → **`{auto,complete,available}`** 且 `auto` 成默认，新帮助写「**事件默认最新可用**，其他数据默认完整快照」。而我们的两处下载命令（`etl/archive.py` 按日归档、`data/bars.py` 年度整片）**都只传 `--dataset` 不传 `--quality`** ⇒ 全靠默认值。**不做处理，下一轮 ETL 会把事件语料静默换成 `available`（partial）轨**——那条轨有缺口、平台明写 `fill_or_forward_fill_allowed=false`，与本项目「宁慢不脏、不喂回测」的口径直接冲突，而且**日志里一个错都不会有**。**修法**：两处**显式传 `--quality complete`**（并在代码里写明「默认值会随 CLI 版本漂移」）。**实证**（新旧二进制并存，同一条命令各下一个已有日子到临时目录）：旧版 `receipt.quality_track = complete`、**新版 `= available`**；补上显式传参后新版回到 `complete`。**升后验行为**：真实日增量一轮 `7 天 → 物化 0、跳过 7、失败 0`，本地回执与行情清单的 `quality_track` 仍是 `complete`；`scripts/verify_xiaoshi_mcp.py` 用新 MCP 握手 **pass**；后端已重启吃到新二进制（「小石 MCP 工具已加载 4 个」）。**方法论（进踩坑记录）**：新版**根本没随包发说明**（`pkg/` 那份 README 只写到已装的版本、`update check` 只报版本号）⇒ **升级外部件后验证的第一步不是跑测试，是 diff 命令面**——`diff <(old --help) <(new --help)` 比任何 changelog 都快，这次唯一的差异就是那个要命的默认值。 |
 | v2.31 | 2026-10-17 | **§4（E3）E3c 交付——数据层热点缓存，E3 全节交付完毕**。**① 规格内两句话打架，开工前拍板保住哪条**：§4.6 初稿写「异步用 `redis.asyncio`」，与 §10 的纪律「缓存要加在 `duckdb_client` **内部**」冲突——那边全是**同步函数**（调用方靠 `asyncio.to_thread` 卸载），同步里用异步客户端只有 `asyncio.run()` 一条路且调用方已在事件循环时直接 `RuntimeError`。**保 §10 那条**（它管正确性：一处实现，28 个调用点不会各做一半），**客户端取同步 `redis.Redis`**（§4.6 已订正并写明理由）。**② 实现**（新模块 `app/data/cache.py`）：**代际键**（`gen` = 两份 `_meta` 清单摘要，**mtime 门** 0.5ms → 约 0.05ms；**失效 = 换键**，不靠「ETL 之后记得清缓存」）；**L1 进程内**（不看 `CACHE_ENABLED`——它没有外部依赖、收益更大）+ **L2 Redis**（`redis==7.1.0` 精确 pin）；四个查询函数（`bars` / `latest_closes` / `cross_section` / `trade_dates`）接在 `duckdb_client` 内部；**可降级**——失败即开路（`reliability` 新增 `redis-cache` 依赖，`threshold=1`、冷却 30s）、0.2s 短超时、缓存层任何异常都不让请求失败。**compose 前提**：业务 redis 加 `--maxmemory 256mb --maxmemory-policy allkeys-lru`（原 `maxmemory=0 + noeviction` ⇒ 挂上缓存就是一条涨到 OOM 的曲线），已重建并实测生效（`allkeys-lru` / 268435456 / DBSIZE 0）；`langfuse-redis` 保持 noeviction 不动。**③ 两处实施期发现（都改了实现）**：**(a) 代际键必须带目录**——第一版只按 `(mtime, size)` 算，两份清单**都不存在**的目录会算出同一个 gen，不同数据目录互相串缓存（`test_data_layer.py` 当场撞）；**(b) 缓存必须在 `duckdb_client` 里拿「解析后」的目录**——`cache` 原按 `settings.data_dir` 解析而 `connect()` 按 `resolve_data_dir()`，两者不一致时（`data_dir=None`、测试 monkeypatch）缓存按 A 目录算键、从 B 目录读，表现为「所有 `None` 调用共用一个键」（`test_market_cross_section.py` 两个用例当场红）。**(c) L1 命中不直接递缓存里那份对象**，解码出**一副新的**——`bars()` 返回嵌套 `list[dict]`，按引用递出去后调用方一次原地改写就**静默污染缓存**；代价约 1ms，换「谁的返回值归谁」。**④ 实测读数**（真数据 + 真 Redis）：窗口 424 行 直读 **82.7ms** → L1 **1.13ms（73×）** / L2 **6.91ms（12×）**；全史 1638 行 直读 **228.1ms** → L1 **4.70ms（48×）** / L2 **35.7ms（6.4×）**。**验收**：离线 **1656 passed / 128 deselected**（+11 缓存用例）/ 覆盖率 **90.29%**（门槛 88）/ `ruff` 全绿；**集成真 Redis 3 例**（命中与直读逐字段相等 / **代际红线**：换代后必重算且拿到新值 / 死端口下降级照常出结果且熔断打开）。**⑤ 三处过期事实同步**（会话收尾扫描）：CLAUDE.md 技术栈表的 Redis 行、README「Redis 至今未被后端调用」、ROADMAP 待决事项里「单格重复取数…E3 缓存即其落地项」——三条都已改为交付后的表述。 |
 | v2.30 | 2026-10-17 | **§7.1（E7 CI 工作流）订正一处失灵的机制：CI 其实一直靠第三方镜像装依赖**。**由头是 E3b 补丁那次 CI 红**（`38931762969`，1m02s 就结束）：失败在**装依赖**步、不是 lint 也不是测试，报 `Failed to download nvidia-cufile==1.15.1.6 … HTTP 403 Forbidden for url https://pypi.tuna.tsinghua.edu.cn/…`——**与当次提交无关**（前一笔同内容的 CI 8 分钟前刚绿过；重跑即过）。**查根因**：§7.1 初稿写「CI 里用 `--default-index` / `UV_DEFAULT_INDEX` 覆盖清华源」，实测**这个机制只影响解析、不影响下载**——`uv sync --frozen` 用的是 `uv.lock` 里**逐包记下的 URL**（锁文件里 **1206 处** tsinghua 引用，其中 **1015 处**是 wheel/sdist 的 `/packages/…` 地址、对应 1015 条 `hash = "sha256:…"`）⇒ **CI 从建立起就是靠清华镜像在装依赖**，镜像一抖就红。**落地**：`ci.yml` 在 `uv sync` 之前加一步**纯主机名替换**（`sed -i 's|pypi.tuna.tsinghua.edu.cn|pypi.org|g' uv.lock`），并把顶部 `UV_DEFAULT_INDEX` 的注释改成「只管解析、不是保证」。**可行性已实测**：官方 PyPI 对 `/packages/…` 返 **301 → `files.pythonhosted.org/packages/…`**（uv 跟随重定向），`/simple` 部分本就等价；**本地机械验证**——替换后 TOML 仍合法、tsinghua 引用归零、`pypi.org` 1206 处、**「除主机名外整个文件零改动」逐字节为真**（1015 条哈希一字未动）。**本机配置不动**（国内开发机仍走清华）。**CI 首跑即绿**（run `38932603960`，**3m45s**，比之前的 8m02s 快一倍——境外 runner 直连官方源本就比绕镜像快）+ **同包对照的正面证据**：20 分钟前在镜像上 403 的 `nvidia-cufile`，这一轮 `Downloading nvidia-cufile (1.2MiB) → + nvidia-cufile==1.15.1.6` 从 pypi.org 正常下下来了，且装依赖步里 `tsinghua` 出现 **0** 次。这条与 E8a 的 `LANGGRAPH_STRICT_MSGPACK` 同一类：**文档写的机制与代码实际行为不符**，区别是那次方向相反（文档说没用、实际在用）。 |

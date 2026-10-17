@@ -42,8 +42,18 @@ from app.paper.store import (
     equity_to_row,
     position_from_row,
     position_to_row,
+    risk_event_from_row,
+    risk_event_to_payload,
+    risk_event_to_row,
+    risk_state_to_payload,
 )
-from app.paper.types import Decision, DecisionStatus, PaperConfig, ReplayResult
+from app.paper.types import (
+    Decision,
+    DecisionStatus,
+    PaperConfig,
+    ReplayResult,
+    RiskLimits,
+)
 from app.strategy import USER_STRATEGY, StrategyCheckFailed
 from app.strategy.api import parse_meta
 from app.strategy.params import validate_params as validate_user_params
@@ -58,9 +68,23 @@ SYMBOL_PATTERN = r"^\d{6}$"
 #: 只有约 110 条信号——这个上限是防呆，不是分页。
 DECISION_LIMIT = 500
 
+#: 风控审计的展示上限（与决策同量级；完整台账在库里，按账户级联删除）。
+RISK_EVENT_LIMIT = 200
+
 #: 会话状态：`active` 可继续推进；`finished` 已跑到区间末端。
 ACTIVE = "active"
 FINISHED = "finished"
+
+
+class RiskOptions(BaseModel):
+    """风控上限（百分比）。四个值必须同时给——半开的配置在界面上说不清。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_gross_exposure: float = Field(gt=0, le=100)
+    max_position: float = Field(gt=0, le=100)
+    stop_loss: float = Field(gt=0, le=100)
+    max_drawdown: float = Field(gt=0, le=100)
 
 
 class PaperAccountRequest(BaseModel):
@@ -78,6 +102,8 @@ class PaperAccountRequest(BaseModel):
     #: 缺省取**池子最后一根 bar 的交易日**（数据到哪模拟到哪）；给了但晚于该日 → 422，不静默截断
     end: date | None = None
     costs: CostOptions = Field(default_factory=CostOptions)
+    #: E5 风控；缺省 None = 关闭（旧会话与不填该字段的新会话都保持 M6 行为）
+    risk: RiskOptions | None = None
 
     @field_validator("symbols")
     @classmethod
@@ -212,6 +238,7 @@ async def _detail(request: Request, user_id: int, account_id: str) -> dict[str, 
     config = config_from_payload(row["config"])
     decisions = tuple(decision_from_row(r) for r in await db.paper_decisions(account_id, DECISION_LIMIT))
     equity = [equity_from_row(r) for r in await db.paper_equity(account_id)]
+    audit = await db.paper_audit(account_id, RISK_EVENT_LIMIT)
     days = cal.sessions(config.start, config.end)
 
     return {
@@ -230,13 +257,17 @@ async def _detail(request: Request, user_id: int, account_id: str) -> dict[str, 
             decision_to_payload(d) for d in decisions if d.status is DecisionStatus.PENDING
         ],
         "equity_curve": equity,
+        "risk_state": dict(row.get("risk_state") or {}),
+        "risk_events": [risk_event_from_row(r) for r in audit],
     }
 
 
 def _new_decisions(before: tuple[Decision, ...], result: ReplayResult) -> tuple[Decision, ...]:
-    """本次重放**新生成**的决策（按 id 差集）——`step` 的响应用它。"""
+    """本次重放**新生成的策略决策**（按 id 差集）——风控止损单独放 `risk_exits`，不混进来。"""
     known = {d.id for d in before}
-    return tuple(d for d in result.decisions if d.id not in known)
+    return tuple(
+        d for d in result.decisions if d.id not in known and d.origin == "strategy"
+    )
 
 
 def _moved(day_outcome: Any, status: DecisionStatus) -> list[dict[str, Any]]:
@@ -292,17 +323,41 @@ async def create_account(
         )
 
     quota = body.initial_cash / len(body.symbols)
+    risk_limits = (
+        RiskLimits(
+            max_gross_exposure=body.risk.max_gross_exposure,
+            max_position=body.risk.max_position,
+            stop_loss=body.risk.stop_loss,
+            max_drawdown=body.risk.max_drawdown,
+        )
+        if body.risk is not None
+        else None
+    )
+    # 风控开启时，单只标的的**可买预算**还要被两个上限压一遍；压到买不起一手时提前 422，
+    # 否则那只标的一辈子不出手、用户看不出为什么（同既有「配额买不起一手」的理由）。
+    budget_per_symbol = quota
+    if risk_limits is not None:
+        budget_per_symbol = min(
+            quota,
+            body.initial_cash * risk_limits.max_position / 100.0,
+            body.initial_cash * risk_limits.max_gross_exposure / 100.0,
+        )
+    budget_label = "风控上限下" if risk_limits is not None else "配额"
     too_small = [
-        f"{s}（配额 {quota:,.0f} 元 < 一手 {latest[s]['close'] * 100:,.0f} 元）"
+        f"{s}（{budget_label} {budget_per_symbol:,.0f} 元 < 一手 "
+        f"{latest[s]['close'] * 100:,.0f} 元）"
         for s in body.symbols
-        if quota < latest[s]["close"] * 100
+        if budget_per_symbol < latest[s]["close"] * 100
     ]
     if too_small:
+        label = (
+            "风控上限下每只标的的可买预算买不起一手"
+            if risk_limits is not None
+            else "每只标的的配额买不起一手"
+        )
         raise HTTPException(
             status_code=422,
-            detail="每只标的的配额买不起一手："
-            + "；".join(too_small)
-            + "——把初始资金调大，或把池子缩小",
+            detail=label + "：" + "；".join(too_small) + "——把初始资金调大，或把池子缩小",
         )
 
     config = PaperConfig(
@@ -314,6 +369,7 @@ async def create_account(
         params=dict(body.params),
         costs=body.costs.to_model(),
         strategy_name=strategy_name,
+        risk=risk_limits,
     )
     account_id = str(uuid.uuid4())
     result = await _run_replay(
@@ -328,12 +384,14 @@ async def create_account(
         cash=result.state.cash,
         as_of=result.as_of,
         rules={k: dict(v) for k, v in result.rules.items()},
+        risk_state=risk_state_to_payload(result.risk_state) or {},
         positions=[
             position_to_row(account_id, symbol, position)
             for symbol, position in result.state.positions.items()
         ],
         decisions=[_row(account_id, d) for d in result.decisions],
         equity=[equity_to_row(account_id, mark) for mark in result.equity_curve],
+        risk_events=[risk_event_to_row(event) for event in result.risk_events],
     )
     return await _detail(request, user_id, account_id)
 
@@ -401,12 +459,18 @@ async def step_account(
         as_of=nxt,
         status=FINISHED if nxt >= days[-1] else ACTIVE,
         rules={k: dict(v) for k, v in result.rules.items()},
+        risk_state=risk_state_to_payload(result.risk_state) or {},
         positions=[
             position_to_row(normalized, symbol, position)
             for symbol, position in result.state.positions.items()
         ],
         decisions=[_row(normalized, d) for d in result.decisions],
         equity=[equity_to_row(normalized, m) for m in result.equity_curve if m.trade_date > current],
+        risk_events=[
+            risk_event_to_row(event)
+            for event in result.risk_events
+            if event.trade_date > current
+        ],
     )
     if not advanced:
         raise PaperConflict("会话已被推进过（并发）——刷新后再看")
@@ -418,6 +482,12 @@ async def step_account(
         "expired": _moved(result.last, DecisionStatus.EXPIRED),
         "unfilled": _moved(result.last, DecisionStatus.UNFILLED),
         "generated": [decision_to_payload(d) for d in _new_decisions(before, result)],
+        "risk_exits": [decision_to_payload(d) for d in result.last.risk_exits],
+        "risk_events": [
+            risk_event_to_payload(event)
+            for event in result.risk_events
+            if event.trade_date == nxt
+        ],
     }
     return detail
 
@@ -460,6 +530,7 @@ async def run_account(
         as_of=config.end,
         status=FINISHED,
         rules={k: dict(v) for k, v in result.rules.items()},
+        risk_state=risk_state_to_payload(result.risk_state) or {},
         positions=[
             position_to_row(normalized, symbol, position)
             for symbol, position in result.state.positions.items()
@@ -469,6 +540,11 @@ async def run_account(
             equity_to_row(normalized, m)
             for m in result.equity_curve
             if m.trade_date > row["as_of"]
+        ],
+        risk_events=[
+            risk_event_to_row(event)
+            for event in result.risk_events
+            if event.trade_date > row["as_of"]
         ],
     )
     if not advanced:
