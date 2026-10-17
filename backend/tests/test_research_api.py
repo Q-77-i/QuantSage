@@ -7,7 +7,9 @@ checkpointer 用 `InMemorySaver`，**因为 HITL 的恢复语义只有 checkpoin
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +122,47 @@ def test_resume_on_a_run_without_pending_approval_is_409(env: dict[str, Any]) ->
     conflict = client.post(f"/api/v1/research/runs/{run_id}/resume", json={"choice": "continue"})
 
     assert conflict.status_code == 409 and "待批" in conflict.json()["detail"]
+
+
+def test_research_run_id_must_be_a_uuid(env: dict[str, Any]) -> None:
+    """畸形 id 是 422，不是驱动层 `%s::uuid` 抛出的 500。"""
+    assert client.get("/api/v1/research/runs/not-a-uuid").status_code == 422
+    assert (
+        client.post(
+            "/api/v1/research/runs/not-a-uuid/resume", json={"choice": "continue"}
+        ).status_code
+        == 422
+    )
+
+
+def test_claim_research_resume_is_exclusive(env: dict[str, Any]) -> None:
+    """并发恢复只能有一个抢到：条件更新把 awaiting_approval → running 只放行一次。"""
+    db = env["db"]
+    run_id = str(uuid.uuid4())
+    asyncio.run(
+        db.create_research_run(
+            run_id=run_id,
+            user_id=1,
+            question="q",
+            subject={
+                "question": "q",
+                "symbols": [],
+                "as_of": f"{AS_OF}T15:00:00+08:00",
+            },
+            status="awaiting_approval",
+        )
+    )
+
+    async def claim() -> tuple[Any, Any]:
+        return (
+            await db.claim_research_resume(1, run_id),
+            await db.claim_research_resume(1, run_id),
+        )
+
+    first, second = asyncio.run(claim())
+
+    assert first is not None and first["status"] == "running"
+    assert second is None
 
 
 # ── 全流程 ──

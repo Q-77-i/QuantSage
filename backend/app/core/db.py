@@ -1334,6 +1334,20 @@ class Database:
             (user_id, run_id),
         )
 
+    async def claim_research_resume(self, user_id: int, run_id: str) -> dict[str, Any] | None:
+        """原子地把 `awaiting_approval` 抢成 `running`；返回 None = 已被别人抢走。
+
+        两个并发的 resume 会双跑同一张图的同一 checkpoint（事件交错、双倍 LLM 成本）。
+        条件更新只放行一个——与 paper 的乐观推进同一手法，不靠进程内锁。
+        """
+        return await self._one(
+            "UPDATE research_runs SET status = 'running', updated_at = now() "
+            "WHERE id = %s::uuid AND user_id = %s AND status = 'awaiting_approval' "
+            "RETURNING id, question, subject, status, events, budget, report_id, error, "
+            "created_at, updated_at",
+            (run_id, user_id),
+        )
+
     async def list_research_runs(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
         """摘要列表（不带事件）——事件动辄上百条，列表页不需要。"""
         return await self._all(

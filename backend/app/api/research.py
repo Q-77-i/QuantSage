@@ -41,6 +41,7 @@ from app.agent.deep.runner import (
     snapshot_digest,
 )
 from app.agent.deep.types import Brief
+from app.api.backtest import normalize_run_id
 from app.api.limits import limit
 from app.api.sse import sse_frame, sse_response
 from app.core import quota
@@ -302,15 +303,23 @@ async def resume_run(
     db: Any = Depends(require_db),
 ) -> Any:
     """HITL 恢复。只有 `awaiting_approval` 的运行可恢复（其余 409）。"""
+    normalized = normalize_run_id(run_id)
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise HTTPException(status_code=503, detail="checkpointer 不可用")
     user_id = int(user["id"])
-    row = await db.get_research_run(user_id, run_id)
+    row = await db.get_research_run(user_id, normalized)
     if row is None:
         raise HTTPException(status_code=404, detail="运行不存在")  # 越权与不存在同为 404
     if row["status"] != STATUS_AWAITING:
         raise HTTPException(status_code=409, detail=f"运行当前是 {row['status']}，没有待批事项")
+
+    # 原子抢占：两个并发恢复只能有一个把 awaiting_approval 改成 running。
+    # 否则两个 pump 会同时写同一个 thread 的 checkpoint（事件交错、双倍 LLM 成本）。
+    claimed = await db.claim_research_resume(user_id, normalized)
+    if claimed is None:
+        raise HTTPException(status_code=409, detail="另一次恢复已经开始——刷新后再看")
+    row = claimed
 
     subject = row.get("subject") or {}
     brief = Brief(
@@ -321,7 +330,7 @@ async def resume_run(
     )
     queue: asyncio.Queue = asyncio.Queue()
     producer = _drive(
-        db=db, checkpointer=checkpointer, user_id=user_id, run_id=run_id,
+        db=db, checkpointer=checkpointer, user_id=user_id, run_id=normalized,
         question=row["question"], brief=brief,
         resume={"choice": body.choice, "note": body.note},
         budget_payload=row.get("budget") or None,
@@ -330,7 +339,7 @@ async def resume_run(
     task = asyncio.create_task(_pump(queue, producer))
     _DETACHED.add(task)
     task.add_done_callback(_DETACHED.discard)
-    return _stream(queue, task, {"X-Run-Id": run_id})
+    return _stream(queue, task, {"X-Run-Id": normalized})
 
 
 @router.get("/research/runs")
@@ -348,7 +357,8 @@ async def get_run(
     db: Any = Depends(require_db),
 ) -> dict[str, Any]:
     """运行详情（含事件回放）——断连重连与事后回看都走它。"""
-    row = await db.get_research_run(int(user["id"]), run_id)
+    normalized = normalize_run_id(run_id)
+    row = await db.get_research_run(int(user["id"]), normalized)
     if row is None:
         raise HTTPException(status_code=404, detail="运行不存在")
     payload = _run_payload(row, with_events=True)

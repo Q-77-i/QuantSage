@@ -820,6 +820,14 @@ class FakeDatabase:
         row = self.runs.get(run_id)
         return None if row is None or row["user_id"] != user_id else dict(row)
 
+    async def claim_research_resume(self, user_id: int, run_id: str) -> dict[str, Any] | None:
+        row = self.runs.get(run_id)
+        if row is None or row["user_id"] != user_id or row["status"] != "awaiting_approval":
+            return None
+        row["status"] = "running"
+        row["updated_at"] = datetime.now(UTC)
+        return dict(row)
+
     async def list_research_runs(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
         return [
             {k: v for k, v in self.runs[run_id].items() if k not in ("events", "budget")}
