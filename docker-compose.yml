@@ -5,6 +5,9 @@
 #                                                     → 另加 Langfuse 自托管全套
 #
 # 所有端口只绑 127.0.0.1，不对外暴露；变量统一读仓库根 .env。
+#
+# 镜像固定为 `tag@sha256`：tag 供人读，digest 才是实际拉取内容。升级时**同时**改 tag 与
+# digest，不要只改 tag——本地编排的可复现性靠这一条。
 
 name: quantsage
 
@@ -58,7 +61,7 @@ services:
   # ─────────────────────────── 默认启动 ───────────────────────────
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
@@ -83,7 +86,7 @@ services:
     stop_grace_period: 30s
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
     # `--maxmemory` + `allkeys-lru`：**业务缓存的必备前提**（E3c），不是可选优化。
     # 默认的 `maxmemory=0` + `noeviction` 意味着**没有上限、满了也不淘汰**——缓存挂上去
@@ -106,7 +109,7 @@ services:
       start_period: 5s
 
   qdrant:
-    image: qdrant/qdrant:v1.19.1
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     restart: unless-stopped
     ports:
       - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
@@ -124,7 +127,7 @@ services:
   # ───────────────── observability profile（默认不启动）─────────────────
 
   langfuse-redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     profiles: ["observability"]
     restart: unless-stopped
     environment:
@@ -141,7 +144,7 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.12
+    image: clickhouse/clickhouse-server:25.12@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
     profiles: ["observability"]
     restart: unless-stopped
     user: "101:101"
@@ -162,7 +165,7 @@ services:
       start_period: 10s
 
   minio:
-    image: cgr.dev/chainguard/minio
+    image: cgr.dev/chainguard/minio@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
     profiles: ["observability"]
     restart: unless-stopped
     entrypoint: sh
@@ -184,7 +187,7 @@ services:
       start_period: 10s
 
   langfuse-web:
-    image: docker.langfuse.com/langfuse/langfuse:4
+    image: docker.langfuse.com/langfuse/langfuse:4@sha256:67f48d12a190e4ad585249c75ae1ce172b449de3dbbe7486b8179cd28e21408e
     profiles: ["observability"]
     restart: unless-stopped
     depends_on:
@@ -203,7 +206,7 @@ services:
     # 就绪判据（宿主执行）：curl -sf http://127.0.0.1:3000/api/public/health
 
   langfuse-worker:
-    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    image: docker.langfuse.com/langfuse/langfuse-worker:4@sha256:ca32a8fb2a214c7b5f42dd9c540c8072e41db659cb621f317911ce695ad6bca2
     profiles: ["observability"]
     restart: unless-stopped
     depends_on:
