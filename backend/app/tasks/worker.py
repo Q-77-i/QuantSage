@@ -72,8 +72,13 @@ async def run_once(db: Any) -> bool:
     executor = EXECUTORS.get(str(task["kind"]))
     if executor is None:  # pragma: no cover - 端点只建已注册的 kind
         message = f"未知任务类型 {task['kind']!r}"
-        await db.fail_task(task_id, error={"kind": "internal", "message": message})
-        bus.publish(task_id, "error", {"code": "internal", "message": message})
+        try:
+            await db.fail_task(task_id, error={"kind": "internal", "message": message})
+            bus.publish(task_id, "error", {"code": "internal", "message": message})
+        finally:
+            # 这条分支在外层 try/finally 之前 return，必须自己释放；否则该 task_id 的
+            # 缓冲会按任务数永久留存（在线订阅者已拿到帧，不依赖缓冲）
+            bus.release(task_id)
         return True
 
     stop = asyncio.Event()

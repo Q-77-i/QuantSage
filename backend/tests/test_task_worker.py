@@ -25,7 +25,7 @@ from app.core.config import get_settings
 from app.data import duckdb_client
 from app.strategy import code_sha256
 from app.strategy.templates import template_source
-from app.tasks import worker
+from app.tasks import bus, worker
 from tests.conftest import TEST_USER, drive_tasks, make_backtest_dir, trading_days
 from tests.fakes import FakeDatabase
 
@@ -162,11 +162,14 @@ def test_failed_task_is_marked_failed_without_run(
 
 
 def test_unknown_kind_fails_the_task(signed_in: FakeDatabase) -> None:
+    bus.reset()
     task_id = queue(signed_in, frozen_request(), kind="no_such_kind")
 
     assert drive_tasks(signed_in) == 1
     assert signed_in.tasks[task_id]["status"] == "failed"
     assert signed_in.tasks[task_id]["error"]["kind"] == "internal"
+    # 这条分支在 worker 的外层 try/finally 之前 return，缓冲必须自己释放
+    assert task_id not in bus._buffers
 
 
 # ── 取消与扫尾 ──────────────────────────────────────────────────────────────
