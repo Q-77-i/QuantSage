@@ -73,7 +73,8 @@ class Axis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     param: str
-    values: list[float | int]
+    # 上限 50：网格总格数另受 MAX_CELLS=100 约束；这里挡的是「一个轴塞百万个值」
+    values: list[float | int] = Field(max_length=50)
 
 
 class GridRequest(BaseModel):
@@ -87,7 +88,7 @@ class GridRequest(BaseModel):
     costs: CostOptions = Field(default_factory=CostOptions)
     # 网格**不收 `both`**：那等于把每一格的工作量翻倍，而 PIT 对比在单格重跑时照样能看
     pit_mode: Literal["pit", "non_pit"] = "pit"
-    params: dict[str, float | int] = Field(default_factory=dict)
+    params: dict[str, float | int] = Field(default_factory=dict, max_length=50)
     axes: list[Axis]
 
     @model_validator(mode="after")
@@ -102,7 +103,7 @@ class StrategyPick(BaseModel):
 
     strategy: str
     strategy_id: str | None = None
-    params: dict[str, float | int] = Field(default_factory=dict)
+    params: dict[str, float | int] = Field(default_factory=dict, max_length=50)
 
 
 class BatchRequest(BaseModel):

@@ -53,6 +53,7 @@ from app.api.watchlist import router as watchlist_router
 from app.backtest.batch import BatchRequestError
 from app.backtest.types import BacktestError, NoDataError
 from app.core import llm
+from app.core.body_limit import BodyLimitMiddleware
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
 from app.core.db import (
@@ -244,6 +245,10 @@ app.add_middleware(
     # ——这是同类坑的第三次（前两次：CORS 漏放行 PUT、缺 X-Thread-Id），新增一个要读的头就回这里加
     expose_headers=["X-Thread-Id", "X-Run-Id", "X-Request-Id"],
 )
+
+# 请求体上限放在路由之前、安全头之内：413 也带安全响应头。它先读后回放（纯 ASGI），
+# 不改变 SSE 的响应路径。
+app.add_middleware(BodyLimitMiddleware, max_bytes=get_settings().max_request_bytes)
 
 # E8a / E7e 的三个纯 ASGI 中间件（为什么不用 `BaseHTTPMiddleware` 见各自模块的 docstring）。
 # `add_middleware` 的**后加者在更外层**：续期 → 安全头 → 可观测性。可观测性在最外层，

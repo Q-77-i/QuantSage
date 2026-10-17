@@ -83,7 +83,7 @@ class BacktestRequest(BaseModel):
     # 「参数 xxx 需要 true / false（当前 0.0）」——现象离病根隔了三层。
     # 内置策略的参数全是数字（由 `backtest.strategies.validate_params` 把关），
     # 布尔只可能出现在用户策略那一支。
-    params: dict[str, float | bool] = Field(default_factory=dict)
+    params: dict[str, float | bool] = Field(default_factory=dict, max_length=50)
 
     @field_validator("strategy")
     @classmethod

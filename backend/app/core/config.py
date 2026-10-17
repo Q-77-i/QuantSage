@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     app_name: str = "quantsage-backend"
     env: str = "local"
     debug: bool = False
+    # 请求体硬上限（纯 ASGI 中间件）：最大的合法请求体是 64KB 策略源码，1MB 余量足够。
+    # 没有它，一个超大 JSON 就能在 Pydantic 解析阶段打穿内存。
+    max_request_bytes: int = 1_048_576
     # E7e：日志格式——`text` 便于本地阅读（默认），`json` 供采集/检索（一行一个 JSON）
     log_format: str = "text"
 

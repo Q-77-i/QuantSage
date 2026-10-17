@@ -72,7 +72,7 @@ class StrategyCreate(BaseModel):
 
     name: str
     code: str
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict, max_length=50)
 
     @field_validator("name")
     @classmethod
@@ -96,7 +96,7 @@ class StrategyUpdate(BaseModel):
 
     name: str | None = None
     code: str | None = None
-    params: dict[str, Any] | None = None
+    params: dict[str, Any] | None = Field(default=None, max_length=50)
     expected_version: int | None = Field(default=None, ge=1)
 
     @field_validator("name")
