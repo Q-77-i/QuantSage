@@ -62,6 +62,19 @@ cd ../frontend && pnpm install && pnpm dev                             # 5. 前�
 
 （3001 是因为 3000 归 Langfuse。）
 
+**一键起（基础设施 + checkpointer 表 + 后端 + 前端）**：
+
+```bash
+bash scripts/dev.sh          # 默认 start；已占用的 8000/3001 会跳过，不重复起
+bash scripts/dev.sh status   # compose / 端口 / 健康检查
+bash scripts/dev.sh stop     # 停应用，不动基础设施；手动起的进程用 stop --force
+bash scripts/dev.sh restart  # 停应用后重新起；手动起的进程用 restart --force
+bash scripts/dev.sh logs     # 同时 tail 后端与前端日志
+```
+
+脚本假定 `.env`、`backend/.venv`、`frontend/node_modules` 已就绪；缺了会给出对应命令。
+它不替代手动步骤——只是把第 2–5 步串起来。`pnpm build` 前仍要停 dev（共用 `.next`）。
+
 提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
 
 没有小石密钥也能跑通回测与前端——行情与事件已在本地落盘；只有「对话页调小石实时工具」这一步需要授权密钥。
