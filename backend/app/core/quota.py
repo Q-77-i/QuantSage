@@ -95,6 +95,19 @@ def reset_at(now: datetime | None = None) -> str:
     return (day_start(now) + timedelta(days=1)).isoformat()
 
 
+def active_task_limit(user: dict[str, Any]) -> int | None:
+    """在飞任务上限；`None` = 不限额（admin 或配置 ≤ 0）。
+
+    这个值交给 `Database.create_task` 在**插入语句里**做条件判断——先 `count` 再 `insert`
+    的两次调用之间有竞态，并发提交可以一起越过上限（E2 的 gauge 不是计数器，不能靠
+    进程内状态兜底）。
+    """
+    if str(user.get("role") or ROLE_USER) == ROLE_ADMIN:
+        return None
+    limit = get_settings().quota_active_tasks
+    return limit if limit > 0 else None
+
+
 async def enforce(
     db: Any, user: dict[str, Any], metric: str, *, now: datetime | None = None
 ) -> None:

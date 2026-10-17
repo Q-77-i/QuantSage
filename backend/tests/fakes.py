@@ -867,7 +867,8 @@ class FakeDatabase:
         *,
         total: int = 1,
         idempotency_key: str | None = None,
-    ) -> dict[str, Any]:
+        active_limit: int | None = None,
+    ) -> dict[str, Any] | None:
         if idempotency_key is not None:
             for row in self.tasks.values():
                 if (
@@ -875,6 +876,14 @@ class FakeDatabase:
                     and row.get("idempotency_key") == idempotency_key
                 ):
                     return row  # 与真库的 ON CONFLICT 同语义：回既有那一行
+        if active_limit is not None:
+            active = sum(
+                1
+                for row in self.tasks.values()
+                if row["user_id"] == user_id and row["status"] in ("queued", "running")
+            )
+            if active >= active_limit:
+                return None  # 配额已满且不是重放（真库在同一条 INSERT 里判）
         self.tasks[task_id] = {
             "id": task_id,
             "user_id": user_id,

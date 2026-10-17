@@ -1407,36 +1407,70 @@ class Database:
         *,
         total: int = 1,
         idempotency_key: str | None = None,
-    ) -> dict[str, Any]:
+        active_limit: int | None = None,
+    ) -> dict[str, Any] | None:
         """建一条 `queued` 任务。`total` 是格数——单次回测恒 1（E1b 的网格是展开后的格数）。
 
         **带幂等键时返回既有的那一行**（E4b / L7）：`ON CONFLICT DO NOTHING` 撞上就回查，
         调用方凭 `row["id"] != task_id` 判断这是不是一次重放。冲突判定交给唯一索引而不是
         「先查后插」——两次调用之间的窗口正是要防的那个窗口。
+
+        **在飞任务配额也在这一条语句里判**（`active_limit` 非 None 时）：先取
+        `pg_advisory_xact_lock(user)` 再 `INSERT … SELECT … WHERE count < limit`。
+        先 `count` 再 `insert` 是两次语句，并发提交会一起越过上限；计数与插入必须在
+        同一事务里，且用 advisory lock 把同一用户的并发提交串起来（READ COMMITTED 下
+        后一条语句能看到前一条已提交的行）。
+
+        返回 `None` = 配额已满且不是幂等重放（调用方翻 429）；其它情况返回任务行。
         """
-        row = await self._one(
-            "INSERT INTO tasks (id, user_id, kind, status, request, progress, idempotency_key) "
-            "VALUES (%s::uuid, %s, %s, 'queued', %s, %s, %s) "
-            "ON CONFLICT (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL "
-            "DO NOTHING "
-            f"RETURNING {_TASK_COLUMNS}",
-            (
-                task_id,
-                user_id,
-                kind,
-                Jsonb(request),
-                Jsonb({"done": 0, "total": total}),
-                idempotency_key,
-            ),
-        )
-        if row is not None:
-            return row
-        existing = await self._one(
-            f"SELECT {_TASK_COLUMNS} FROM tasks WHERE user_id = %s AND idempotency_key = %s",
-            (user_id, idempotency_key),
-        )
-        assert existing is not None  # 冲突了却查不到 = 唯一索引与这行不一致
-        return existing
+        progress = Jsonb({"done": 0, "total": total})
+        async with self.pool.connection() as conn, conn.transaction():
+            if active_limit is not None:
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"active_tasks:{user_id}",),
+                )
+                cursor = await conn.execute(
+                    "INSERT INTO tasks "
+                    "(id, user_id, kind, status, request, progress, idempotency_key) "
+                    "SELECT %s::uuid, %s, %s, 'queued', %s, %s, %s "
+                    "WHERE (SELECT count(*) FROM tasks WHERE user_id = %s "
+                    "       AND status IN ('queued', 'running')) < %s "
+                    "ON CONFLICT (user_id, idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL DO NOTHING "
+                    f"RETURNING {_TASK_COLUMNS}",
+                    (
+                        task_id,
+                        user_id,
+                        kind,
+                        Jsonb(request),
+                        progress,
+                        idempotency_key,
+                        user_id,
+                        active_limit,
+                    ),
+                )
+            else:
+                cursor = await conn.execute(
+                    "INSERT INTO tasks "
+                    "(id, user_id, kind, status, request, progress, idempotency_key) "
+                    "VALUES (%s::uuid, %s, %s, 'queued', %s, %s, %s) "
+                    "ON CONFLICT (user_id, idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL DO NOTHING "
+                    f"RETURNING {_TASK_COLUMNS}",
+                    (task_id, user_id, kind, Jsonb(request), progress, idempotency_key),
+                )
+            row = await cursor.fetchone()
+            if row is not None:
+                return row
+            if idempotency_key is None:
+                return None
+            # 幂等重放优先于配额：同一个键已经代表过一件事，不该被额度挡回去
+            cursor = await conn.execute(
+                f"SELECT {_TASK_COLUMNS} FROM tasks WHERE user_id = %s AND idempotency_key = %s",
+                (user_id, idempotency_key),
+            )
+            return await cursor.fetchone()
 
     async def task_by_idempotency_key(self, user_id: int, key: str) -> dict[str, Any] | None:
         """按幂等键回查（E4b / L7）。闸门**之前**的短路用它，重复提交不再走一遍闸门。"""

@@ -25,6 +25,8 @@ from typing import Any
 from fastapi import Header, HTTPException
 from pydantic import BaseModel
 
+from app.core import quota
+
 #: 头名。**由前端生成**：同一次用户动作重试复用同一个，新动作换一个（前端 `lib/idempotency.ts`）
 HEADER_ALIAS = "Idempotency-Key"
 
@@ -96,17 +98,38 @@ async def create_task(
     key: str | None,
     fingerprint: str,
     total: int = 1,
+    active_limit: int | None = None,
 ) -> dict[str, Any]:
-    """建任务行（带幂等语义），返回 `{task_id, status}`。
+    """建任务行（带幂等语义 + 在飞任务配额），返回 `{task_id, status}`。
 
-    冲突判定交给唯一索引（见 `db.create_task`），这里只管两件事：把指纹写进 `request`，
-    以及**撞上了就是重放**——两次调用之间的并发窗口由索引兜住，不靠「先查后插」。
+    冲突判定交给唯一索引（见 `db.create_task`），这里只管三件事：把指纹写进 `request`、
+    **撞上了就是重放**、以及把「配额已满」翻成 429。配额判断与插入在
+    `db.create_task` 的同一事务里完成——先 count 再 insert 的竞态由那里的 advisory lock 堵住。
     """
     if key is not None:
         request = {**request, FINGERPRINT_KEY: fingerprint}
     row = await db.create_task(
-        task_id, user_id, kind, request, total=total, idempotency_key=key
+        task_id,
+        user_id,
+        kind,
+        request,
+        total=total,
+        idempotency_key=key,
+        active_limit=active_limit,
     )
+    if row is None:
+        if active_limit is None:
+            raise RuntimeError("create_task 返回空行，但没有设置在飞任务上限")
+        used = await db.count_active_tasks(user_id)
+        await db.record_quota_rejection(
+            user_id, quota.METRIC_ACTIVE_TASKS, used, active_limit
+        )
+        raise quota.QuotaExceeded(
+            quota.METRIC_ACTIVE_TASKS,
+            f"你已有 {used} 个任务在执行或排队（上限 {active_limit} 个），等一个结束再提交",
+            limit=active_limit,
+            used=used,
+        )
     if str(row["id"]) == task_id:
         return {"task_id": task_id, "status": "queued"}
     return _replay(row, fingerprint)

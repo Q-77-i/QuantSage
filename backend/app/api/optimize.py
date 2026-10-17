@@ -302,8 +302,11 @@ async def _enqueue(
 
     **配额点放在这里**（E2）：网格与批量共用它，位置恰好是「闸门之后、入队之前」，
     而幂等重放在各自的 handler 里**更早**就短路了（重复提交不建任务，也就不该被配额挡）。
+
+    在飞任务数交给 `idempotency.create_task` 的**同一条 INSERT** 判（`active_limit`）：
+    先 count 再 insert 会让并发提交一起越过上限。
     """
-    await quota.enforce(db, user, quota.METRIC_ACTIVE_TASKS)
+    active_limit = quota.active_task_limit(user)
     user_id = int(user["id"])
     task_id = str(uuid.uuid4())
     request: dict[str, Any] = {
@@ -323,6 +326,7 @@ async def _enqueue(
         key=key,
         fingerprint=fingerprint,
         total=len(specs),
+        active_limit=active_limit,
     )
 
 
