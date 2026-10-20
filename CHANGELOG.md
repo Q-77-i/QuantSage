@@ -29,6 +29,7 @@
 
 - **E9 定向评审必须修复**：admin 登录漏 `role`（`find_user_by_email` 投影）；停牌顺延买单未计入总仓位 `pending_notional`。
 - 高置信建议修复：空 `JWT_SECRET` 走 500、MCP 12KB 上限被超长 query 突破、沙箱墙钟未覆盖 `proc.wait()`、精排运行期异常不降级。
+- **供应链审计**：`aiohttp` 3.14.3 → 3.14.5（新披露 3 个漏洞；本地 `pip-audit --strict` 0 漏洞）。
 - E7a CI 三跑 27 个问题、E8a SSE 续期静默失效、E7a ruff 真缺陷（`subprocess` 未 import）等随各段交付修复。
 
 ### 验收
