@@ -28,15 +28,20 @@ DOCS = (
     REPO / "docs" / "tutorials" / "faq.md",
     REPO / "docs" / "tutorials" / "ma_cross.md",
     REPO / "docs" / "tutorials" / "event_driven.md",
+    REPO / "docs" / "enterprise" / "README.md",
+    REPO / "docs" / "enterprise" / "architecture.md",
+    REPO / "docs" / "enterprise" / "risk.md",
+    REPO / "docs" / "enterprise" / "reviews.md",
+    REPO / "docs" / "enterprise" / "postmortem.md",
 )
 
 #: 文档里出现这些**前缀**的大写标识符不算环境变量（框架名、产物名等）。
 NOT_ENV_PREFIXES = ("HTTP", "UTF", "JSON", "CPU", "API", "SSE", "PDF", "URL", "SQL", "PIT", "AST")
 
-#: 这些名字是文档里解释性提到的**系统 / 语言常量**，不来自 .env.example（已知豁免）。
+#: 这些名字是文档里解释性提到的**系统 / 语言 / 代码常量**，不来自 .env.example（已知豁免）。
 #: 第一次跑逮到的第一例就是 `RLIMIT_CPU`——它是 Python `resource` 模块的常量。
 ENV_ALLOWLIST: frozenset[str] = frozenset(
-    {"PATH", "PYTHONSAFEPATH", "RLIMIT_CPU", "RU_MAXRSS", "MPS"}
+    {"PATH", "PYTHONSAFEPATH", "RLIMIT_CPU", "RU_MAXRSS", "MPS", "BACKGROUND_LOCK_KEY"}
 )
 
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")

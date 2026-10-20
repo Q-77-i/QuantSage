@@ -65,6 +65,9 @@ class Session:
     version: int
     issued_at: datetime
     expires_at: datetime
+    #: 签发时是否勾了「记住我」：续期要原样带回去，否则会话 cookie 会被静默升级为持久 cookie。
+    #: 老 token 没有 `rem`，按 True 兼容（与「默认记住」的既有行为一致）。
+    remember: bool = True
 
     @property
     def lifetime(self) -> timedelta:
@@ -80,11 +83,20 @@ class Session:
         return self.expires_at - moment < self.lifetime / 2
 
 
-def issue_token(user_id: int, *, now: datetime | None = None, version: int = 0) -> str:
+def issue_token(
+    user_id: int,
+    *,
+    now: datetime | None = None,
+    version: int = 0,
+    remember: bool = True,
+) -> str:
     """签发 access token。`now` 只给测试注入用，正常走系统时间。
 
     `version` 是用户的撤销版本（`users.token_version`）：登出会把它加一，于是**此前签发的
     所有 token 在 `require_user` 处一并失效**——没有服务端会话表也能做到「登出即失效」。
+
+    `remember` 进 token（`rem`）：续期中间件据此恢复「会话 cookie / 持久 cookie」，
+    不能因为一次续期把用户没勾的「记住我」悄悄打开。
     """
     settings = get_settings()
     issued = now or datetime.now(UTC)
@@ -93,6 +105,7 @@ def issue_token(user_id: int, *, now: datetime | None = None, version: int = 0) 
         "ver": int(version),
         "iat": issued,
         "exp": issued + timedelta(seconds=settings.jwt_ttl_seconds),
+        "rem": bool(remember),
     }
     return jwt.encode(payload, settings.jwt_secret.get_secret_value(), algorithm=ALGORITHM)
 
@@ -112,8 +125,11 @@ def decode_session(token: str) -> Session | None:
             version=int(payload.get("ver", 0)),
             issued_at=datetime.fromtimestamp(float(payload["iat"]), UTC),
             expires_at=datetime.fromtimestamp(float(payload["exp"]), UTC),
+            remember=bool(payload.get("rem", True)),
         )
-    except (jwt.InvalidTokenError, KeyError, TypeError, ValueError):
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError):
+        # 捕获 `PyJWTError` 而不是 `InvalidTokenError`：空密钥抛的是 `InvalidKeyError`，
+        # 它继承 `PyJWTError` 但不是 `InvalidTokenError`——漏了它，未配置密钥时解码会 500。
         return None
 
 

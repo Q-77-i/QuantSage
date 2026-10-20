@@ -261,6 +261,23 @@ def test_wall_timeout_is_the_backstop(data_dir: Path) -> None:
     assert info.value.kind == "wall"
 
 
+def test_wall_timeout_covers_a_child_that_closes_its_pipes(data_dir: Path) -> None:
+    """子进程关掉 stdout/stderr 后挂住：父进程不能只等 pipe，`proc.wait()` 也要受墙钟约束。"""
+    source = (
+        "def on_bar(ctx):\n"
+        "    builtins = collections.__builtins__\n"
+        "    os = builtins['__import__']('os')\n"
+        "    os.close(1)\n"
+        "    os.close(2)\n"
+        "    builtins['__import__']('time').sleep(10)\n"
+        "    return []\n"
+    )
+    limits = SandboxLimits(wall_seconds=1.5, cpu_seconds=600, memory_mb=NO_MEMORY_LIMIT)
+    with pytest.raises(SandboxError) as info:
+        run_source(source, data_dir, limits=limits)
+    assert info.value.kind == "wall"
+
+
 def test_memory_watchdog_kills_big_allocation(data_dir: Path) -> None:
     """内存看门狗：macOS 上 rlimit 设不下去（SPEC §5 实测），这一层是唯一的内存闸门。
 

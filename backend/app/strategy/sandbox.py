@@ -256,7 +256,12 @@ async def _run_worker(
 
         try:
             await asyncio.wait_for(pumps, timeout=limits.wall_seconds)
-            await proc.wait()
+            # 墙钟也必须覆盖 `proc.wait()`：子进程可以关掉 stdout/stderr 后挂住，
+            # 两路 pipe 会先 EOF，只等 pipe 的写法会让父进程无限等下去（用户代码可
+            # 经 `collections.__builtins__` 拿到 os 做这件事）。
+            if proc.returncode is None:
+                remaining = max(0.0, limits.wall_seconds - (time.monotonic() - started))
+                await asyncio.wait_for(proc.wait(), timeout=remaining)
         except TimeoutError:
             _kill(proc)
             await proc.wait()

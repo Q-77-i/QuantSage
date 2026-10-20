@@ -29,8 +29,9 @@ class UsersMixin:
 
     async def find_user_by_email(self, email: str) -> dict[str, Any] | None:
         # `token_version` 一并取出：登录要按它签发（否则登出后再登录会签出一张立刻失效的票）
+        # `role` 也随行返回：登录响应要它（SPEC §3.4）；缺了它 admin 会被回成普通用户。
         return await self._one(
-            "SELECT id, email, password_hash, token_version FROM users WHERE email = %s",
+            "SELECT id, email, password_hash, token_version, role FROM users WHERE email = %s",
             (email,),
         )
 

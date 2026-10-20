@@ -102,3 +102,32 @@ def test_register_login_and_ab_isolation(real_stack: TestClient) -> None:
     finally:
         app.state.agent = real_agent
         purge_rows([alice_email, bob_email], thread_ids)
+
+
+def test_login_returns_admin_role(real_stack: TestClient) -> None:
+    """登录响应也要带 role（SPEC §3.4）：admin 不能被回成普通用户。
+
+    离线 fake 的 `find_user_by_email` 直接回整行、会掩盖「SELECT 漏 role」这类投影错误，
+    所以这条必须打真库：先注册，再把库里的 role 改成 admin，最后走一次真实登录。
+    """
+    import psycopg
+
+    from app.core.config import get_settings
+
+    suffix = uuid.uuid4().hex[:8]
+    email = f"m1-admin-{suffix}@example.com"
+    try:
+        sign_up(email)
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            conn.execute("UPDATE users SET role = 'admin' WHERE email = %s", (email,))
+
+        client = TestClient(app)
+        login = client.post(
+            "/api/v1/auth/login", json={"email": email, "password": PASSWORD}
+        )
+
+        assert login.status_code == 200
+        assert login.json()["role"] == "admin"
+        assert client.get("/api/v1/auth/me").json()["role"] == "admin"
+    finally:
+        purge_rows([email], [])

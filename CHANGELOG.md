@@ -2,6 +2,40 @@
 
 > 按里程碑记录交付内容，版本号 = git tag（`m-p1`、`m-p2`…）。格式：新增 / 调整 / 修复。
 
+## [m-p3] — 2026-10-20
+
+> P3-En 交付：E1–E9（E6 已砍）+ 收尾项 5/6。逐次交付明细见 `docs/specs/P3-En.md` §11；本文只记里程碑级变化。
+
+### 新增
+
+- **E1 架构分层**：`tasks` 表即队列 + 单 worker + 后台主实例锁；网格/批量迁入队列，断线不丢；任务执行接缝。
+- **E2 多用户治理**：两个配额维度（在飞任务 gauge / Agent 请求日 counter）、RBAC（`users.role` + `require_admin`，ETL 归 admin）、分页搜索与集中越权矩阵 23 例。
+- **E3 数据工程**：体检定时化 + X7 源侧停滞告警 + `/admin` 看板；快照清单归档 + 按 sha 重物化回滚；数据层热点缓存（L1 进程内 + L2 Redis，代际键，可降级）。
+- **E4 可靠性 L0–L7**：统一 policy（分类 / 重试 / 熔断 / 限流 / 降级 / 幂等）、数据源熔断、chat 护栏与告知面、故障注入双轨（12 条矩阵 + 四幕演练）。
+- **E5 风控**：四闸门（总仓位 / 单标的集中度 / 止损 / 回撤）纯函数 + `decision_audit` + 前端档位/状态/日志；止损自动批准、回撤只禁新开仓。
+- **E7 工程化**：CI 三 job（后端 ruff+pytest / 前端 lint+typecheck+test+build / 两端供应链审计）、覆盖率门槛 88%、Langfuse 四字段、`data_digest` 实验可复现、Prometheus `/metrics` + request id + JSON 日志。
+- **E8 安全 + 对外 MCP**：CSP nonce + 安全响应头 + 会话续期/撤销 + 依赖审计；对外 stdio MCP Server（PIT 检索）；注入边界标记；OS 级策略沙箱。
+- **E9 企业级文档**：`docs/enterprise/` 架构设计 / 风控专题 / 代码评审记录 / 事故复盘 + 索引；定向两轴评审 26 条 findings（12 修 / 14 记录）；MQ / 容器化 / 多 worker 边界落文档。
+- **收尾项 5**：Agent 下单提案（HITL）、RAG 一轮纠错 + A2A 静态能力卡、append-only 策略版本 + diff/回滚、12 题深研报 rubric。
+- **收尾项 6**：CSP 生产验证 33/33、容器化 spike、running 取消改 DB 标志、不引 MQ。
+
+### 调整
+
+- 单实例契约：task worker / ETL / 结算调度器收口到后台主实例；非持锁进程只服务 HTTP（`POST /etl/run`、`POST /data/rollback` 409）。
+- 会话策略：滑动续期 + `token_version` 撤销；remember 状态进 token，续期不再升级为持久 cookie。
+- 模拟盘来源：决策来源由调用方给定，用户策略不能伪造 `agent` / `risk`。
+
+### 修复
+
+- **E9 定向评审必须修复**：admin 登录漏 `role`（`find_user_by_email` 投影）；停牌顺延买单未计入总仓位 `pending_notional`。
+- 高置信建议修复：空 `JWT_SECRET` 走 500、MCP 12KB 上限被超长 query 突破、沙箱墙钟未覆盖 `proc.wait()`、精排运行期异常不降级。
+- E7a CI 三跑 27 个问题、E8a SSE 续期静默失效、E7a ruff 真缺陷（`subprocess` 未 import）等随各段交付修复。
+
+### 验收
+
+- 离线 **1797 passed / 136 deselected**、`ruff` 全绿；集成 auth 2 / paper E5+M6 6 / RAG PIT 1；`check_docs.py` 10 份 0、锚点 10 份 0。
+- P3 DoD：故障注入双轨通过；Claude Desktop / Claude Code 可调我们的 MCP 完成一次 PIT 检索。
+
 ## [m-p2] — 2026-10-13
 
 > P2-Mn 交付：把「跑通 demo」做到「独立完成写策略 → 回测 → 模拟 → 复盘」。

@@ -138,6 +138,7 @@ async def propose_agent_decision(
         strategy=scripted,
         account_id=account_id,
         data_dir=data_dir,
+        origin="agent",
     )
 
     target_id = decision_id(account_id, as_of, symbol, side)

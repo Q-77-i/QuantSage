@@ -15,10 +15,11 @@ from app.data import calendar as cal
 from app.paper.replay import replay
 from app.paper.store import result_from_payload, result_to_payload
 from app.paper.types import DecisionStatus, PaperConfig, RiskLimits
-from tests.conftest import make_backtest_dir, write_bars_parquet
+from tests.conftest import make_backtest_dir, write_bars_parquet, write_events_parquet
 
 START = date(2026, 8, 3)
 SYMBOL = "600519"
+SYMBOL2 = "000001"
 
 
 class Scripted:
@@ -54,6 +55,38 @@ def build_dir(tmp_path: Path, bars: list[dict]) -> Path:
     root = make_backtest_dir(tmp_path, bars, events=[], symbol=SYMBOL)
     write_bars_parquet(root / "bars", SYMBOL, bars, adjust="raw")
     return root
+
+
+def build_two_symbol_dir(tmp_path: Path, first: list[dict], second: list[dict]) -> Path:
+    root = make_backtest_dir(tmp_path, first, events=[], symbol=SYMBOL)
+    write_bars_parquet(root / "bars", SYMBOL2, second)
+    write_events_parquet(root / "events", SYMBOL2, [])
+    return root
+
+
+class TwoSymbolScripted:
+    """S1 第 0 天买；S2 第 2 天买——用来构造「S1 停牌顺延、S2 当日买入」的叠加场景。"""
+
+    name = "two_symbol_scripted"
+
+    def on_bar(self, ctx: BarContext) -> list[Signal]:
+        if ctx.bar.symbol == SYMBOL and ctx.index == 0:
+            return [Signal(Side.BUY, reason="进场 S1")]
+        if ctx.bar.symbol == SYMBOL2 and ctx.index == 2:
+            return [Signal(Side.BUY, reason="进场 S2")]
+        return []
+
+
+def config_two(end: date, risk: RiskLimits | None) -> PaperConfig:
+    return PaperConfig(
+        initial_cash=1_000_000.0,
+        symbols=(SYMBOL, SYMBOL2),
+        strategy="two_symbol_scripted",
+        start=START,
+        end=end,
+        costs=CostModel(),
+        risk=risk,
+    )
 
 
 def config(end: date, risk: RiskLimits | None) -> PaperConfig:
@@ -126,6 +159,50 @@ def test_capped_buy_uses_the_capped_qty_at_fill_time(tmp_path: Path) -> None:
     assert event.gate == "concentration"
     assert event.metrics["requested_qty"] == 9900
     assert event.metrics["final_qty"] == 2900
+
+
+def test_user_strategy_cannot_forge_origin(tmp_path: Path) -> None:
+    """`Signal.origin` 是用户可填字段：用户策略不能把自己伪装成 Agent 提案。"""
+    days = sessions(4)
+    data_dir = build_dir(tmp_path, rows(days, [100.0] * 4))
+    outcome = replay(
+        config(days[-1], None),
+        auto=DecisionStatus.APPROVED,
+        strategy=Scripted(
+            {0: [Signal(Side.BUY, reason="伪装成 Agent", origin="agent")]}
+        ),
+        data_dir=data_dir,
+    )
+    assert outcome.decisions[0].origin == "strategy"
+
+
+def test_carried_over_buy_counts_toward_gross_exposure(tmp_path: Path) -> None:
+    """S1 停牌顺延的已批准买单必须占 S2 当日的总仓位额度，不能两笔各自合规、合起来越线。"""
+    days = sessions(6)
+    first = rows(days, [100.0] * 6)
+    for row in first:
+        if row["trade_date"] in (days[1], days[2]):
+            row["is_suspended"] = True  # S1 在首个可成交日与 S2 买入日都停牌
+    second = rows(days, [100.0] * 6)
+    data_dir = build_two_symbol_dir(tmp_path, first, second)
+
+    outcome = replay(
+        config_two(days[-1], risk_limits(max_gross_exposure=60.0)),
+        auto=DecisionStatus.APPROVED,
+        strategy=TwoSymbolScripted(),
+        data_dir=data_dir,
+    )
+
+    s2_events = [
+        event
+        for event in outcome.risk_events
+        if event.kind == "proposal" and event.trade_date == days[2]
+    ]
+    assert s2_events, "S2 的买入应触发风控审计——顺延的 S1 买单占着总仓位额度"
+    assert any(
+        event.gate == "gross_exposure" and event.verdict in ("cap", "block")
+        for event in s2_events
+    )
 
 
 def test_capped_buy_does_not_buy_more_on_a_gap_down(tmp_path: Path) -> None:

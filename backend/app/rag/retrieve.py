@@ -216,9 +216,10 @@ def search(
     head, tail = fused[:candidates], fused[candidates:]
     try:
         scores = reranker.rerank(spec.query, [str((p.payload or {}).get("text") or "") for p in head])
-    except RagNotReady as exc:
-        # 降级可以，隐瞒不行：score_kind 会如实写进返回值
-        log.warning("精排不可用，降级为 RRF 顺序：%s", exc)
+    except Exception as exc:  # noqa: BLE001 —— 精排失败（未就绪 / OOM / 计算异常）都要降级
+        # 降级可以，隐瞒不行：score_kind 会如实写进返回值。只捕 `RagNotReady` 不够：
+        # 模型载入后的 torch/MPS OOM 或 compute_score 异常同样属于「精排失败」。
+        log.warning("精排失败，降级为 RRF 顺序：%s", exc)
         return [_to_event(p, p.score, "rrf") for p in (fused[:top_k])]
 
     ranked = sorted(zip(head, scores, strict=True), key=lambda pair: pair[1], reverse=True)

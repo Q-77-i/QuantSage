@@ -9,7 +9,8 @@
 
     ① 开盘：成交上一交易日挂下、状态为 `approved` 的决策；仍 `pending` 的 → `expired`
     ② 收盘：按收盘价估值，追加净值点
-    ③ 收盘后：推进事件可见性（PIT 闸门）→ 问策略要信号 → 生成下一批决策
+    ③ 风控：止损触发 → 回撤状态判定与审计（在策略信号之前）
+    ④ 收盘后：推进事件可见性（PIT 闸门）→ 问策略要信号 → 生成下一批决策
 
 三条口径值得单独写明：
 
@@ -63,12 +64,16 @@ def replay(
     account_id: str = "",
     data_dir: Path | None = None,
     market: MarketData | None = None,
+    origin: str = "strategy",
 ) -> ReplayResult:
     """从 `config.start` 重放到 `through`（缺省到 `config.end`）。
 
     `auto` 是「新生成的决策直接落什么状态」：`None` = `pending`（`step` 用），
     `APPROVED` / `REJECTED` = 一键跑到结束（`run` 用，见 SPEC §7 端点表）。
     `market` 供调用方复用已装载的数据（同 `data_dir` 的用途：测试与多次重放）。
+    `origin` 是**调用方**给本次重放生成的决策打的来源标签：用户策略恒为 `strategy`，
+    Agent 提案路径显式传 `agent`。**不能读 `Signal.origin`**——那是用户代码可填的字段，
+    否则策略可以把自己伪装成 Agent 提案 / 风控自动单。
     """
     data = market if market is not None else load_market_data(config, data_dir=data_dir)
     days = data.days if through is None else tuple(d for d in data.days if d <= through)
@@ -191,6 +196,15 @@ def replay(
                 book[moved.id] = moved
                 pending.pop(pending_id, None)
                 expired.append(moved)
+
+        # 顺延的已批准买单也要占当日总仓位额度：它们没能在今天开盘成交（停牌 / 缺 bar），
+        # 但一旦恢复交易就会成交，不能只看「今日日志里的待成交」而漏掉它们。
+        # 只补 `trade_date < day` 的——当日已批准的已经在 initial_pending_notional 里。
+        pending_notional += sum(
+            decision.est_qty * decision.est_price
+            for decision in carries.values()
+            if decision.side is Side.BUY and decision.trade_date < day
+        )
 
         # ② 收盘估值
         closes = {
@@ -367,7 +381,7 @@ def replay(
                                 decision_id=would_be,
                                 metrics=check.metrics,
                                 detail=check.detail,
-                                origin=signal.origin,
+                                origin=origin,
                             )
                         )
                         continue
@@ -382,6 +396,7 @@ def replay(
                     account_id,
                     data,
                     auto,
+                    origin=origin,
                     qty_cap=(
                         check.qty
                         if check is not None and check.verdict == "cap"
@@ -493,6 +508,7 @@ def _propose(
     data: MarketData,
     auto: DecisionStatus | None,
     qty_cap: int | None = None,
+    origin: str = "strategy",
 ) -> Decision | None:
     """把一个 `Signal` 变成一张决策单（还**没有**成交——那要等下一交易日开盘）。
 
@@ -525,7 +541,7 @@ def _propose(
         event_id=signal.event_id,
         sources=_sources_for(signal.event_id, data),
         status=auto if auto is not None else DecisionStatus.PENDING,
-        origin=signal.origin,
+        origin=origin,
     )
 
 

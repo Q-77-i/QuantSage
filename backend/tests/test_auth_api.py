@@ -217,17 +217,23 @@ def test_logout_survives_a_dead_database() -> None:
 
 
 def test_auth_endpoints_are_503_without_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    """JWT_SECRET 缺失时不静默降级为无鉴权，而是显式 503。"""
+    """JWT_SECRET 缺失时不静默降级为无鉴权，而是显式 503；且不半途创建用户。"""
     monkeypatch.setenv("JWT_SECRET", "")
     get_settings.cache_clear()
-    app.state.db = FakeDatabase()
+    db = FakeDatabase()
+    app.state.db = db
     try:
-        response = TestClient(app).get("/api/v1/auth/me")
+        client = TestClient(app)
+        assert client.get("/api/v1/auth/me").status_code == 503
+        assert client.post("/api/v1/auth/register", json=CREDENTIALS).status_code == 503
+        assert db.users == {}  # 先 create_user 再签发会留下半截用户
+        assert client.post("/api/v1/auth/login", json=CREDENTIALS).status_code == 503
+        # 带一张解不出的 cookie 访问公开端点：续期解码不能 500
+        client.cookies.set(COOKIE_NAME, "not-a-token")
+        assert client.get("/health").status_code == 200
     finally:
         app.state.db = None
         get_settings.cache_clear()
-
-    assert response.status_code == 503
 
 
 def test_auth_endpoints_are_503_without_database(client: TestClient) -> None:

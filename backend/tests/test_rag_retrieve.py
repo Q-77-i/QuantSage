@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 import pytest
@@ -176,6 +177,25 @@ def test_reranker_failure_degrades_to_rrf_and_says_so() -> None:
     hits = search(
         SearchQuery(query="q", as_of=NOW),
         client=client, embedder=FakeEmbedder(DIM), reranker=FakeReranker(fail=True),
+    )
+    assert [h.event_id for h in hits] == ["news:a"]
+    assert hits[0].score_kind == "rrf"
+
+
+class _RuntimeBrokenReranker:
+    """模型载入成功、计算期炸掉（OOM 一类）——也必须降级，而不是整条检索失败。"""
+
+    def rerank(self, query: str, docs: Sequence[str]) -> list[float]:
+        raise RuntimeError("模拟精排计算期 OOM")
+
+
+def test_reranker_runtime_failure_also_degrades() -> None:
+    client = FakeQdrant()
+    point(client, day="2026-09-01", event_id="news:a", text="doc-a",
+          available_at="2026-09-01T10:00:00+08:00")
+    hits = search(
+        SearchQuery(query="q", as_of=NOW),
+        client=client, embedder=FakeEmbedder(DIM), reranker=_RuntimeBrokenReranker(),
     )
     assert [h.event_id for h in hits] == ["news:a"]
     assert hits[0].score_kind == "rrf"

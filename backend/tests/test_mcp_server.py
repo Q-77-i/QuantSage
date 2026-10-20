@@ -200,6 +200,19 @@ async def test_empty_result_says_ok_but_zero(rag: dict[str, Any]) -> None:
     assert "未成功" in result["query"]["note"]
 
 
+async def test_long_query_echo_is_clipped_to_keep_payload_cap(rag: dict[str, Any]) -> None:
+    """超长 query 只截回显，不能让 12KB 硬上限失效。"""
+    rag["hits"] = []
+
+    result = await server.search_events("长" * 20000)
+
+    assert result["ok"] is True
+    assert result["query"]["clipped"] is True
+    assert len(result["query"]["original"]) <= server.MAX_QUERY_CLIP + 1  # +1 是省略号
+    assert len(result["query"]["effective"]) <= server.MAX_QUERY_CLIP + 1
+    assert server._size(result) <= server.MAX_PAYLOAD_BYTES
+
+
 async def test_empty_result_is_rewritten_once_with_same_as_of(
     rag: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -224,6 +237,7 @@ async def test_empty_result_is_rewritten_once_with_same_as_of(
         "original": "降准",
         "effective": "降准 银行股",
         "rewritten": True,
+        "clipped": False,
         "note": "首次检索无结果，已改写为「降准 银行股」再检索（同一 as_of）",
     }
     assert len(calls) == 2

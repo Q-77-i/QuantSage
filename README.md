@@ -198,7 +198,7 @@ flowchart LR
 | GET | `/.well-known/agent-card.json` | 公开只读**静态能力卡**（A2A 卡形状，**不是 A2A 协议**；无传输/任务/推送） |
 | GET · POST | `/api/v1/strategies/{id}/versions` · `.../versions/{n}` · `.../versions/{n}/diff` · `/rollback` 🔒 | 策略版本历史 / 详情 / 统一 diff / 回滚（回滚 = 追加新版本） |
 
-🔒 = 需登录，🔑 = 需管理员（`users.role = "admin"`，脚本改、立即生效）。**除 `market/*` 与 `events`（非用户资产）与 `/health` 外，其余一律要登录**；分享页走 `/api/v1/public/reports/{token}` 单独授权。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
+🔒 = 需登录，🔑 = 需管理员（`users.role = "admin"`，脚本改、立即生效）。**公开面只有 `market/*`、`events`、`factor/report`（公开只读）、`/health`、`/.well-known/agent-card.json` 与 `/metrics`（token / 回环）**；分享页走 `/api/v1/public/reports/{token}` 单独授权，打印导出走一次性签名令牌。其余一律要登录。会话 cookie 走 `httpOnly + SameSite=Lax`，故前端**跟随页面 host** 访问 API——这样 `localhost` 与 `127.0.0.1` 都能用，不会被浏览器按跨站丢掉 cookie。
 
 ---
 
@@ -244,6 +244,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 
 - **事件语料窗口由数据源决定**：新闻源只保留 3 个月（滚动），更早的事件永久不可得——本地语料是「首次回填日 → 最新可用日」，**起点固化、终点随日增量前移**。事件驱动策略对显式早于覆盖起点的请求直接报 400 并给出路
 - **行情源侧的节奏不稳定，且分两条质量轨道**：`cn-daily` 按年整片发布、没有日增量可拉，刷新做的是「便宜探测 → 按需整片重下」。平台有 **canonical（complete）** 与 **available** 两条轨道——我们固定用 **canonical**（宁慢不脏：available 快但 `quality_status=partial`，有缺口，且平台明言 `fill_or_forward_fill_allowed=false`）。实测 canonical 的滞后**随发布而变**：10-12 缺当天（T+1），10-13 仍停在 10-09（连缺两个交易日）。**对外别承诺「落后一天」**——它是观测值，不是契约。事件归档按自然日发布、近期还停更过，两者本来就可能不同日，首页因此**并列显示两个「截至」**（悬停可看源侧止于哪天）
+- **消息队列 / 容器化 / 多 worker 的边界**：不引 MQ（`tasks` 表即队列）、全量容器化暂缓、多 worker 不是受支持形态；四句话的触发判据见 [企业级文档 · 已知边界与未来触发](docs/enterprise/architecture.md#9-已知边界与未来触发)
 - **无价 bar 不进定价路径**：数据源用「整行价量为空」表示某天没观测到成交，`bars()` 只返回四价齐全的行——**无价即无价，不是零价**
 - **自选股的价格取自本地行情快照**：取不到价的标的一律显示「—」，不编数；加入时价是当时最近可得**有价**交易日的收盘价，之后不随行情前移
 - **定时任务（ETL / 行情刷新 / 数据体检 / 决策结算）默认关**：可显式打开或走 `POST /api/v1/etl/run` 手动触发（**需要 admin 账号**）；**定时任务只在后台主实例运行**——同一库的第二个进程只服务 HTTP。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**
@@ -295,6 +296,7 @@ uv run python scripts/audit_calendar.py                # 交易日历 × 行情�
 |---|---|
 | [docs/PRD.md](docs/PRD.md) | 需求、功能清单、验收标准、排期 |
 | [docs/specs/](docs/specs/) | 技术规格与变更记录（P1-Tn 与 P2-Mn，逐阶段滚动） |
+| [docs/enterprise/](docs/enterprise/) | **企业级文档**：架构设计 · 风控专题 · 代码评审记录 · 事故复盘 |
 | [docs/tutorials/getting-started.md](docs/tutorials/getting-started.md) | **使用教程**：从注册到出一份研报，假定你只有一个浏览器 |
 | [docs/tutorials/faq.md](docs/tutorials/faq.md) | **常见问题**：按症状查（提示语为界面原文，可直接对上） |
 | [docs/tutorials/](docs/tutorials/) | 示例策略教程：逻辑、参数、复现命令与期望数字（含数据快照指纹） |

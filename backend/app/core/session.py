@@ -94,5 +94,7 @@ def _renewal_cookie(scope: Scope) -> bytes | None:
     if session is None or not session.renewal_due():
         return None
 
-    fresh = issue_token(session.user_id, version=session.version)
-    return session_cookie_value(fresh).encode("latin-1")
+    fresh = issue_token(
+        session.user_id, version=session.version, remember=session.remember
+    )
+    return session_cookie_value(fresh, remember=session.remember).encode("latin-1")

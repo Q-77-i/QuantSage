@@ -37,8 +37,11 @@ DEFAULT_TOP_K = 5
 #: 摘要截断：比内部工具（120 字）宽——这里没有上下文预算的压力，读者是外部模型。
 #: 标题不截（实测中位 30 字上下），正文**整段不给**（要的是「有什么事件、能不能用」，不是全文）。
 SUMMARY_CLIP = 240
+#: 回显的查询词上限：`query.original` / `query.effective` 是**客户端输入**，不设上限时
+#: 一个 20KB 的问题就能让「12KB 硬上限」失效（`_fit` 只弹 hits，弹不到 query）。
+MAX_QUERY_CLIP = 500
 #: 整份返回的硬上限（字节）。典型 10 条约 5KB，所以它是**保证**不是常态——
-#: 真撞上（超长标题/摘要）就从尾部丢条目并如实标注丢了几条。
+#: 真撞上（超长标题/摘要/查询词）就从尾部丢条目并如实标注丢了几条。
 MAX_PAYLOAD_BYTES = 12 * 1024
 
 mcp = FastMCP(
@@ -111,6 +114,15 @@ def _fit(payload: dict[str, Any]) -> dict[str, Any]:
         payload["truncated"] = True
         payload["dropped"] = dropped
         payload["count"] = len(hits)
+    # 兜底：hits 弹空后仍超限（例如超长 query 回显），把 query 字段也压到更小。
+    query = payload.get("query")
+    if _size(payload) > MAX_PAYLOAD_BYTES and isinstance(query, dict):
+        for key in ("original", "effective"):
+            value = query.get(key)
+            if isinstance(value, str):
+                query[key] = _clip(value, 120) or ""
+        query["clipped"] = True
+        payload["truncated"] = True
     return payload
 
 
@@ -188,6 +200,7 @@ async def search_events(
         if rewritten and corrected.correction is not None
         else text
     )
+    query_clipped = len(text) > MAX_QUERY_CLIP or len(effective_query) > MAX_QUERY_CLIP
     return _fit(
         {
             "ok": True,
@@ -196,9 +209,10 @@ async def search_events(
             "score_kind": hits[0].score_kind if hits else None,
             "count": len(hits),
             "query": {
-                "original": text,
-                "effective": effective_query,
+                "original": _clip(text, MAX_QUERY_CLIP),
+                "effective": _clip(effective_query, MAX_QUERY_CLIP),
                 "rewritten": rewritten,
+                "clipped": query_clipped,
                 "note": correction_note(corrected.correction),
             },
             "truncated": False,

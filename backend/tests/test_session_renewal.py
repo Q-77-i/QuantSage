@@ -46,9 +46,20 @@ def client(db: Any) -> TestClient:
     return TestClient(app)
 
 
-def aged_token(user_id: int = USER_ID, *, days: float = 4.0, version: int = 0) -> str:
+def aged_token(
+    user_id: int = USER_ID,
+    *,
+    days: float = 4.0,
+    version: int = 0,
+    remember: bool = True,
+) -> str:
     """一张**已过半程**的票：TTL 7 天、已用 4 天（> 3.5 天）。"""
-    return issue_token(user_id, now=datetime.now(UTC) - timedelta(days=days), version=version)
+    return issue_token(
+        user_id,
+        now=datetime.now(UTC) - timedelta(days=days),
+        version=version,
+        remember=remember,
+    )
 
 
 def test_half_life_token_is_renewed(client: TestClient) -> None:
@@ -67,6 +78,20 @@ def test_half_life_token_is_renewed(client: TestClient) -> None:
     assert session.version == 0  # 版本取自票自身：成功响应意味着它已经比对过
     # 新票是「刚签的」：剩余寿命接近整个 TTL（不是把旧票原样再发一遍）
     assert session.expires_at - datetime.now(UTC) > timedelta(days=6)
+
+
+def test_renewal_preserves_session_cookie(client: TestClient) -> None:
+    """不勾「记住我」的会话，过半程续期后仍是不带 `Max-Age` 的会话 cookie。"""
+    client.cookies.set(COOKIE_NAME, aged_token(remember=False))
+
+    response = client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200
+    assert COOKIE_NAME in response.cookies
+    assert "Max-Age=" not in response.headers["set-cookie"]
+    fresh = decode_session(response.cookies[COOKIE_NAME])
+    assert fresh is not None
+    assert fresh.remember is False
 
 
 def test_fresh_token_is_not_renewed(client: TestClient) -> None:

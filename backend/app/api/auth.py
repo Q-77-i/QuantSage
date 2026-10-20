@@ -34,10 +34,21 @@ from app.core.auth import (
     set_session_cookie,
     verify_password,
 )
+from app.core.config import get_settings
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 log = logging.getLogger(__name__)
+
+
+def _require_auth_configured() -> None:
+    """未配置 `JWT_SECRET` 时在**写任何用户数据之前**返回 503（与 `require_user` 同口径）。
+
+    只在 `decode_session` 里兜住空密钥还不够：注册会先 `create_user`（已落库）再
+    `issue_token` 抛错，重试就变成 409「邮箱已被注册」——用户数据被半途写坏。
+    """
+    if not get_settings().jwt_secret.get_secret_value():
+        raise HTTPException(status_code=503, detail="鉴权未配置（JWT_SECRET 缺失）")
 
 #: 刻意不引 email-validator：本项目只要「形如邮箱」，多一个依赖不值当
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -91,6 +102,7 @@ async def register(
 
     按**客户端地址**限流：每次注册都要跑一次 bcrypt，不挡就是 CPU 放大入口。
     """
+    _require_auth_configured()
     db = require_db(request)
     password_hash = await asyncio.to_thread(hash_password, body.password)
     user = await db.create_user(body.email, password_hash)
@@ -106,6 +118,7 @@ async def login(
     _: None = Depends(limit_ip("auth")),
 ) -> UserOut:
     """登录。按客户端地址限流，挡密码喷洒与 bcrypt CPU 放大。"""
+    _require_auth_configured()
     db = require_db(request)
     user = await db.find_user_by_email(body.email)
 
@@ -118,7 +131,11 @@ async def login(
     # **按库里的撤销版本签发**：登出过（版本已加一）的用户再登录，拿到的票才与库对得上
     set_session_cookie(
         response,
-        issue_token(int(user["id"]), version=int(user.get("token_version") or 0)),
+        issue_token(
+            int(user["id"]),
+            version=int(user.get("token_version") or 0),
+            remember=body.remember,
+        ),
         remember=body.remember,
     )
     return UserOut(id=int(user["id"]), email=user["email"], role=user.get("role") or "user")

@@ -83,7 +83,9 @@ def test_pit_filter_runs_on_server(store) -> None:
     client, embedder = store
     upsert(client, embedder, day="2026-09-18", event_id="news:legit", text="一条普通旧闻",
            available_at="2026-09-18T10:00:00+08:00")
-    for i in range(5):  # 与 query 同向 ⇒ 若不过滤，必占满 top-5
+    # 未来事件数必须超过单路召回上限（100）：否则「先取 top-100 再本地过滤」也能通过，
+    # 这条用例就证明不了「过滤下推到召回」。120 条同向未来事件会占满候选位。
+    for i in range(120):
         upsert(client, embedder, day="2026-09-25", event_id=f"news:future{i}",
                text="央行降准", available_at="2026-09-25T10:00:00+08:00")
 
