@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，已通过）→ 本文（技术规格）→ 代码
 >
-> 版本 v0.12 ｜ 2026-10-06 ｜ 状态：已通过
+> 版本 v0.18 ｜ 2026-10-21 ｜ 状态：已通过（P3 收口复核）
 >
 > 本 SPEC 覆盖 PRD §2.1 的 T1–T7。**正文章节按功能 ID 排序**（§2–§8 对应 T1–T7）。
 > 注：实际实现顺序为 T1 → T2 → T4 → T5 → T3 → T6 → T7（先打通数据与回测，再做对话与前端），故变更记录的版本号先后与功能 ID 不同序。
@@ -18,36 +18,14 @@
 
 ## 1. 仓库结构
 
-```
-QuantSage/
-├── backend/
-│   ├── pyproject.toml              # uv 管理，Python 3.12；依赖显式 pin（防 uv lock --upgrade 静默漂移）
-│   ├── app/
-│   │   ├── main.py                 # FastAPI 入口、lifespan 装配、异常映射
-│   │   ├── api/                    # chat.py / backtest.py / market.py / events.py
-│   │   ├── agent/                  # graph.py / tools.py / prompts.py / history.py
-│   │   ├── backtest/               # types.py / events.py（PIT 闸门）/ engine.py / portfolio.py
-│   │   │                           #   / broker.py / costs.py / metrics.py / report.py / strategies/
-│   │   ├── data/                   # duckdb_client.py / xiaoshi.py（CLI 与 MCP 封装）
-│   │   └── core/                   # config.py / checkpoint.py / llm.py / langfuse.py / logging.py
-│   ├── scripts/                    # download_bars.py / download_events.py / init_checkpoint_db.py
-│   │                               #   / run_backtest.py / run_report.py / run_chat.py
-│   │                               #   / verify_xiaoshi_mcp.py
-│   └── tests/                      # 离线用例 + tests/integration/
-├── frontend/
-│   ├── app/                        # page.tsx（对话页）/ backtest/page.tsx（回测页）
-│   ├── components/                 # ui/（shadcn）+ chat/ + backtest/
-│   ├── lib/                        # api.ts / sse.ts / markers.ts / chat-state.ts / backtest-form.ts
-│   │                               #   / chart-theme.ts / format.ts / types.ts（纯函数，附单测）
-│   └── scripts/                    # capture-screenshots.mjs（README 截图，Playwright）
-├── docker/postgres/init/           # 01-create-langfuse-db.sql
-├── docs/                           # PRD / specs / tutorials / images
-├── data/                           # 行情 Parquet / 事件语料（gitignore）
-├── logs/                           # 验收证据（gitignore）
-├── .tools/xiaoshi/                 # 小石工具包托管安装（gitignore）
-├── docker-compose.yml
-└── .env
-```
+> P1 交付时的模块边界；**当前完整目录与职责见 [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md)**。本节不再维护逐目录树，避免与那份导航重复漂移。
+
+| 层 | P1 时的落点 |
+|---|---|
+| 后端 | `backend/app/{api,agent,backtest,data,core}`；`scripts/` 下载、建库、回测与校验；`tests/` 离线 + `tests/integration/` |
+| 前端 | `frontend/app/` 对话页与回测页；`components/{ui,chat,backtest}`；`lib/` 纯函数与单测 |
+| 基础设施 | `docker-compose.yml`、`docker/postgres/init/`；`data/`、`logs/`、`.tools/` 不入库 |
+| 文档 | `docs/{PRD.md,specs/,tutorials/,images/}` |
 
 ## 2. T1 地基
 
@@ -220,24 +198,25 @@ class Strategy(Protocol):
 
 ## 10. 变更记录
 
-> 按版本升序；次版本为整数计数器（`v0.10` 晚于 `v0.9`）。下表 `§` 引用按当前编号（§2–§8 = T1–T7）。
+> 按版本**降序**（最新的在前）；次版本为整数计数器（`v0.10` 晚于 `v0.9`）。下表 `§` 引用按当前编号（§2–§8 = T1–T7）。
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
-| v0.1 | 2026-10-04 | T1–T7 | 初版：技术规格 |
-| v0.2 | 2026-10-05 | T1 | compose 默认三服务；postgres 宿主端口 5433；Langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
-| v0.3 | 2026-10-05 | T2 | `cn-daily` 无按标的维度 → 整市场年度分片 + 本地过滤；事件走 MCP（在线窗口上限约 3 个月）；`source_verified` 字段不存在 → 改真实溯源字段组；`direction` 中英混用 → 增派生列 `direction_norm` |
-| v0.4 | 2026-10-05 | T4 | PIT 口径定为**收盘时刻级**（当天 15:00）；增设 `types.py`（避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列）；A 股撮合规则（整手 + 佣金最低 5 元）；费用与滑点拆成独立开关；明确 **PIT 只作用于事件语料** |
-| v0.5 | 2026-10-05 | T5 | 基准改**份额化买入 + 扣一次成本**；增设 `report.py`；明确指标口径（252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓）；补 `meta` 与 `open_position`；`bars < 120` 提示样本量 |
-| v0.6 | 2026-10-06 | T3 | 补会话列表端点与 `thread_id` 缺省规则（服务端生成 + 双通道回传）；SSE 事件补字段定义与保活帧；小石工具改**白名单**暴露；记录三条静默失败陷阱；写明本轮不做的四项 |
-| v0.7 | 2026-10-06 | T6 | 钉死 §7 五处留白（`costs` 结构 / `start`·`end` 缺省 / 未知键 422 / bars·events 响应结构 / CORS 与 **3001** 端口）；写入 markers 图元与「`time` 必须精确匹配且升序」踩坑预警；样本量 `warnings` 要求进 UI |
-| v0.8 | 2026-10-06 | T6b | 新增会话历史端点（按回合合并、与实时 SSE 同构）与会话删除端点（CORS 放行 `DELETE`）；§7 对话页补停止生成、历史回看与会话删除 |
-| v0.9 | 2026-10-06 | T6c | §7 回测页补第 6 块**事件表**（`event_time` / `available_at` 并列 + 来源三元组）；补「口径标签以响应体为准」与「K 线窗口与复权口径取自响应」；§6 措辞校正：`final_equity_pct` 由「虚高比例」改「**差异比例（可正可负）**」 |
-| v0.10 | 2026-10-06 | 收尾 | §6 与 §7 样本量订正 约 54 / √(252/54)≈2.2 倍 → **约 55 / √(252/55)≈2.1 倍**（实际由 bars 数动态计算）；§2 T1 依赖清单补齐 6 项实际依赖 |
-| v0.11 | 2026-10-06 | 收尾 | 正文章节改为**按功能 ID 排序**（§2–§8 对应 T1–T7，此前 §4 曾是 T4、§6 曾是 T3）；§1 仓库结构补齐实际模块 |
-| v0.12 | 2026-10-06 | T6d | §7 新增**图表交互口径**：两图均可缩放平移且**各自独立**；**竖直滚轮一律归还页面**；缩放下限 `MIN_VISIBLE_BARS` = 8 根；每图一个「重置缩放」 |
-| v0.13 | 2026-10-07 | P2-M1c | §7 的 `POST /api/v1/backtest` 契约加注：响应自 P2-M1c 起外套 `{run_id, report}` 并纳入鉴权（§6 报告结构未动）——回测落库后归属成为必要信息 |
-| v0.14 | 2026-10-08 | P2-M4c | §7 的 `POST /api/v1/backtest` 契约加注：请求体自 P2-M4c 起加可选 `strategy_id`（**additive**），`strategy="user"` 时必带并改走沙箱子进程；信封与 §6 报告结构不动。用户策略参数由源码里的 `PARAMS` schema 校验（非注册表 `from_params`），详见 P2 SPEC §5 M4c |
+| v0.18 | 2026-10-21 | 收口 | **文档收口**：§1 目录树改为模块边界摘要并指向 `PROJECT_STRUCTURE.md`；变更记录改为最新的在前；不放宽任何技术口径。 |
 | v0.17 | 2026-10-09 | chat 修复 | §7 的对话页深链口径订正：`/?thread=<id>` 与「当前打开的会话」**双向同步**（原为「深链用完即摘」）——用完之后地址栏回 `/`，刷新就落回欢迎页（用户反馈）。详见 P2 SPEC §2 M1c |
 | v0.16 | 2026-10-09 | chat/M3 修复 | §4 再订正一处：**同一会话的两次运行串行**（`app/api/chat.py::_run_lock`）——断连不再取消之后，「刷新（旧轮继续跑）+ 立刻再问」会让两个图同时写同一个 thread 的 checkpoint、消息交错落盘。另记一条 MPS 的硬事实（详见 P2 SPEC §4 M3）：**PyTorch 的 MPS 后端不是线程安全的**，两个线程同时进 Metal 会 `abort()` 整个进程；精排调用已串行化 |
 | v0.15 | 2026-10-09 | chat 修复 | §4 的 SSE 契约订正一处：**客户端断连后图继续跑完**（原「断连即取消」）——取消点落在「模型已写出 tool_calls、工具未执行」之间会在 checkpoint 留下悬空调用，令**该会话此后每一轮都被模型 400 拒掉**（用户报的「刷新之后这个会话就死了」，已实测复现）。另增「起新一轮前体检历史、给悬空调用补错误结果」的修复路径（治进程被杀留下的存量会话）。前端同轮加「重新生成」入口（末尾停在用户消息时出现） |
+| v0.14 | 2026-10-08 | P2-M4c | §7 的 `POST /api/v1/backtest` 契约加注：请求体自 P2-M4c 起加可选 `strategy_id`（**additive**），`strategy="user"` 时必带并改走沙箱子进程；信封与 §6 报告结构不动。用户策略参数由源码里的 `PARAMS` schema 校验（非注册表 `from_params`），详见 P2 SPEC §5 M4c |
+| v0.13 | 2026-10-07 | P2-M1c | §7 的 `POST /api/v1/backtest` 契约加注：响应自 P2-M1c 起外套 `{run_id, report}` 并纳入鉴权（§6 报告结构未动）——回测落库后归属成为必要信息 |
+| v0.12 | 2026-10-06 | T6d | §7 新增**图表交互口径**：两图均可缩放平移且**各自独立**；**竖直滚轮一律归还页面**；缩放下限 `MIN_VISIBLE_BARS` = 8 根；每图一个「重置缩放」 |
+| v0.11 | 2026-10-06 | 收尾 | 正文章节改为**按功能 ID 排序**（§2–§8 对应 T1–T7，此前 §4 曾是 T4、§6 曾是 T3）；§1 仓库结构补齐实际模块 |
+| v0.10 | 2026-10-06 | 收尾 | §6 与 §7 样本量订正 约 54 / √(252/54)≈2.2 倍 → **约 55 / √(252/55)≈2.1 倍**（实际由 bars 数动态计算）；§2 T1 依赖清单补齐 6 项实际依赖 |
+| v0.9 | 2026-10-06 | T6c | §7 回测页补第 6 块**事件表**（`event_time` / `available_at` 并列 + 来源三元组）；补「口径标签以响应体为准」与「K 线窗口与复权口径取自响应」；§6 措辞校正：`final_equity_pct` 由「虚高比例」改「**差异比例（可正可负）**」 |
+| v0.8 | 2026-10-06 | T6b | 新增会话历史端点（按回合合并、与实时 SSE 同构）与会话删除端点（CORS 放行 `DELETE`）；§7 对话页补停止生成、历史回看与会话删除 |
+| v0.7 | 2026-10-06 | T6 | 钉死 §7 五处留白（`costs` 结构 / `start`·`end` 缺省 / 未知键 422 / bars·events 响应结构 / CORS 与 **3001** 端口）；写入 markers 图元与「`time` 必须精确匹配且升序」踩坑预警；样本量 `warnings` 要求进 UI |
+| v0.6 | 2026-10-06 | T3 | 补会话列表端点与 `thread_id` 缺省规则（服务端生成 + 双通道回传）；SSE 事件补字段定义与保活帧；小石工具改**白名单**暴露；记录三条静默失败陷阱；写明本轮不做的四项 |
+| v0.5 | 2026-10-05 | T5 | 基准改**份额化买入 + 扣一次成本**；增设 `report.py`；明确指标口径（252 日年化 / rf=0 / 回撤取正值 / 胜率只算已平仓）；补 `meta` 与 `open_position`；`bars < 120` 提示样本量 |
+| v0.4 | 2026-10-05 | T4 | PIT 口径定为**收盘时刻级**（当天 15:00）；增设 `types.py`（避免策略↔引擎循环依赖）与 `events.py`（PIT 闸门单列）；A 股撮合规则（整手 + 佣金最低 5 元）；费用与滑点拆成独立开关；明确 **PIT 只作用于事件语料** |
+| v0.3 | 2026-10-05 | T2 | `cn-daily` 无按标的维度 → 整市场年度分片 + 本地过滤；事件走 MCP（在线窗口上限约 3 个月）；`source_verified` 字段不存在 → 改真实溯源字段组；`direction` 中英混用 → 增派生列 `direction_norm` |
+| v0.2 | 2026-10-05 | T1 | compose 默认三服务；postgres 宿主端口 5433；Langfuse 自托管改挂 `observability` profile（v4 依赖 ClickHouse + 对象存储） |
+| v0.1 | 2026-10-04 | T1–T7 | 初版：技术规格 |
