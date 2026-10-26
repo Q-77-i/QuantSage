@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.tasks import bus
@@ -21,6 +22,8 @@ from tests.fakes import FakeDatabase
 
 USER_ID = 1
 TASK_ID = "00000000-0000-0000-0000-0000000000b1"
+#: 造出来的 running 行属于哪个 worker（P4-S2 终态写入要带栅栏）
+WID = "test-worker"
 
 
 def grid_request(**overrides: Any) -> dict[str, Any]:
@@ -40,7 +43,11 @@ def grid_request(**overrides: Any) -> dict[str, Any]:
 async def make_task(db: FakeDatabase, *, status: str = "queued", request: dict | None = None) -> str:
     await db.create_task(TASK_ID, USER_ID, "grid", request or grid_request(), total=2)
     if status != "queued":
-        db.tasks[TASK_ID]["status"] = status
+        db.tasks[TASK_ID].update(
+            status=status,
+            worker_id=WID,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+        )
     return TASK_ID
 
 
@@ -156,7 +163,7 @@ def test_keepalive_timeout_picks_up_a_terminal_state_from_the_database() -> None
         async def finish_elsewhere() -> None:
             # 模拟另一个进程里的 worker：只落库，不 publish（本进程收不到实时帧）
             await asyncio.sleep(0.01)
-            await db.finish_task(TASK_ID, result={"run_id": "run-1"})
+            await db.finish_task(TASK_ID, worker_id=WID, result={"run_id": "run-1"})
 
         finisher = asyncio.create_task(finish_elsewhere())
         frames: list[Any] = []
@@ -194,7 +201,7 @@ def test_finished_task_replays_from_the_database() -> None:
                 "duration_s": 1.5,
             },
         )
-        await db.finish_task(TASK_ID, result={"run_id": "run-1"})
+        await db.finish_task(TASK_ID, worker_id=WID, result={"run_id": "run-1"})
         bus.release(TASK_ID)  # worker 收尾时会做这件事
         return await collect(db, TASK_ID)
 
@@ -208,7 +215,7 @@ def test_failed_task_yields_an_error_frame() -> None:
     async def scenario() -> list[Any]:
         db = FakeDatabase()
         await make_task(db, status="running")
-        await db.fail_task(TASK_ID, error={"kind": "no_data", "message": "区间内没有行情数据"})
+        await db.fail_task(TASK_ID, worker_id=WID, error={"kind": "no_data", "message": "区间内没有行情数据"})
         return await collect(db, TASK_ID)
 
     frames = asyncio.run(scenario())
@@ -222,7 +229,7 @@ def test_cancelled_task_says_so() -> None:
     async def scenario() -> list[Any]:
         db = FakeDatabase()
         await make_task(db, status="running")
-        await db.finish_task_cancelled(TASK_ID)
+        await db.finish_task_cancelled(TASK_ID, worker_id=WID)
         return await collect(db, TASK_ID)
 
     frames = asyncio.run(scenario())

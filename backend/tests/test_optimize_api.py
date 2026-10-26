@@ -466,7 +466,9 @@ def test_cancel_running_grid_is_cooperative(signed_in: Any, data_dir: Path) -> N
     from app.tasks.executors import CANCELLED, RunContext, execute_grid
 
     task_id = client.post("/api/v1/optimize/grid", json=grid_body()).json()["task_id"]
-    asyncio.run(signed_in.claim_next_task())  # worker 取件（此刻还没跑）
+    asyncio.run(
+        signed_in.claim_next_task("test-worker", lease_seconds=60)
+    )  # worker 取件（此刻还没跑）
     stop = asyncio.Event()
     task_worker._RUNNING[task_id] = stop
 

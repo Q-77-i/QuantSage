@@ -219,7 +219,7 @@ async def _seed_finished_task(db: FakeDatabase) -> None:
         },
     }
     await db.create_task(TASK_ID, USER_ID, "grid", request, total=1)
-    db.tasks[TASK_ID]["status"] = "running"
+    db.tasks[TASK_ID].update(status="running", worker_id="test-worker")
     await db.save_optimization_run(
         "run-1",
         USER_ID,
@@ -234,5 +234,5 @@ async def _seed_finished_task(db: FakeDatabase) -> None:
             "duration_s": 0.1,
         },
     )
-    await db.finish_task(TASK_ID, result={"run_id": "run-1"})
+    await db.finish_task(TASK_ID, worker_id="test-worker", result={"run_id": "run-1"})
     bus.release(TASK_ID)  # worker 收尾时会做这件事

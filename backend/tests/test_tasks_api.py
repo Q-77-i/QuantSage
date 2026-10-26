@@ -32,6 +32,8 @@ client = TestClient(app)
 SYMBOL = "600519"
 START = date(2026, 7, 1)
 BAR_COUNT = 60
+#: 取件/终态写入的 worker 标识（P4-S2：终态必须带 `worker_id` 栅栏）
+WID = "test-worker"
 
 
 def sample_bars() -> list[dict[str, Any]]:
@@ -227,7 +229,7 @@ def test_cancel_running_cooperative_task_writes_db_flag(signed_in: FakeDatabase)
     """running 的网格/批量：取消写成 DB 标志，不再依赖请求落到 worker 进程。"""
     task_id = str(uuid.uuid4())
     asyncio.run(signed_in.create_task(task_id, TEST_USER["id"], "grid", {"symbol": SYMBOL}))
-    asyncio.run(signed_in.claim_next_task())  # worker 已取走，正在跑
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # worker 已取走，正在跑
 
     response = client.post(f"/api/v1/tasks/{task_id}/cancel")
     assert response.status_code == 200
@@ -243,12 +245,12 @@ def test_cancel_running_or_finished_is_409(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
     task_id = submit().json()["task_id"]
-    asyncio.run(signed_in.claim_next_task())  # 模拟「worker 已取走，正在跑」
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # 模拟「worker 已取走，正在跑」
     running = client.post(f"/api/v1/tasks/{task_id}/cancel")
     assert running.status_code == 409
     assert "执行" in running.json()["detail"]
 
-    asyncio.run(signed_in.finish_task(task_id, result={"run_id": "whatever"}))
+    asyncio.run(signed_in.finish_task(task_id, worker_id=WID, result={"run_id": "whatever"}))
     done = client.post(f"/api/v1/tasks/{task_id}/cancel")
     assert done.status_code == 409
     assert "已结束" in done.json()["detail"]

@@ -111,6 +111,10 @@ SCHEMA = (
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS data_digest TEXT",
     # 收尾项 5d：用户策略当次运行绑定的版本。旧记录 NULL（不回填：没有可证明的版本）。
     "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS strategy_version INT",
+    # P4-S2：任务 → 结果幂等键。**普通唯一索引**即可：PG 唯一索引允许多个 NULL，
+    # 旧记录（task_id 为 NULL）天然不冲突；`ON CONFLICT (task_id)` 靠它推断。
+    "ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS task_id UUID",
+    "CREATE UNIQUE INDEX IF NOT EXISTS backtest_runs_task_idx ON backtest_runs (task_id)",
     # M5b：批量 / 网格的**汇总**（`request` + `summary`，**不落完整报告**）。
     # `summary.cells` 只有每格的 `params → metrics` 与收益矩，没有净值曲线与逐笔——
     # 一百格 × 上千点净值曲线会把这张表撑成 MB 级 JSONB，而要看某一格的完整报告，
@@ -126,6 +130,10 @@ SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS optimization_runs_user_created_idx "
     "ON optimization_runs (user_id, created_at DESC)",
+    # P4-S2：与 `backtest_runs.task_id` 同一套幂等口径（普通唯一索引 + NULL 不冲突）
+    "ALTER TABLE optimization_runs ADD COLUMN IF NOT EXISTS task_id UUID",
+    "CREATE UNIQUE INDEX IF NOT EXISTS optimization_runs_task_idx "
+    "ON optimization_runs (task_id)",
     # ── M6 模拟盘：四张表（账户 / 持仓 / 决策 / 净值）────────────────
     # 金额一律 NUMERIC(18,4)：算钱不用二进制浮点（`round(2.675, 2)` 给 2.67 那个教训）。
     # `config` 存创建时的全部参数（池子/策略/参数/区间/费用），落库即契约——读回时
@@ -294,6 +302,13 @@ SCHEMA = (
         result      JSONB,
         error       JSONB,
         cancel_requested_at TIMESTAMPTZ,
+        priority    INT         NOT NULL DEFAULT 0,
+        available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        attempts    INT         NOT NULL DEFAULT 0,
+        max_attempts INT        NOT NULL DEFAULT 2,
+        lease_expires_at TIMESTAMPTZ,
+        worker_id   TEXT,
+        last_heartbeat_at TIMESTAMPTZ,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
         started_at  TIMESTAMPTZ,
         finished_at TIMESTAMPTZ,
@@ -313,6 +328,20 @@ SCHEMA = (
     "ON tasks (user_id, created_at DESC)",
     # worker 取件与启动扫尾都按 status 过滤，且任务表是**热表**（每次回测一行）
     "CREATE INDEX IF NOT EXISTS tasks_status_created_idx ON tasks (status, created_at)",
+    # ── P4-S2：队列 v2（SPEC §3.2）──
+    # 取件（`SKIP LOCKED`）的排序即这条索引：status → available_at → priority DESC → created_at。
+    # reaper 只扫 running 里租约过期的行，部分索引足够。
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 2",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS tasks_claim_idx "
+    "ON tasks (status, available_at, priority DESC, created_at)",
+    "CREATE INDEX IF NOT EXISTS tasks_lease_idx "
+    "ON tasks (lease_expires_at) WHERE status = 'running'",
     # ── P3-E2：用户配额（SPEC §3.1）──
     # 计数表：跨重启持久的累计用量。主键即「一个用户一个维度一个周期一行」，
     # 递增走 `ON CONFLICT` 的那条语句（见 `bump_usage_counter`）。

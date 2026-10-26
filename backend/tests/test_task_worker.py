@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,8 @@ SYMBOL = "600519"
 OTHER_SYMBOL = "600036"
 START = date(2026, 7, 1)
 BAR_COUNT = 60
+#: 测试里手工取件用的 worker 标识（P4-S2 终态写入要带 `worker_id` 栅栏）
+WID = "test-worker"
 LAST_DAY = trading_days(START, BAR_COUNT)[-1]
 
 
@@ -229,36 +231,57 @@ def test_running_cooperative_task_sees_db_cancel_flag(
     asyncio.run(scenario())
 
 
-def test_sweep_marks_interrupted_and_blocks_late_finish(
+def test_reaper_requeues_expired_lease_and_blocks_late_finish(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    """扫尾之后，迟到的完成不得把 `failed` 覆盖回 `done`（真库的 `WHERE status='running'` 同义）。"""
+    """租约过期的 running 行回 `queued`；旧 worker 迟到的完成不得覆盖新 worker 的行。"""
     task_id = queue(signed_in, frozen_request())
-    claimed = asyncio.run(signed_in.claim_next_task())
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
     assert claimed is not None  # 取件后卡在 running（模拟进程被杀）
+    assert claimed["attempts"] == 1
 
-    assert asyncio.run(signed_in.sweep_interrupted_tasks()) == 1
+    signed_in.tasks[task_id]["lease_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    assert asyncio.run(signed_in.reap_running_tasks(backoff_seconds=0)) == {"queued": 1}
     task = signed_in.tasks[task_id]
-    assert task["status"] == "failed"
-    assert task["error"]["kind"] == "interrupted"
+    assert task["status"] == "queued"
+    assert task["attempts"] == 1  # 重新取件时才 +1
+    assert task["worker_id"] is None
+    assert task["error"] is None  # 还没终态，不写 error
 
-    asyncio.run(signed_in.finish_task(task_id, result={"run_id": "late"}))
-    assert signed_in.tasks[task_id]["status"] == "failed"
+    # 新 worker 重新取件后，旧 worker 的迟到完成必须落空（`worker_id` 栅栏）
+    signed_in.tasks[task_id]["available_at"] = datetime.now(UTC)
+    assert asyncio.run(signed_in.claim_next_task("other-worker", lease_seconds=60)) is not None
+    asyncio.run(signed_in.finish_task(task_id, worker_id=WID, result={"run_id": "late"}))
+    assert signed_in.tasks[task_id]["status"] == "running"
     assert signed_in.tasks[task_id]["result"] is None
 
 
-def test_start_sweeps_then_serves(signed_in: FakeDatabase, data_dir: Path) -> None:
-    """`start()` = 扫尾 + 常驻循环；`stop()` 取消它。"""
+def test_reaper_exhausted_attempts_is_terminal(signed_in: FakeDatabase, data_dir: Path) -> None:
+    """`attempts >= max_attempts` 的过期租约 → `failed/lease_expired`，不无限重排。"""
     task_id = queue(signed_in, frozen_request())
-    asyncio.run(signed_in.claim_next_task())  # 一条卡在 running 的旧行
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    signed_in.tasks[task_id]["attempts"] = 2  # 第二次执行中
+    signed_in.tasks[task_id]["lease_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+
+    assert asyncio.run(signed_in.reap_running_tasks(backoff_seconds=0)) == {"failed": 1}
+    task = signed_in.tasks[task_id]
+    assert task["status"] == "failed"
+    assert task["error"]["kind"] == "lease_expired"
+    assert task["error"]["attempts"] == 2
+
+
+def test_start_sweeps_all_running_then_serves(signed_in: FakeDatabase, data_dir: Path) -> None:
+    """`start()` 在持锁后扫**全部** `running`（不是只看过期租约）；`stop()` 取消它。"""
+    task_id = queue(signed_in, frozen_request())
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # 一条卡在 running 的旧行
 
     async def scenario() -> None:
         serving = await worker.start(signed_in)
         await worker.stop(serving)
 
     asyncio.run(scenario())
-    assert signed_in.tasks[task_id]["status"] == "failed"  # 扫尾生效
-    assert signed_in.tasks[task_id]["error"]["kind"] == "interrupted"
+    assert signed_in.tasks[task_id]["status"] == "queued"  # 启动扫尾重排
+    assert signed_in.tasks[task_id]["attempts"] == 1
 
 
 def test_start_does_not_sweep_when_lock_held(
@@ -270,7 +293,7 @@ def test_start_does_not_sweep_when_lock_held(
     failed；A 的 `finish_task` 因 `WHERE status='running'` 静默不写，任务结果就丢了。
     """
     task_id = queue(signed_in, frozen_request())
-    asyncio.run(signed_in.claim_next_task())  # 进程 A 正在跑
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # 进程 A 正在跑
 
     async def no_lock(_db: Any) -> None:
         return None
@@ -282,6 +305,153 @@ def test_start_does_not_sweep_when_lock_held(
 
     assert asyncio.run(scenario()) is None
     assert signed_in.tasks[task_id]["status"] == "running"  # 没有被 B 杀掉
+
+
+# ── 队列 v2：取件顺序 / 心跳 / 重排 / 幂等（P4-S2）─────────────────────────
+
+
+def test_claim_orders_by_priority_then_available_at(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """单次回测优先于网格；`available_at` 未到的取不到。"""
+    grid_id = queue(signed_in, frozen_request(), kind="grid")
+    backtest_id = queue(signed_in, frozen_request())
+
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    assert claimed is not None and str(claimed["id"]) == backtest_id
+
+    # 网格的 available_at 推到未来 ⇒ 取不到；拉回来才能取
+    signed_in.tasks[grid_id]["available_at"] = datetime.now(UTC) + timedelta(seconds=30)
+    assert asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60)) is None
+    signed_in.tasks[grid_id]["available_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    assert claimed is not None and str(claimed["id"]) == grid_id
+
+
+def test_claim_sets_attempts_and_resets_progress(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """取件写 attempts=1、worker_id、租约，并把进度归零（重排不接着上次的 40/100）。"""
+    task_id = str(uuid.uuid4())
+    asyncio.run(
+        signed_in.create_task(
+            task_id, TEST_USER["id"], "grid", frozen_request(), total=100
+        )
+    )
+    signed_in.tasks[task_id]["progress"] = {"done": 40, "total": 100}
+
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    assert claimed is not None
+    task = signed_in.tasks[task_id]
+    assert task["attempts"] == 1
+    assert task["worker_id"] == WID
+    assert task["lease_expires_at"] is not None
+    assert task["progress"]["done"] == 0
+
+
+def test_heartbeat_extends_lease_and_requires_owner(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """心跳续租；别的 worker 续不动（被回收后旧心跳不能把租约抢回来）。"""
+    task_id = queue(signed_in, frozen_request())
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    before = signed_in.tasks[task_id]["lease_expires_at"]
+
+    assert asyncio.run(
+        signed_in.heartbeat_task(task_id, worker_id=WID, lease_seconds=120)
+    )
+    assert signed_in.tasks[task_id]["lease_expires_at"] > before
+
+    assert not asyncio.run(
+        signed_in.heartbeat_task(task_id, worker_id="other", lease_seconds=120)
+    )
+
+
+def test_transient_error_requeues_then_succeeds(
+    signed_in: FakeDatabase, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """基础设施异常第一次重排、第二次跑成功；`attempts=2`，不写终态 error。"""
+    import psycopg
+
+    calls = {"n": 0}
+
+    async def flaky(_db: Any, _task: Any, _ctx: Any) -> dict[str, Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise psycopg.OperationalError("connection lost")
+        return {"run_id": "after-retry"}
+
+    monkeypatch.setitem(worker.EXECUTORS, "backtest", flaky)
+    monkeypatch.setattr(worker, "RETRY_BACKOFF_SECONDS", 0.0)
+    task_id = queue(signed_in, frozen_request())
+
+    assert drive_tasks(signed_in) == 2
+    task = signed_in.tasks[task_id]
+    assert task["status"] == "done"
+    assert task["attempts"] == 2
+    assert task["result"]["run_id"] == "after-retry"
+
+
+def test_deterministic_error_fails_first_attempt(
+    signed_in: FakeDatabase, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`internal` 里的代码 bug 不重排：第一次即 `failed`，`attempts=1`。"""
+    async def broken(_db: Any, _task: Any, _ctx: Any) -> dict[str, Any]:
+        raise ValueError("bug")
+
+    monkeypatch.setitem(worker.EXECUTORS, "backtest", broken)
+    task_id = queue(signed_in, frozen_request())
+
+    assert drive_tasks(signed_in) == 1
+    task = signed_in.tasks[task_id]
+    assert task["status"] == "failed"
+    assert task["attempts"] == 1
+    assert task["error"]["kind"] == "internal"
+
+
+def test_retry_returns_existing_run_without_reexecuting(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """崩溃发生在「落库之后、finish 之前」：重排后只回查，不重跑、不产生第二条记录。"""
+    task_id = queue(signed_in, frozen_request())
+    assert drive_tasks(signed_in) == 1
+    first = signed_in.tasks[task_id]["result"]["run_id"]
+    assert len(signed_in.runs) == 1
+
+    # 模拟「结果已落库，任务行仍是 running」→ 进程被杀 → 重排
+    signed_in.tasks[task_id].update(
+        status="queued", available_at=datetime.now(UTC), attempts=1
+    )
+    assert drive_tasks(signed_in) == 1
+
+    task = signed_in.tasks[task_id]
+    assert task["status"] == "done"
+    assert task["attempts"] == 2
+    assert task["result"]["run_id"] == first
+    assert len(signed_in.runs) == 1  # 没有第二条记录
+
+
+def test_lease_disabled_keeps_old_interrupted_sweep(
+    signed_in: FakeDatabase, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`TASK_LEASE_ENABLED=false`：不设租约，启动扫尾退回 `failed/interrupted`。"""
+    monkeypatch.setenv("TASK_LEASE_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        task_id = queue(signed_in, frozen_request())
+        claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=0))
+        assert claimed is not None
+        assert signed_in.tasks[task_id]["lease_expires_at"] is None
+
+        async def scenario() -> None:
+            serving = await worker.start(signed_in)
+            await worker.stop(serving)
+
+        asyncio.run(scenario())
+        assert signed_in.tasks[task_id]["status"] == "failed"
+        assert signed_in.tasks[task_id]["error"]["kind"] == "interrupted"
+    finally:
+        get_settings.cache_clear()
 
 
 # ── 用户策略分支 ────────────────────────────────────────────────────────────

@@ -14,11 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
 from app.backtest.batch import error_of
+from app.core.config import get_settings
+from app.core.db_tasks import RETRY_BACKOFF_SECONDS
 from app.tasks import bus
 from app.tasks.executors import COOPERATIVE_KINDS, EXECUTORS, RunContext
 
@@ -26,6 +31,20 @@ log = logging.getLogger(__name__)
 
 #: 取件间隔（秒）。单次回测 0.3–2s，这点启动延迟可忽略，换来的是零跨 loop 状态。
 POLL_SECONDS = 0.2
+
+#: 本进程的 worker 标识（P4-S2）。进入每一行的 `worker_id`：心跳/终态写入都带它，
+#: 任务被回收并重新取件后，旧 worker 的迟到写入会落空。
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+#: 租约 / 心跳 / reaper（SPEC §3.3）。心跳必须显著小于租约：事件循环卡顿一轮不至于丢租约。
+LEASE_SECONDS = 60
+HEARTBEAT_SECONDS = 10
+REAPER_SECONDS = 30
+
+
+def _lease_seconds() -> int:
+    """租约秒数；0 = `TASK_LEASE_ENABLED=false`（回滚形态：只保留 `SKIP LOCKED`）。"""
+    return LEASE_SECONDS if get_settings().task_lease_enabled else 0
 
 #: 执行期查取消标志的间隔（收尾项 6）。取消是协作式的：这个间隔决定「多快停止派发新格」，
 #: 不打断已经在跑的格。0.5s 对 100 格的任务是足够细的粒度。
@@ -79,9 +98,73 @@ async def _cancel_requested(db: Any, task_id: str) -> bool:
         return False
 
 
-async def run_once(db: Any) -> bool:
-    """取一件、跑一件；没有可取的返 `False`。取件是原子的（`claim_next_task` 一条语句）。"""
-    task = await db.claim_next_task()
+def _retryable(exc: BaseException) -> bool:
+    """基础设施瞬时错误才重排（SPEC §3.4）。**按异常类型判**，不按 `error.kind`——
+    `internal` 是个大口袋，照 kind 重试等于把代码 bug 跑两遍。确定性错误（无数据、参数、
+    沙箱拒绝/超限、策略运行期异常）都不在这里。"""
+    import psycopg
+    import psycopg_pool
+
+    return isinstance(
+        exc,
+        (
+            psycopg.OperationalError,
+            psycopg.InterfaceError,
+            psycopg_pool.PoolTimeout,
+            ConnectionError,
+            TimeoutError,
+        ),
+    )
+
+
+async def _heartbeat(
+    db: Any, task_id: str, worker_id: str, lease_seconds: int
+) -> None:
+    """每 10s 续租（SPEC §3.3）。异常只记日志——一次数据库抖动不该把执行拖垮；
+    返回 `False`（行不再属于本 worker）就停，迟到的租约不能把行抢回来。"""
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            alive = await db.heartbeat_task(
+                task_id, worker_id=worker_id, lease_seconds=lease_seconds
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("任务 %s 心跳失败（继续执行）", task_id, exc_info=True)
+            continue
+        if not alive:
+            log.warning("任务 %s 的租约已被回收（worker_id 不匹配），停止心跳", task_id)
+            return
+
+
+async def _reaper_loop(db: Any) -> None:
+    """周期 reaper：每 30s 回收过期租约（SPEC §3.3）。
+
+    独立协程而不是塞在 `serve()` 里：`serve()` 在长任务执行期间不会回到循环顶部，
+    塞进去等于「有任务在跑就不回收」。
+    """
+    while True:
+        await asyncio.sleep(REAPER_SECONDS)
+        try:
+            counts = await db.reap_running_tasks(
+                backoff_seconds=RETRY_BACKOFF_SECONDS
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("reaper 出错，跳过本轮")
+            continue
+        if counts:
+            log.warning("reaper 回收 running 任务：%s", counts)
+
+
+async def run_once(db: Any, *, worker_id: str = WORKER_ID) -> bool:
+    """取一件、跑一件；没有可取的返 `False`。
+
+    取件是原子的（`FOR UPDATE SKIP LOCKED`）；执行期间心跳协程续租；可重排的瞬时错误
+    按 `attempts < max_attempts` 回队列（SPEC §3.3/§3.4）。
+    """
+    lease_seconds = _lease_seconds()
+    task = await db.claim_next_task(worker_id, lease_seconds=lease_seconds)
     if task is None:
         return False
 
@@ -90,7 +173,9 @@ async def run_once(db: Any) -> bool:
     if executor is None:  # pragma: no cover - 端点只建已注册的 kind
         message = f"未知任务类型 {task['kind']!r}"
         try:
-            await db.fail_task(task_id, error={"kind": "internal", "message": message})
+            await db.fail_task(
+                task_id, worker_id=worker_id, error={"kind": "internal", "message": message}
+            )
             bus.publish(task_id, "error", {"code": "internal", "message": message})
         finally:
             # 这条分支在外层 try/finally 之前 return，必须自己释放；否则该 task_id 的
@@ -102,7 +187,7 @@ async def run_once(db: Any) -> bool:
     if task.get("cancel_requested_at") is not None:
         try:
             log.info("任务 %s（%s）取件前已请求取消，直接收尾", task_id, task["kind"])
-            await db.finish_task_cancelled(task_id)
+            await db.finish_task_cancelled(task_id, worker_id=worker_id)
             bus.publish(task_id, "cancelled", {"message": "任务已取消（中止的结果不落库）"})
         finally:
             bus.release(task_id)
@@ -111,6 +196,11 @@ async def run_once(db: Any) -> bool:
     stop = asyncio.Event()
     _RUNNING[task_id] = stop
     total = int((task.get("progress") or {}).get("total") or 1)
+    heartbeat: asyncio.Task[None] | None = None
+    if lease_seconds > 0:
+        heartbeat = asyncio.create_task(
+            _heartbeat(db, task_id, worker_id, lease_seconds), name=f"heartbeat-{task_id}"
+        )
 
     # 协作式任务在执行期轮询 DB 标志：请求可能来自别的进程，本地事件只是加速
     watcher: asyncio.Task[None] | None = None
@@ -126,7 +216,9 @@ async def run_once(db: Any) -> bool:
         watcher = asyncio.create_task(watch_cancel(), name=f"cancel-watch-{task_id}")
 
     async def progress(done: int) -> None:
-        await db.update_task_progress(task_id, done=done, total=total)
+        await db.update_task_progress(
+            task_id, worker_id=worker_id, done=done, total=total
+        )
 
     ctx = RunContext(
         task=task,
@@ -140,21 +232,44 @@ async def run_once(db: Any) -> bool:
             result = await executor(db, task, ctx)
         except Exception as exc:  # noqa: BLE001 —— 任务的失败要**落库可查**，不能只进日志
             error = error_of(exc)
+            # 取消是权威：用户已请求中止时，异常不再翻成 failed（SPEC §3.4）
+            if await _cancel_requested(db, task_id):
+                log.info("任务 %s（%s）执行出错但已请求取消，收尾为 cancelled", task_id, task["kind"])
+                await db.finish_task_cancelled(task_id, worker_id=worker_id)
+                ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
+                return True
+            # 基础设施瞬时错误且还有 attempt：回队列，不写 error（还没终态）
+            if _retryable(exc) and int(task["attempts"]) < int(task["max_attempts"]):
+                requeued = await db.requeue_task(
+                    task_id,
+                    worker_id=worker_id,
+                    backoff_seconds=RETRY_BACKOFF_SECONDS,
+                )
+                if requeued:
+                    log.warning(
+                        "任务 %s（%s）遇到瞬时错误，重排（attempt %s/%s）：%s",
+                        task_id,
+                        task["kind"],
+                        task["attempts"],
+                        task["max_attempts"],
+                        error["message"],
+                    )
+                    return True
             log.warning("任务 %s（%s）失败：%s", task_id, task["kind"], error["message"])
-            await db.fail_task(task_id, error=error)
+            await db.fail_task(task_id, worker_id=worker_id, error=error)
             ctx.publish("error", {"code": error.get("kind", "internal"), "message": error["message"]})
             return True
 
         if result.get("cancelled"):
             # 协作式中止：执行体已按约定**不落库**，这里只把状态收干净
             log.info("任务 %s（%s）已中止", task_id, task["kind"])
-            await db.finish_task_cancelled(task_id)
+            await db.finish_task_cancelled(task_id, worker_id=worker_id)
             ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
             return True
 
         # 成功 ⇒ 进度满格。网格逐格推进，这里是收尾那一下（invariant：done 的必满格）
         await progress(total)
-        await db.finish_task(task_id, result=result)
+        await db.finish_task(task_id, worker_id=worker_id, result=result)
         # **收尾帧必须广播**：在线订阅者靠它收流（没有它，页面会一直停在「运行中」——
         # 重连那条路是 `stream._replay` 从库里拼的，所以只有「在线跑完」才暴露这个缺口）
         ctx.publish("done", result)
@@ -164,6 +279,10 @@ async def run_once(db: Any) -> bool:
             watcher.cancel()
             with suppress(asyncio.CancelledError):
                 await watcher
+        if heartbeat is not None:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
         _RUNNING.pop(task_id, None)
         bus.release(task_id)
 
@@ -214,12 +333,13 @@ async def _acquire_instance_lock(db: Any) -> Any:
 async def start(db: Any) -> WorkerHandle | None:
     """启动：先抢单实例锁，再扫尾上一条进程留下的 `running`，最后起常驻循环。
 
-    **扫尾不自动重跑**（SPEC §2.4）：静默重跑一个跑到一半的任务，比明说失败更让人困惑。
-    `queued` 的那些不用管——worker 起来自然接着取。
+    **扫尾语义（P4-S2）**：租约启用时，持锁者扫**全部** `running`——拿到 advisory lock
+    即证明没有第二个 worker，这些行都是上一条进程的孤儿，有限次重排（`attempts < max_attempts`
+    回 `queued`，否则 `failed/lease_expired`）。这是 `kill -9` 后秒级恢复的来源。
+    `TASK_LEASE_ENABLED=false` 时退回旧语义：全部标 `failed/interrupted`，不重排。
 
-    **多进程下的关键**：扫尾只能在持锁者里做。旧实现每个进程都扫，进程 B 启动时会把
-    进程 A 正在跑的 `running` 标成 failed，A 的 `finish_task` 又因 `WHERE status='running'`
-    静默不写——任务结果就这么丢了。拿不到锁的进程直接返回 None（不扫、不取件）。
+    **多进程下的关键**：扫尾只能在持锁者里做。拿不到锁的进程直接返回 None（不扫、不取件），
+    否则会把别的进程正在跑的行标掉。
 
     扫尾失败**不拖住 worker**：它只是一条 UPDATE，失败最多留下几条陈旧的 `running` 行；
     为此把整个队列停摆（提交照收、永远没人跑）才是更糟的降级。
@@ -229,15 +349,33 @@ async def start(db: Any) -> WorkerHandle | None:
         # 由 `main._start_background` 统一打“本进程只服务 HTTP”的日志，避免两处重复
         log.debug("未取得后台主实例锁，本进程不启动 worker")
         return None
+    lease_seconds = _lease_seconds()
+    counts: dict[str, int] = {}
+    interrupted = 0
     try:
-        interrupted = await db.sweep_interrupted_tasks()
+        if lease_seconds > 0:
+            counts = await db.reap_running_tasks(
+                backoff_seconds=RETRY_BACKOFF_SECONDS, expired_only=False
+            )
+        else:
+            interrupted = await db.sweep_interrupted_tasks()
     except Exception:  # noqa: BLE001
         log.exception("任务扫尾失败（worker 照常启动）")
     else:
-        if interrupted:
+        if lease_seconds > 0:
+            if counts:
+                log.warning("任务启动扫尾：%s", counts)
+        elif interrupted:
             log.warning("任务扫尾：%d 条因服务重启被标为 failed/interrupted", interrupted)
+
+    async def run_worker() -> None:
+        coros: list[Any] = [serve(db)]
+        if lease_seconds > 0:
+            coros.append(_reaper_loop(db))
+        await asyncio.gather(*coros)
+
     return WorkerHandle(
-        task=asyncio.create_task(serve(db), name="task-worker"),
+        task=asyncio.create_task(run_worker(), name="task-worker"),
         lock_conn=lock_conn,
     )
 
@@ -247,7 +385,7 @@ async def stop(handle: WorkerHandle | asyncio.Task[None] | None) -> None:
 
     **不 await 正在跑的那一件**（与 `api/optimize.py` 的断线姿态同源：取消不了线程/
     子进程，硬等只会把停机拖长）；它会随进程一起消失，行留在 `running`，
-    下次启动由持锁进程的 `start()` 扫成 `failed/interrupted`——如实，不粉饰。
+    下次启动由持锁进程的 `start()` 扫尾：租约启用时有限次重排，否则标 `failed/interrupted`。
     """
     if handle is None:
         return
@@ -268,6 +406,10 @@ async def stop(handle: WorkerHandle | asyncio.Task[None] | None) -> None:
 __all__ = [
     "POLL_SECONDS",
     "BACKGROUND_LOCK_KEY",
+    "HEARTBEAT_SECONDS",
+    "LEASE_SECONDS",
+    "REAPER_SECONDS",
+    "WORKER_ID",
     "WorkerHandle",
     "request_stop",
     "run_once",

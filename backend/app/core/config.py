@@ -214,6 +214,14 @@ class Settings(BaseSettings):
     rate_limit_research_window: float = 600.0
     rate_limit_task_submit: int = 20
     rate_limit_task_submit_window: float = 60.0
+
+    # ── 任务队列 v2（P4-S2）：崩溃/租约过期后的有限次重排 ──
+    # `max_attempts` 在**建任务时快照**，之后改配置不影响已在队列里的任务；
+    # 1 = 退回「只执行一次、不重排」（SPEC §3.6 回滚开关）。
+    task_max_attempts: int = 2
+    # false = 只保留 `SKIP LOCKED`（仍修重复取件）：不设租约、不心跳、不跑周期 reaper，
+    # 启动扫尾退回旧的 `failed/interrupted` 语义。
+    task_lease_enabled: bool = True
     # 模拟盘推进/创建会跑整段 replay（用户策略还要 spawn 子进程），单独一桶
     rate_limit_paper: int = 60
     rate_limit_paper_window: float = 60.0

@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
@@ -427,7 +427,13 @@ class FakeDatabase:
         code_sha256: str | None = None,
         data_digest: str | None = None,
         strategy_version: int | None = None,
-    ) -> None:
+        task_id: str | None = None,
+    ) -> str:
+        # 与真库的 `ON CONFLICT (task_id) DO NOTHING` 同语义：同一任务重跑不新增行
+        if task_id is not None:
+            existing = await self.backtest_run_id_by_task(task_id)
+            if existing is not None:
+                return existing
         self.runs[run_id] = {
             "id": run_id,
             "user_id": user_id,
@@ -438,8 +444,16 @@ class FakeDatabase:
             "code_sha256": code_sha256,
             "data_digest": data_digest,
             "strategy_version": strategy_version,
+            "task_id": task_id,
         }
         self._run_order.append(run_id)
+        return run_id
+
+    async def backtest_run_id_by_task(self, task_id: str) -> str | None:
+        for run_id in self._run_order:
+            if self.runs[run_id].get("task_id") == task_id:
+                return run_id
+        return None
 
     async def list_backtest_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         """摘要形状与真库的 JSONB 子集抽取一致：`metrics` 整块给，不逐键摊平。"""
@@ -486,16 +500,34 @@ class FakeDatabase:
     # ── 批量 / 网格汇总（M5b）────────────────────────────────
 
     async def save_optimization_run(
-        self, run_id: str, user_id: int, request: dict[str, Any], summary: dict[str, Any]
-    ) -> None:
+        self,
+        run_id: str,
+        user_id: int,
+        request: dict[str, Any],
+        summary: dict[str, Any],
+        *,
+        task_id: str | None = None,
+    ) -> str:
+        if task_id is not None:
+            existing = await self.optimization_run_by_task(task_id)
+            if existing is not None:
+                return str(existing["run_id"])
         self.optimizations[run_id] = {
             "id": run_id,
             "user_id": user_id,
             "created_at": datetime.now(UTC),
             "request": request,
             "summary": summary,
+            "task_id": task_id,
         }
         self._optimization_order.append(run_id)
+        return run_id
+
+    async def optimization_run_by_task(self, task_id: str) -> dict[str, Any] | None:
+        for run_id in self._optimization_order:
+            if self.optimizations[run_id].get("task_id") == task_id:
+                return {"run_id": run_id, "summary": self.optimizations[run_id]["summary"]}
+        return None
 
     async def list_optimization_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         """**照抄真库的 `summary - 'cells'`**：摘要是「去掉每格矩阵之后的 summary」。
@@ -871,11 +903,24 @@ class FakeDatabase:
 
     # ── 异步任务（P3-E1a）──────────────────────────────────
 
+    #: 真库 `_TASK_COLUMNS` 之外、只给 worker / reaper 用的列——都不出对外行
+    _TASK_INTERNAL = frozenset(
+        {
+            "user_id",
+            "cancel_requested_at",
+            "priority",
+            "available_at",
+            "attempts",
+            "max_attempts",
+            "worker_id",
+            "lease_expires_at",
+            "last_heartbeat_at",
+        }
+    )
+
     def _task_row(self, task_id: str) -> dict[str, Any]:
         row = self.tasks[task_id]
-        # `cancel_requested_at` 与真库的 `_TASK_COLUMNS` 一样不出对外行；取件路径
-        # （`claim_next_task`）直接返回整行，worker 才看得到它。
-        return {k: v for k, v in row.items() if k not in ("user_id", "cancel_requested_at")}
+        return {k: v for k, v in row.items() if k not in self._TASK_INTERNAL}
 
     async def create_task(
         self,
@@ -887,6 +932,7 @@ class FakeDatabase:
         total: int = 1,
         idempotency_key: str | None = None,
         active_limit: int | None = None,
+        max_attempts: int = 2,
     ) -> dict[str, Any] | None:
         if idempotency_key is not None:
             for row in self.tasks.values():
@@ -914,6 +960,14 @@ class FakeDatabase:
             "error": None,
             "cancel_requested_at": None,
             "idempotency_key": idempotency_key,
+            # 队列 v2：与真库同语义（priority 按 kind、max_attempts 建任务时快照）
+            "priority": {"backtest": 10}.get(kind, 0),
+            "available_at": datetime.now(UTC),
+            "attempts": 0,
+            "max_attempts": max_attempts,
+            "worker_id": None,
+            "lease_expires_at": None,
+            "last_heartbeat_at": None,
             "created_at": datetime.now(UTC),
             "started_at": None,
             "finished_at": None,
@@ -948,33 +1002,158 @@ class FakeDatabase:
                 break
         return out
 
-    async def claim_next_task(self) -> dict[str, Any] | None:
-        for task_id in self._task_order:
-            if self.tasks[task_id]["status"] == "queued":
-                self.tasks[task_id].update(status="running", started_at=datetime.now(UTC))
-                # 与真库同形：取件**多带 `user_id`**（执行体要拿它落归属），其余对外列照旧
-                return dict(self.tasks[task_id])
-        return None
+    async def claim_next_task(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> dict[str, Any] | None:
+        """与真库同序：priority DESC, available_at, created_at, id；取件置 attempts+1、清进度。"""
+        now = datetime.now(UTC)
+        ordered = sorted(
+            enumerate(self._task_order),
+            key=lambda item: (
+                -self.tasks[item[1]]["priority"],
+                self.tasks[item[1]]["available_at"],
+                item[0],
+            ),
+        )
+        task_id = next(
+            (
+                tid
+                for _, tid in ordered
+                if self.tasks[tid]["status"] == "queued"
+                and self.tasks[tid]["available_at"] <= now
+            ),
+            None,
+        )
+        if task_id is None:
+            return None
+        row = self.tasks[task_id]
+        row.update(
+            status="running",
+            started_at=now,
+            attempts=row["attempts"] + 1,
+            worker_id=worker_id,
+            progress={**row.get("progress", {}), "done": 0},
+        )
+        if lease_seconds > 0:
+            row["lease_expires_at"] = now + timedelta(seconds=lease_seconds)
+            row["last_heartbeat_at"] = now
+        else:
+            row["lease_expires_at"] = None
+            row["last_heartbeat_at"] = None
+        # 与真库同形：取件**多带**内部列（执行体要 user_id；worker 要 attempts/cancel 标志）
+        return dict(row)
 
-    async def update_task_progress(self, task_id: str, *, done: int, total: int) -> None:
+    async def heartbeat_task(
+        self, task_id: str, *, worker_id: str, lease_seconds: int
+    ) -> bool:
         row = self.tasks.get(task_id)
-        if row is not None and row["status"] == "running":
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["worker_id"] != worker_id
+        ):
+            return False
+        now = datetime.now(UTC)
+        row["last_heartbeat_at"] = now
+        row["lease_expires_at"] = now + timedelta(seconds=lease_seconds)
+        return True
+
+    async def requeue_task(
+        self, task_id: str, *, worker_id: str, backoff_seconds: float
+    ) -> bool:
+        row = self.tasks.get(task_id)
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["worker_id"] != worker_id
+            or row["attempts"] >= row["max_attempts"]
+        ):
+            return False
+        row.update(
+            status="queued",
+            available_at=datetime.now(UTC) + timedelta(seconds=backoff_seconds),
+            worker_id=None,
+            lease_expires_at=None,
+            last_heartbeat_at=None,
+        )
+        return True
+
+    async def reap_running_tasks(
+        self, *, backoff_seconds: float, expired_only: bool = True
+    ) -> dict[str, int]:
+        now = datetime.now(UTC)
+        counts: dict[str, int] = {}
+        for row in self.tasks.values():
+            if row["status"] != "running":
+                continue
+            lease = row.get("lease_expires_at")
+            if expired_only and (lease is None or lease >= now):
+                continue
+            if row.get("cancel_requested_at") is not None:
+                row.update(status="cancelled", finished_at=now)
+                counts["cancelled"] = counts.get("cancelled", 0) + 1
+            elif row["attempts"] < row["max_attempts"]:
+                row.update(
+                    status="queued",
+                    available_at=now + timedelta(seconds=backoff_seconds),
+                )
+                counts["queued"] = counts.get("queued", 0) + 1
+            else:
+                row.update(
+                    status="failed",
+                    error={
+                        "kind": "lease_expired",
+                        "message": "执行中断且已达最大尝试次数",
+                        "attempts": row["attempts"],
+                    },
+                    finished_at=now,
+                )
+                counts["failed"] = counts.get("failed", 0) + 1
+            row.update(worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
+        return counts
+
+    async def update_task_progress(
+        self, task_id: str, *, worker_id: str, done: int, total: int
+    ) -> None:
+        row = self.tasks.get(task_id)
+        if (
+            row is not None
+            and row["status"] == "running"
+            and row["worker_id"] == worker_id
+        ):
             row["progress"] = {"done": done, "total": total}
 
-    async def finish_task(self, task_id: str, *, result: dict[str, Any]) -> None:
+    async def finish_task(
+        self, task_id: str, *, worker_id: str, result: dict[str, Any]
+    ) -> None:
         row = self.tasks.get(task_id)
-        # 与真库的条件更新同语义：只有 `running` 能被标完成（被扫尾成 failed 的不覆盖）
-        if row is not None and row["status"] == "running":
+        # 与真库同语义：`status='running' AND worker_id` 才写得进去——
+        # 被回收/被新 worker 重新取件的行不被迟到完成覆盖
+        if (
+            row is not None
+            and row["status"] == "running"
+            and row["worker_id"] == worker_id
+        ):
             row.update(status="done", result=dict(result), finished_at=datetime.now(UTC))
 
-    async def finish_task_cancelled(self, task_id: str) -> None:
+    async def finish_task_cancelled(self, task_id: str, *, worker_id: str) -> None:
         row = self.tasks.get(task_id)
-        if row is not None and row["status"] == "running":
+        if (
+            row is not None
+            and row["status"] == "running"
+            and row["worker_id"] == worker_id
+        ):
             row.update(status="cancelled", finished_at=datetime.now(UTC))
 
-    async def fail_task(self, task_id: str, *, error: dict[str, Any]) -> None:
+    async def fail_task(
+        self, task_id: str, *, worker_id: str, error: dict[str, Any]
+    ) -> None:
         row = self.tasks.get(task_id)
-        if row is not None and row["status"] == "running":
+        if (
+            row is not None
+            and row["status"] == "running"
+            and row["worker_id"] == worker_id
+        ):
             row.update(status="failed", error=dict(error), finished_at=datetime.now(UTC))
 
     async def cancel_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:

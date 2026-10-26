@@ -205,6 +205,8 @@ export function sandboxKindLabel(kind: string): string {
     memory: "内存超限",
     output: "输出超限",
     crash: "沙箱异常退出",
+    // P4-S2：任务执行中断且已达最大尝试次数（队列 v2 的终态，不是沙箱问题）
+    lease_expired: "执行中断",
   };
   return labels[kind] ?? "沙箱终止";
 }

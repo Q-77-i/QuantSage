@@ -187,6 +187,7 @@ describe("readRunFailure", () => {
 describe("sandboxKindLabel", () => {
   it("认识的档位给人话，不认识的回落到中性说法", () => {
     expect(sandboxKindLabel("memory")).toBe("内存超限");
+    expect(sandboxKindLabel("lease_expired")).toBe("执行中断");
     expect(sandboxKindLabel("who-knows")).toBe("沙箱终止");
   });
 });

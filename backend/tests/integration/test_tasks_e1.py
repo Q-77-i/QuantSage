@@ -111,11 +111,8 @@ def test_cancel_then_worker_skips_it(real_stack: TestClient) -> None:
         purge_rows([email], [])
 
 
-def test_sweep_marks_stale_running_rows(jwt_env: Any) -> None:
-    """扫尾在真库上生效（`UPDATE ... WHERE status='running'` 那条 SQL）。
-
-    造一条卡在 `running` 的行 → 跑一次 `sweep_interrupted_tasks` → 它必须变成
-    `failed/interrupted`。
+def test_reaper_requeues_expired_lease_then_fails_at_max_attempts(jwt_env: Any) -> None:
+    """reaper 在真库上的三种去向（P4-S2）：过期租约回 `queued`；attempt 用尽终态。
 
     **不重跑 lifespan**（那会撞 ETL 调度器的 `SchedulerNotRunningError`，见
     `test_strategies_m4c.py` 的同款注释）：自己开一个连接池直接打这个方法——
@@ -127,7 +124,7 @@ def test_sweep_marks_stale_running_rows(jwt_env: Any) -> None:
 
     from app.core.db import Database, open_pool
 
-    email = fresh_emails("sweep", 1)[0]
+    email = fresh_emails("reap", 1)[0]
     task_id = str(uuid.uuid4())
     try:
         with psycopg.connect(get_settings().postgres_dsn) as conn:
@@ -138,25 +135,45 @@ def test_sweep_marks_stale_running_rows(jwt_env: Any) -> None:
                 (email, "not-a-real-hash"),
             ).fetchone()[0]
             conn.execute(
-                "INSERT INTO tasks (id, user_id, kind, status, request, progress) "
+                "INSERT INTO tasks (id, user_id, kind, status, request, progress, "
+                " attempts, max_attempts, worker_id, lease_expires_at) "
                 "VALUES (%s::uuid, %s, 'backtest', 'running', '{}'::jsonb, "
-                "'{\"done\": 0, \"total\": 1}'::jsonb)",
+                "'{\"done\": 0, \"total\": 1}'::jsonb, 1, 2, 'dead-worker', "
+                "now() - interval '1 second')",
                 (task_id, user_id),
             )
 
-        async def sweep() -> int:
+        async def reap(*, expired_only: bool = True) -> dict[str, int]:
             async with open_pool(get_settings().postgres_dsn) as pool:
-                return await Database(pool).sweep_interrupted_tasks()
+                return await Database(pool).reap_running_tasks(
+                    backoff_seconds=0, expired_only=expired_only
+                )
 
-        assert asyncio.run(sweep()) >= 1
+        assert asyncio.run(reap()) == {"queued": 1}
 
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            status, error, worker = conn.execute(
+                "SELECT status, error, worker_id FROM tasks WHERE id = %s::uuid", (task_id,)
+            ).fetchone()
+        assert status == "queued"
+        assert error is None  # 还没终态，不写 error
+        assert worker is None
+        # 幂等：再扫一次不该重复计入（`WHERE status='running'` 已经不匹配了）
+        assert asyncio.run(reap()) == {}
+
+        # 第二次执行也过期 ⇒ attempts 用尽 → failed/lease_expired
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            conn.execute(
+                "UPDATE tasks SET status='running', attempts=2, worker_id='dead-worker', "
+                "lease_expires_at=now() - interval '1 second' WHERE id=%s::uuid",
+                (task_id,),
+            )
+        assert asyncio.run(reap()) == {"failed": 1}
         with psycopg.connect(get_settings().postgres_dsn) as conn:
             status, kind = conn.execute(
                 "SELECT status, error->>'kind' FROM tasks WHERE id = %s::uuid", (task_id,)
             ).fetchone()
         assert status == "failed"
-        assert kind == "interrupted"
-        # 幂等：再扫一次不该重复计入（`WHERE status='running'` 已经不匹配了）
-        assert asyncio.run(sweep()) == 0
+        assert kind == "lease_expired"
     finally:
         purge_rows([email], [])
