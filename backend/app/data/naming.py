@@ -44,6 +44,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from app.data import cache
 from app.data import duckdb_client as dc
 
 #: 从任意字符串里抠出六位码（与 `etl.store._NORMALIZED_CODE` 同规则）
@@ -274,6 +275,28 @@ def load_dictionary(data_dir: Path | None = None) -> list[NameRow]:
     ]
 
 
+def cached_primary_names(data_dir: Path | None = None) -> dict[str, str]:
+    """展示用 `symbol → name`，按**字典文件戳 + 数据代际**缓存。
+
+    与 `load_dictionary` 分开：后者是纯读盘原语，测试与构建脚本要能看到最新文件；
+    这个壳只给「每请求都要名字」的展示路径（`/events/feed`、`/events/{id}`）省掉
+    每请求约 44ms 的读盘。键里同时带字典文件戳与数据代际——字典被手工重建（`_meta`
+    未变）也能失效，不靠「重建后记得清缓存」。字典缺失时返回空表，不抛。
+    """
+    path = dictionary_path(data_dir)
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = (0, 0)
+    return cache.through(
+        "primary_names",
+        (str(path), *stamp),
+        lambda: primary_names(load_dictionary(data_dir)),
+        data_dir=dc.resolve_data_dir(data_dir),
+    )
+
+
 def st_symbols(rows: Iterable[NameRow]) -> set[str]:
     """当前名字是风险警示的标的集合（供 A 股规则的 ST 幅度档用）。
 
@@ -290,6 +313,7 @@ __all__ = [
     "NameRow",
     "build_from_events",
     "build_rows",
+    "cached_primary_names",
     "dictionary_path",
     "load_dictionary",
     "name_as_of",

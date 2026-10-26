@@ -256,8 +256,10 @@ export const api = {
   symbols: (q: string, limit = 20) =>
     request<SymbolSearchResponse>(`/api/v1/market/symbols${query({ q, limit })}`),
 
-  events: (symbol: string, params: { start?: string; end?: string } = {}) =>
-    request<EventsResponse>(`/api/v1/events${query({ symbol, ...params })}`),
+  events: (
+    symbol: string,
+    params: { start?: string; end?: string; limit?: number; offset?: number } = {},
+  ) => request<EventsResponse>(`/api/v1/events${query({ symbol, ...params })}`),
 
   /**
    * **提交**一次回测（P3-E1a）：202 + `{task_id}`，不等引擎。

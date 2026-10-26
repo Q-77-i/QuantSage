@@ -384,3 +384,37 @@ def test_st_symbols_is_empty_without_a_dictionary() -> None:
     from app.data import naming
 
     assert naming.st_symbols([]) == set()
+
+
+def test_cached_primary_names_reads_disk_once_and_invalidates(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S1：展示用名字表按「路径 + mtime_ns + size」缓存；重写字典后失效。"""
+    from app.data import cache, naming
+
+    cache.clear_local()
+    rows = [NameRow("600519", "贵州茅台", 2, ts("2026-07-10 08:00:00"), ts("2026-09-30 08:00:00"))]
+    calls: list[int] = []
+
+    def fake_load(_data_dir=None):
+        calls.append(1)
+        return rows
+
+    monkeypatch.setattr(naming, "load_dictionary", fake_load)
+
+    assert naming.cached_primary_names(tmp_path) == {"600519": "贵州茅台"}
+    assert naming.cached_primary_names(tmp_path) == {"600519": "贵州茅台"}
+    assert len(calls) == 1
+
+    naming.write_dictionary(rows, tmp_path)
+    assert naming.cached_primary_names(tmp_path) == {"600519": "贵州茅台"}
+    assert len(calls) == 2
+    cache.clear_local()
+
+
+def test_cached_primary_names_is_empty_without_a_dictionary(tmp_path) -> None:
+    from app.data import cache, naming
+
+    cache.clear_local()
+    assert naming.cached_primary_names(tmp_path) == {}
+    cache.clear_local()

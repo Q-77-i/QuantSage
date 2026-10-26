@@ -883,6 +883,81 @@ def events(
         con.close()
 
 
+#: `/events` 页面真正要的列（与 `api/events._event_row` 一一对应）。
+#: **不 `SELECT *`**：整行 30 列里有 `stocks` / `payload_json` 一类字段，投影后缓存体积约 1/4。
+EVENTS_PAGE_COLUMNS = (
+    "event_id",
+    "title",
+    "summary",
+    "event_type",
+    "event_time",
+    "available_at",
+    "direction_norm",
+    "importance_score",
+    "factor_scores",
+    "source",
+    "original_source",
+    "content_hash",
+    "quality_status",
+)
+
+
+def events_page(
+    symbol: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+    data_dir: Path | None = None,
+) -> list[dict]:
+    """单标的**有界**事件查询，**最近的在前**（调用方负责反转成升序）。
+
+    与 `events()` 分开是刻意的：`events()` 给回测/报告做无界全史查询（307k 行，不能进
+    内存缓存）；这里只服务 `/events` 的 `limit` 契约，结果按数据代际缓存。缓存键含
+    `data_dir`（解析后）/ symbol / start / end / limit / offset——同参才复用。
+    """
+    return cache.through(
+        "events_page",
+        (symbol, start, end, limit, offset),
+        lambda: _events_page_query(
+            symbol, start=start, end=end, limit=limit, offset=offset, data_dir=data_dir
+        ),
+        # ⚠ 传**解析后**的目录：缓存键必须与 `connect()` 实际读的目录一致（同 `bars()`）
+        data_dir=resolve_data_dir(data_dir),
+    )
+
+
+def _events_page_query(
+    symbol: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+    data_dir: Path | None = None,
+) -> list[dict]:
+    con = connect(data_dir)
+    try:
+        sql = (
+            f"SELECT {', '.join(EVENTS_PAGE_COLUMNS)} FROM {EVENTS_VIEW}"
+            " WHERE list_contains(symbols, ?)"
+        )
+        params: list = [symbol]
+        if start:
+            sql += " AND event_time >= ?"
+            params.append(start)
+        if end:
+            sql += " AND event_time <= ?"
+            params.append(end)
+        # 先 DESC 取「最近 limit 条」，再由调用方反转；event_id 是稳定次序的并列键
+        sql += " ORDER BY event_time DESC, event_id DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        return _fetch(con, sql, params)
+    finally:
+        con.close()
+
+
 #: 证据面板要显示的列（30 列里取 11 个，别把整行塞进冻结报告）
 EVIDENCE_COLUMNS = (
     "event_id",

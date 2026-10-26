@@ -53,7 +53,8 @@ import type { BacktestRunDetail, RejectSummary, StoredBacktestRequest } from "@/
  */
 export default function BacktestPage() {
   const [form, setForm] = useState<FormState>(defaultForm);
-  const { loading, report, bars, events, error, failure, runId, phase, run, loadRun } = useBacktest();
+  const { loading, report, bars, events, eventsMeta, error, failure, runId, phase, run, loadRun } =
+    useBacktest();
   const router = useRouter();
 
   const equityRef = useRef<ChartHandle>(null);
@@ -272,7 +273,12 @@ export default function BacktestPage() {
 
             <RejectsSection rejects={report.rejects} />
 
-            <EventsTable events={events} coverage={report.meta.event_coverage} />
+            <EventsTable
+              events={events}
+              coverage={report.meta.event_coverage}
+              limit={eventsMeta?.limit}
+              truncated={eventsMeta?.truncated}
+            />
           </div>
         )}
       </main>
