@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # ── 样例数据（T2 落盘目录，DuckDB 查询层读它）──
     data_dir: Path = REPO_ROOT / "data"
 
+    # ── 事件读路径（S1）：默认窗口的月数 ──
+    # 只影响 `/api/v1/events` 的缺省区间；显式 start/end 总是优先。**0 = 关闭默认窗口**
+    # （两侧都回无界，仍受 limit 约束）——这是回退通道，不是非法值。
+    events_default_window_months: int = 12
+
     # ── 数据接入（M2b）：事件语料日增量 ──
     # **默认关**：定时任务会对外发请求、写数据目录，本地开发与测试不该被它打扰
     etl_enabled: bool = False

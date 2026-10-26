@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { api, describeError } from "@/lib/api";
 import { num } from "@/lib/format";
 import { addButtonState, symbolTitle } from "@/lib/stocks";
-import type { Bar, MarketEvent, SymbolProbe, WatchlistItem } from "@/lib/types";
+import type { Bar, EventsResponse, MarketEvent, SymbolProbe, WatchlistItem } from "@/lib/types";
 
 /**
  * 标的浏览 · 个股页（M10c）。
@@ -26,7 +26,7 @@ import type { Bar, MarketEvent, SymbolProbe, WatchlistItem } from "@/lib/types";
 export default function SymbolPage() {
   const params = useParams<{ symbol: string }>();
   const symbol = typeof params.symbol === "string" ? params.symbol : "";
-  const { bars, events, probe, name, loading, error, add, addState } = useSymbol(symbol);
+  const { bars, events, eventsMeta, probe, name, loading, error, add, addState } = useSymbol(symbol);
 
   if (error) {
     return (
@@ -96,7 +96,12 @@ export default function SymbolPage() {
           </div>
         </Section>
 
-        <EventsTable events={events} coverage={null} />
+        <EventsTable
+          events={events}
+          window={eventsMeta?.window}
+          limit={eventsMeta?.limit}
+          truncated={eventsMeta?.truncated}
+        />
       </div>
 
       <details className="mt-4" data-panel="symbol-notes">
@@ -106,7 +111,9 @@ export default function SymbolPage() {
             K 线走<strong>前复权</strong>（图表口径与回测取数同源，买卖点才落得准）；
             <strong>没有</strong>公司资料、财务数据与权威行业分类——数据源不覆盖，界面上不假装有。
           </li>
-          <li>事件时间线列出本地语料覆盖期内该标的的全部事件，每条可展开来源三元组。</li>
+          <li>
+            事件时间线按接口返回的窗口展示该标的的事件；超出上限时标注已截断，更早的事件可在回测页按窗口查看。每条可展开来源三元组。
+          </li>
         </ul>
       </details>
     </main>
@@ -116,6 +123,10 @@ export default function SymbolPage() {
 function useSymbol(symbol: string) {
   const [bars, setBars] = useState<Bar[] | null>(null);
   const [events, setEvents] = useState<MarketEvent[]>([]);
+  /** 事件查询的窗口/截断（S1）：表格按服务端实际生效的边界说话 */
+  const [eventsMeta, setEventsMeta] = useState<
+    Pick<EventsResponse, "window" | "limit" | "truncated"> | null
+  >(null);
   const [probe, setProbe] = useState<SymbolProbe | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [tracked, setTracked] = useState(false);
@@ -138,6 +149,11 @@ function useSymbol(symbol: string) {
       ]);
       setBars(barBody.bars);
       setEvents(eventBody.events);
+      setEventsMeta({
+        window: eventBody.window,
+        limit: eventBody.limit,
+        truncated: eventBody.truncated,
+      });
       setProbe(probeBody);
       setTracked(list.some((row: WatchlistItem) => row.symbol === symbol));
       setName(found.items.find((row) => row.symbol === symbol)?.name ?? null);
@@ -169,6 +185,7 @@ function useSymbol(symbol: string) {
   return {
     bars,
     events,
+    eventsMeta,
     probe,
     name,
     loading,

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any
@@ -18,6 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.backtest.events import parse_factor_score
+from app.core.config import get_settings
 from app.core.urls import safe_source_url
 from app.data import duckdb_client as dc
 from app.data import naming
@@ -235,7 +237,7 @@ async def get_feed(
         limit=limit,
         offset=offset,
     )
-    names = await asyncio.to_thread(lambda: naming.primary_names(naming.load_dictionary()))
+    names = await asyncio.to_thread(naming.cached_primary_names)
     return {
         **result,
         "offset": offset,
@@ -263,8 +265,38 @@ async def get_event_detail(
     row = await asyncio.to_thread(dc.event_detail, event_id, day=day.isoformat() if day else None)
     if row is None:
         raise HTTPException(status_code=404, detail=f"事件不存在：{event_id}")
-    names = await asyncio.to_thread(lambda: naming.primary_names(naming.load_dictionary()))
+    names = await asyncio.to_thread(naming.cached_primary_names)
     return _detail_row(row, names)
+
+
+def _today() -> date:
+    """默认窗口的「今天」。**单独成函数**：测试 monkeypatch 它，不冻结全局时间。"""
+    return date.today()
+
+
+def _months_before(day: date, months: int) -> date:
+    """日历月减法；目标月没有这一天时夹到月末（3/31 减 1 月 = 2/28）。"""
+    month0 = day.year * 12 + (day.month - 1) - months
+    year, month = divmod(month0, 12)
+    month += 1
+    last = calendar.monthrange(year, month)[1]
+    return date(year, month, min(day.day, last))
+
+
+def _effective_window(start: date | None, end: date | None) -> tuple[date | None, date | None]:
+    """把可缺省的入参解析成**实际生效**的窗口。
+
+    显式边界优先；缺哪侧补哪侧。`EVENTS_DEFAULT_WINDOW_MONTHS=0` 时两侧都不补——
+    这是回退通道（无界全史，仍受 limit 约束），不是默认行为。
+    """
+    months = get_settings().events_default_window_months
+    end_eff = end or (_today() if months > 0 else None)
+    start_eff = start or (
+        _months_before(end_eff, months) if months > 0 and end_eff is not None else None
+    )
+    if start_eff is not None and end_eff is not None and start_eff > end_eff:
+        raise HTTPException(status_code=422, detail="start 不能晚于 end")
+    return start_eff, end_eff
 
 
 @router.get("")
@@ -272,20 +304,37 @@ async def get_events(
     symbol: Annotated[str, Query(pattern=SYMBOL_PATTERN)],
     start: date | None = None,
     end: date | None = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 500,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict[str, Any]:
-    """单标的事件语料，按 `event_time` 升序；`start` / `end` 过滤的也是 `event_time`。
+    """单标的**有界**事件语料，按 `event_time` 升序；`start` / `end` 过滤的也是 `event_time`。
+
+    默认窗口由 `EVENTS_DEFAULT_WINDOW_MONTHS` 决定（初始 12 个月），显式 `start` / `end`
+    优先。`limit` 取**窗口内最近**的 N 条，超出时 `truncated=true`——不允许静默返回
+    「全部」却只给一部分。`window` 回显实际生效的边界（关闭默认窗口时为 `null`）。
 
     「该标的在这个窗口内没有事件」是合法结果（返回空列表而非 404）——它是一个有意义
     的事实，UI 有对应的空态；不像 bars 为空那样让图表无从画起。
     """
+    start_eff, end_eff = _effective_window(start, end)
     rows = await asyncio.to_thread(
-        dc.events,
+        dc.events_page,
         symbol,
-        start=start.isoformat() if start else None,
-        end=end.isoformat() if end else None,
+        start=start_eff.isoformat() if start_eff else None,
+        end=end_eff.isoformat() if end_eff else None,
+        limit=limit + 1,
+        offset=offset,
     )
+    truncated = len(rows) > limit
+    rows = rows[:limit]
     return {
         "symbol": symbol,
         "count": len(rows),
-        "events": [_event_row(row) for row in rows],
+        "events": [_event_row(row) for row in reversed(rows)],
+        "window": {
+            "start": start_eff.isoformat() if start_eff else None,
+            "end": end_eff.isoformat() if end_eff else None,
+        },
+        "limit": limit,
+        "truncated": truncated,
     }

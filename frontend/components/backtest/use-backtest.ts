@@ -35,6 +35,8 @@ export function useBacktest() {
   const [report, setReport] = useState<BacktestReport | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
   const [events, setEvents] = useState<MarketEvent[]>([]);
+  /** 事件查询的边界信息（S1）：回测页也要能说出「只显示了最近 N 条」 */
+  const [eventsMeta, setEventsMeta] = useState<{ limit: number; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   /** 失败的结构化信息（M4c-3）：静态检查被拦时页面要把 `findings` 逐条列出来 */
@@ -54,6 +56,7 @@ export function useBacktest() {
     setReport(next);
     setBars(barsResponse.bars);
     setEvents(eventsResponse.events);
+    setEventsMeta({ limit: eventsResponse.limit, truncated: eventsResponse.truncated });
   }, []);
 
   const run = useCallback(
@@ -124,6 +127,7 @@ export function useBacktest() {
     report,
     bars,
     events,
+    eventsMeta,
     error,
     failure,
     runId,

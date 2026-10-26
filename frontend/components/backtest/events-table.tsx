@@ -12,7 +12,7 @@ import { count, eventStamp, num, shortHash } from "@/lib/format";
 import type { EventCoverage, MarketEvent } from "@/lib/types";
 
 /**
- * 事件语料表：回测窗口内该标的的全部事件。
+ * 事件语料表：窗口内该标的的事件（服务端默认最多 500 条，超出时标注截断）。
  *
  * `event_time` 与 `available_at` **并列成列**——两者之差就是本项目的护城河，比任何
  * 文字解释都直观。来源三元组是 PRD §5 的硬性要求：行尾显示 `original_source`，
@@ -21,12 +21,23 @@ import type { EventCoverage, MarketEvent } from "@/lib/types";
 export function EventsTable({
   events,
   coverage,
+  window,
+  limit,
+  truncated,
 }: {
   events: MarketEvent[];
   /** 本次回测依据的语料覆盖区间（来自报告 `meta`）：值是查出来的，不写死「约 3 个月」 */
   coverage?: EventCoverage | null;
+  /** `/events` 实际生效的查询窗口（个股页用）；回测页没有它，退回 `coverage` */
+  window?: { start: string | null; end: string | null } | null;
+  limit?: number;
+  /** 窗口内还有更早事件未返回（S1）：必须让读者看见，不静默截断 */
+  truncated?: boolean;
 }) {
+  const windowSpan = window?.start && window?.end ? `${window.start} → ${window.end}` : null;
   const span = coverage?.start && coverage?.end ? `${coverage.start} → ${coverage.end}` : null;
+  const scope = windowSpan ? `窗口 ${windowSpan}` : span ? `语料覆盖 ${span}` : null;
+  const cut = truncated && limit ? ` · 仅显示最近 ${count(limit)} 条（已截断）` : "";
   // 详情抽屉（M10d）：状态放在表里，**两个页面（回测页与个股页）共用这一份接线**
   const [target, setTarget] = useState<DetailTarget | null>(null);
   return (
@@ -34,15 +45,19 @@ export function EventsTable({
       title="事件语料"
       hint={
         events.length
-          ? `回测窗口内 ${count(events.length)} 条${span ? ` · 语料覆盖 ${span}` : ""}`
-          : "回测窗口内该标的没有事件"
+          ? `${count(events.length)} 条${scope ? ` · ${scope}` : ""}${cut}`
+          : windowSpan
+            ? `窗口 ${windowSpan} 内没有该标的的事件`
+            : "该区间内没有事件"
       }
     >
       {events.length === 0 ? (
         <p className="mt-3 text-sm text-ink-2">
-          {span
-            ? `本地事件语料覆盖 ${span}，此区间内没有该标的的事件。换标的或放宽区间再看看。`
-            : "此区间内没有落库的事件。换标的或放宽区间再看看。"}
+          {windowSpan
+            ? `窗口 ${windowSpan} 内没有该标的的事件。换标的或放宽区间再看看。`
+            : span
+              ? `本地事件语料覆盖 ${span}，此区间内没有该标的的事件。换标的或放宽区间再看看。`
+              : "此区间内没有落库的事件。换标的或放宽区间再看看。"}
         </p>
       ) : (
         <>

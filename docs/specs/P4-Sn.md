@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.15）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.0** ｜ 2026-10-27 ｜ 状态：**待审**——P4-Sn 单机工程化（S1–S6）规格草案；经用户确认后按 S1→S6 实施。
+> 版本 **v3.1** ｜ 2026-10-27 ｜ 状态：**S1 已交付；S2–S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10）。
 >
 > 本文只覆盖 **P4-Sn 单机工程化（S1–S6）**。后续的平台化/多租户/分布式仍为愿景，**不写规格、不排期**。
 > 实测基线：`docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -84,9 +84,11 @@ S1–S6 六个工作包，按“先修瓶颈 → 再补可靠性 → 再验扩�
 
 ### 2.1 现状与根因
 
-`GET /api/v1/events?symbol=...` 当前无 `limit`、无默认区间，返回该标的全部事件；每个请求调用 `naming.load_dictionary()`（约 30ms）与 `naming.primary_names()`，再序列化全部行。基线 c=50 p95 1,028ms、吞吐 59 req/s。拆开计时：`dc.events` 约 57ms（无区间）/23ms（带区间），字典约 30ms，其余在行转换/JSON。
+`GET /api/v1/events?symbol=...` 当前无 `limit`、无默认区间，返回该标的全部事件；**不读名称字典**——`naming.load_dictionary()`（约 44ms）只在 `/feed` 与 `/{event_id}` 调用。真实成本是每个请求在 DuckDB 上重扫事件视图（307,704 行 × 30 列，约 80MB Parquet），且没有结果缓存。基线 c=50 p95 1,028ms、吞吐 59 req/s；2026-10-27 复测单请求 17–41ms，c=12 吞吐 68–71 req/s、c=50 约 35–42 req/s。
 
-**结论**：这是代码/查询级瓶颈，不是进程模型瓶颈；加 worker 只能线性放大，且每请求成本仍在。
+当前语料实际覆盖 **2026-07-07 → 2026-10-08（约 3 个月）**，6/12/24 个月默认窗口扫的是同一批分片，成本不可区分；**默认窗口是语义边界，不是本轮的提速手段**。
+
+**结论**：这是代码/查询级瓶颈，不是进程模型瓶颈；加 worker 只能线性放大，且每请求成本仍在。修法是**有界查询 + 代际结果缓存**。
 
 ### 2.2 API 契约
 
@@ -100,11 +102,7 @@ S1–S6 六个工作包，按“先修瓶颈 → 再补可靠性 → 再验扩�
 | `limit` | int | 500 | 1–2,000；超出 422，不静默截断 |
 | `offset` | int | 0 | 可选；本期前端不暴露分页，仅保留契约 |
 
-**默认窗口**：`EVENTS_DEFAULT_WINDOW_MONTHS`（初始 **12**）。S1 开工先量 6/12/24 个月的实际成本：
-
-- 12 个月满足 p95 目标 → 固定 12；
-- 12 个月不满足、6 个月满足 → 降到 6（并在 UI/文档写明）；
-- 24 个月仅在 p95 仍达标时可选；不为了“更长”牺牲 SLO。
+**默认窗口**：`EVENTS_DEFAULT_WINDOW_MONTHS`（初始 **12**）。2026-10-27 实测：当前语料仅覆盖约 3 个月，6/12/24 个月的成本不可区分（c=10 分别约 1,096 / 1,186 / 947 req/s，p95 12–13ms）；因此按 **12 个月**固定，作为语义边界而非性能杠杆。显式 `start/end` 总是优先。
 
 **响应**新增字段：
 
@@ -125,13 +123,17 @@ S1–S6 六个工作包，按“先修瓶颈 → 再补可靠性 → 再验扩�
 - 显式 `start/end` 保留完整历史访问；`limit` 上限 2,000，超过要分页/缩小窗口，不假装全量。
 - 返回顺序仍按 `event_time` 升序；默认/截断时取**窗口内最近** `limit` 条（先 `ORDER BY event_time DESC, event_id DESC LIMIT limit+1`，再反转）。
 - 回测页已传回测窗口，行为不变；若窗口内超过 `limit`，同样返回 `truncated`。
+- `window.start` / `window.end` 可为 `null`：默认窗口关闭（`EVENTS_DEFAULT_WINDOW_MONTHS=0`）时表示该侧无界。
+- `start > end` → **422**（不返回空壳，避免「怎么一条都没有」无从追查）。
+- `offset` 只保留契约：按「最近的在前」语义跳过 `offset` 条；本期前端不暴露分页。
 
 ### 2.3 实现要点
 
-1. **字典缓存**：`naming.load_dictionary` 按数据代际缓存（优先复用 `app/data/cache.py` 的代际键；没有代际时用 `path + mtime_ns + size`）。`primary_names` 的 map 也可一并缓存。命名是展示增强，不参与 PIT，缓存不改变语义。
-2. **查询边界**：`dc.events` 增加可选 `limit` / `order`；endpoint 传 `limit+1` 判断 `truncated`。默认窗口由 endpoint 计算，不把“现在”硬编码进数据层。
-3. **前端**：`EventsResponse` 增加 `window` / `limit` / `truncated`；`api.events` 增加 `limit`；个股页文案从“全部事件”改为“最近 12 个月 · 显示 500 条（已截断）”，并提示可在回测页按窗口查看；回测页保留窗口内展示。
-4. **不做**：DuckDB 索引/物化表、分页 UI、PIT 口径改动、把 `limit` 做成无上限。
+1. **结果缓存**：新增 `dc.events_page`——只投影 `_event_row` 用到的 13 列，`ORDER BY event_time DESC, event_id DESC LIMIT ? OFFSET ?`；用 `app/data/cache.py` 的 `cache.through` 按数据代际缓存（键含 `data_dir` / `symbol` / `start` / `end` / `limit` / `offset`）。**不缓存 `dc.events` 的无界全史查询**（回测/报告路径用它，307k 行不能进内存缓存）。
+2. **字典缓存**：`naming.cached_primary_names()` 按「字典路径 + mtime_ns + size」+ 数据代际缓存；只接 `/feed` 与 `/{event_id}`（`/events` 不读字典）。第二次请求不读盘，字典重建后失效。
+3. **查询边界**：endpoint 传 `limit+1` 判断 `truncated`；默认窗口由 endpoint 计算（`EVENTS_DEFAULT_WINDOW_MONTHS`，初始 **12**；**0 = 关闭默认窗口，回退无界**），不把“现在”硬编码进数据层。
+4. **前端**：`EventsResponse` 增加 `window` / `limit` / `truncated`；`api.events` 增加 `limit`；个股页文案从“全部事件”改为按服务端返回的实际窗口/条数显示，并提示可在回测页按窗口查看；回测页保留窗口内展示，截断时同样标注。
+5. **不做**：DuckDB 索引/物化表、分页 UI、PIT 口径改动、把 `limit` 做成无上限。
 
 ### 2.4 验收
 
@@ -140,14 +142,20 @@ S1–S6 六个工作包，按“先修瓶颈 → 再补可靠性 → 再验扩�
 | 默认窗口测量 | 6/12/24 个月各跑 c=10/50；记录 p95，最终默认值写进配置与验收记录 |
 | events c=50 | p95 **<500ms**、吞吐 **≥150 req/s（目标 200）** |
 | 回测窗口路径 | 不回归；窗口内事件数与截断标记正确 |
-| 字典缓存 | 第二次请求不再读盘；数据代际变化后失效 |
-| 契约 | `truncated`/`window` 有单测；超 `limit` 返回 422；显式 `start/end` 可取更早 |
+| 结果缓存 | 同参第二次请求不再查 DuckDB（L1 命中）；数据代际变化后失效 |
+| 冷缓存 | 首次请求仍走 DuckDB（约 20–40ms），**如实记录，不承诺冷缓存 SLO** |
+| 字典缓存 | 第二次请求不再读盘；字典重建后失效（`/feed`、`/{event_id}`） |
+| 契约 | `truncated`/`window` 有单测；超 `limit` 返回 422；`start > end` 返回 422；显式 `start/end` 可取更早 |
 | 前端 | `pnpm test && pnpm typecheck && pnpm lint` 通过；个股页不再写“全部事件” |
+
+`events c=50 p95 <500ms、吞吐 ≥150 req/s` 的读数**以缓存预热后为准**；压测记录必须同时给出冷缓存与多标的诊断值，避免把「同一 URL 的缓存命中」说成普遍吞吐。
 
 ### 2.5 沿革与回滚
 
 - 旧行为：无 `limit`、无默认窗口，返回全部。新行为：默认窗口 + limit + `truncated`。这是**有意的契约变更**，必须在 PRD/README/前端文案同步。
-- 回滚：配置 `EVENTS_DEFAULT_WINDOW_MONTHS=0` 可关闭默认窗口（仍需 `limit`）；若前端未适配，先回滚 endpoint 默认值，不删 `truncated` 字段。
+- 回滚：配置 `EVENTS_DEFAULT_WINDOW_MONTHS=0` 可关闭默认窗口（start/end 都回无界，仍需 `limit`）；若前端未适配，先回滚 endpoint 默认值，不删 `truncated` 字段。
+- 结果缓存回退：`cache.clear_local()` / 重启即清 L1；L2 随代际键自然失效。缓存层异常时 `cache.through` 直读，不影响正确性。
+- 日界语义（2026-10-27 拍板）：S1 沿用 `dc.events` 现有的 `event_time <= end`（含当日 00:00 前），默认 `end=今天` 会漏掉当天 00:00 后的事件；记为已知边界。若要改成按日含全天，另开一项并同步 `report._events_in_window` 的计数口径。
 
 ---
 
@@ -520,4 +528,5 @@ SET temp_directory = '<data_dir>/_tmp/duckdb-<pid>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-27 | v3.1 | S1 按实测与拍板修订：订正根因（`/events` 不读字典；真实瓶颈是无结果缓存的 DuckDB 重扫）、当前语料仅 3 个月故 6/12/24 窗口不可区分、新增 `dc.events_page` 有界结果缓存与 `naming.cached_primary_names()`；补 `start > end` 422、`window` 可为 null、缓存验收与回滚、日界已知边界。 |
 | 2026-10-27 | v3.0 | 初稿：基于 P4-S0 基线与用户 5 项拍板，定义 S1–S6；本轮定位为单机工程化演练，非 HA。 |

@@ -268,7 +268,7 @@
 
 | 工作包 | 内容 | 验收口径 |
 |---|---|---|
-| S1 | `/events` 字典缓存 + 查询边界（默认窗口 + limit + `truncated`） | c=50 p95 <500ms、吞吐 ≥150 req/s；不静默改变“全部事件”语义 |
+| S1 | `/events` 有界查询结果缓存 + 查询边界（默认窗口 + limit + `truncated`） | c=50 p95 <500ms、吞吐 ≥150 req/s；不静默改变“全部事件”语义 |
 | S2 | 队列 v2：`SKIP LOCKED` + 租约/心跳 + 有限次重排 + 结果幂等；Worker 单实例 | kill -9 后 60s 内重排；max_attempts=2；0 重复结果 |
 | S3 | 单 RAG 推理进程 + 有界队列/超时/并发闸门；交互降级 RRF、研究有界排队 | 10 并发 rerank p95 ≤5s 或快速降级；0 MPS 崩溃；降级可见 |
 | S4 | Docker/DuckDB/Redis/PG 资源上限；进程启停/健康检查 | 5–10min soak 无 OOM；上限生效；swap 不增长 |

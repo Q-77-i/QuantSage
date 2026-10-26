@@ -238,12 +238,23 @@ def test_events_window_filters_on_event_time(data_dir: Path) -> None:
 
 
 def test_events_empty_window_is_not_404(data_dir: Path) -> None:
-    """「这个窗口内没有事件」是有意义的事实，不是错误。"""
+    """「这个窗口内没有事件」是有意义的事实，不是错误。
+
+    只显式给 `end` 时，默认窗口以**该 end** 为右端回推 12 个月（不是以今天回推）——
+    否则查一个较早的 end 会得到一个 start > end 的空窗口。
+    """
     response = client.get(
         "/api/v1/events", params={"symbol": SYMBOL, "end": "2026-07-10"}
     )
     assert response.status_code == 200
-    assert response.json() == {"symbol": SYMBOL, "count": 0, "events": []}
+    assert response.json() == {
+        "symbol": SYMBOL,
+        "count": 0,
+        "events": [],
+        "window": {"start": "2025-07-10", "end": "2026-07-10"},
+        "limit": 500,
+        "truncated": False,
+    }
 
 
 # ── POST /api/v1/backtest ───────────────────────────────────────────────────

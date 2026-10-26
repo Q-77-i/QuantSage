@@ -127,3 +127,9 @@ def test_strict_msgpack_is_enforced() -> None:
 
     assert app.STRICT_MSGPACK_ENFORCED is True
     assert _msgpack.STRICT_MSGPACK_ENABLED is True
+
+
+def test_events_default_window_defaults_to_twelve_months() -> None:
+    """S1：默认窗口 12 个月；0 是「关闭窗口」的显式回退值，不是非法值。"""
+    assert _settings().events_default_window_months == 12
+    assert _settings(events_default_window_months=0).events_default_window_months == 0

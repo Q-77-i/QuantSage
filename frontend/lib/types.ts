@@ -149,6 +149,11 @@ export interface EventsResponse {
   symbol: string;
   count: number;
   events: MarketEvent[];
+  /** 实际生效的窗口；关闭默认窗口时该侧为 null */
+  window: { start: string | null; end: string | null };
+  limit: number;
+  /** 窗口内还有更早的事件未返回（服务端不会静默只给一部分） */
+  truncated: boolean;
 }
 
 // ── POST /api/v1/backtest（SPEC §5）─────────────────────────────────────────

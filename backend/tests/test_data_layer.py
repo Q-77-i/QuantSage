@@ -321,3 +321,57 @@ def test_factor_price_rows_excludes_bars_without_prices(tmp_path: Path) -> None:
     rows = dc.factor_price_rows("2026-06-01", "2026-06-03", data_dir=tmp_path)
 
     assert [row["trade_date"] for row in rows] == [date(2026, 6, 1), date(2026, 6, 3)]
+
+
+# ── S1：有界事件查询与结果缓存 ───────────────────────────────
+
+
+def test_events_page_returns_latest_first_and_projects_columns(sample_data_dir: Path) -> None:
+    from app.data import cache
+
+    cache.clear_local()
+    rows = dc.events_page("300750", limit=1, data_dir=sample_data_dir)
+
+    assert [row["event_id"] for row in rows] == ["news:2"]
+    # 只投影 `_event_row` 要的列：不把 30 列整行塞进缓存
+    assert set(rows[0]) == set(dc.EVENTS_PAGE_COLUMNS)
+    assert "stocks" not in rows[0]
+    cache.clear_local()
+
+
+def test_events_page_applies_window_limit_and_offset(sample_data_dir: Path) -> None:
+    from app.data import cache
+
+    cache.clear_local()
+    assert [row["event_id"] for row in dc.events_page(
+        "300750", start="2026-08-01", limit=10, data_dir=sample_data_dir
+    )] == ["news:2"]
+    assert [row["event_id"] for row in dc.events_page(
+        "300750", limit=1, offset=1, data_dir=sample_data_dir
+    )] == ["news:1"]
+    cache.clear_local()
+
+
+def test_events_page_is_cached_by_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.data import cache
+
+    cache.clear_local()
+    calls: list[int] = []
+
+    def fake(*_args: object, **_kwargs: object) -> list[dict]:
+        calls.append(1)
+        return [{"event_id": "x"}]
+
+    monkeypatch.setattr(dc, "_events_page_query", fake, raising=False)
+
+    dc.events_page("600519", data_dir=tmp_path)
+    dc.events_page("600519", data_dir=tmp_path)
+    assert len(calls) == 1
+
+    (tmp_path / "_meta").mkdir()
+    (tmp_path / "_meta" / "events.json").write_text("{}")
+    dc.events_page("600519", data_dir=tmp_path)
+    assert len(calls) == 2
+    cache.clear_local()
