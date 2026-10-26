@@ -136,8 +136,14 @@ jobs:
       - name: 后端依赖审计
         working-directory: backend
         run: |
+          # 2026-10-27 窄口径例外：LiteLLM 直到 1.106.4 都硬约束 filelock<4.0，
+          # 而审计要求的修复版是 4.2.1，装不上。只忽略这 3 条，其余照常；
+          # LiteLLM 放开 filelock<4.0 后删除这三行并升级 filelock。
           uv export --no-hashes --no-emit-project --format requirements-txt > "$RUNNER_TEMP/req.txt"
-          uvx pip-audit -r "$RUNNER_TEMP/req.txt" --strict
+          uvx pip-audit -r "$RUNNER_TEMP/req.txt" --strict \
+            --ignore-vuln CVE-2026-112940 \
+            --ignore-vuln CVE-2026-112913 \
+            --ignore-vuln CVE-2026-112907
       # 例外清单在 `frontend/pnpm-workspace.yaml` 的 `auditConfig.ignoreGhsas` 里（目前只有
       # `braces` 一条：**上游无补丁可升**，路径是 shadcn CLI 的构建期 glob 工具链、运行时不加载
       # ——SPEC §8.4 已如实记录，这里不假装已解决）。**例外入库而不是写在命令里**：跟着代码
