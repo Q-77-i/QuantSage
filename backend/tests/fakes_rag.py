@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Any
 
 from app.rag.collection import DENSE_VECTOR, SPARSE_VECTOR
-from app.rag.encoder import EncodedDocs
+from app.rag.protocols import EncodedDocs
 
 DIM = 8  # 用例里不需要 1024 维，8 维足够表达「同向/正交」
 
@@ -74,7 +74,9 @@ class FakeReranker:
         self._fail = fail
         self.calls = 0
 
-    def rerank(self, query: str, docs: Sequence[str]) -> list[float]:
+    def rerank(
+        self, query: str, docs: Sequence[str], *, request_class: str = "interactive"
+    ) -> list[float]:
         from app.rag import RagNotReady
 
         if self._fail:

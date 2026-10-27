@@ -102,8 +102,15 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
 
     **E7d 数据指纹**：执行前按窗口算一次（窗口子集，实测 0.05s），两条分支**统一注入**
     报告的 `meta.data_digest` 并落库——用户策略的报告由沙箱产出，此处补同一键，两条路径同形。
+
+    **P4-S2 幂等**：重排后的第二次执行先按 `task_id` 查既有结果，有就直接返回——
+    崩溃发生在「落库之后、`finish_task` 之前」时，不重跑、不产生第二条记录。
     """
     request = task["request"]
+    task_id = str(task["id"])
+    existing = await db.backtest_run_id_by_task(task_id)
+    if existing is not None:
+        return {"run_id": existing}
     config = _config_of(request)
     run_id = str(uuid.uuid4())
     user_strategy = request["strategy"] == USER_STRATEGY
@@ -130,7 +137,7 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
     strategy_version = request.get("strategy_version") if user_strategy else None
     report["meta"]["strategy_version"] = strategy_version
 
-    await db.save_backtest_run(
+    run_id = await db.save_backtest_run(
         run_id,
         int(task["user_id"]),
         visible_request(request),
@@ -139,6 +146,7 @@ async def execute_backtest(db: Any, task: Mapping[str, Any], ctx: RunContext) ->
         code_sha256=code_sha256(request["source"]) if user_strategy else None,
         data_digest=digest,
         strategy_version=strategy_version,
+        task_id=task_id,
     )
     return {"run_id": run_id}
 
@@ -190,7 +198,14 @@ def thaw_options(payload: Mapping[str, Any]) -> RunOptions:
 async def _execute_cells(
     db: Any, task: Mapping[str, Any], ctx: RunContext, *, kind: str
 ) -> dict[str, Any]:
-    """网格与批量的共同执行体（它们除展开方式外完全同构——M5b 起就是这个口径）。"""
+    """网格与批量的共同执行体（它们除展开方式外完全同构——M5b 起就是这个口径）。
+
+    **P4-S2 幂等**：重排后先按 `task_id` 查既有汇总，有就直接回放 `done` 帧。
+    """
+    task_id = str(task["id"])
+    existing = await db.optimization_run_by_task(task_id)
+    if existing is not None:
+        return done_payload(existing["run_id"], existing["summary"])
     exec_payload = task["request"][EXEC_KEY]
     specs = thaw_specs(exec_payload["cells"])
     options = thaw_options(exec_payload["options"])
@@ -221,8 +236,12 @@ async def _execute_cells(
         )
 
     run_id = str(uuid.uuid4())
-    await db.save_optimization_run(
-        run_id, int(task["user_id"]), visible_request(task["request"]), summary
+    run_id = await db.save_optimization_run(
+        run_id,
+        int(task["user_id"]),
+        visible_request(task["request"]),
+        summary,
+        task_id=task_id,
     )
     # 返回的就是 `done` 帧的载荷：worker 拿它既落 `tasks.result` 又广播（一处构造，两处用）
     return done_payload(run_id, summary)

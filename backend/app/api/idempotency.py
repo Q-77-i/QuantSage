@@ -26,6 +26,7 @@ from fastapi import Header, HTTPException
 from pydantic import BaseModel
 
 from app.core import quota
+from app.core.config import get_settings
 
 #: 头名。**由前端生成**：同一次用户动作重试复用同一个，新动作换一个（前端 `lib/idempotency.ts`）
 HEADER_ALIAS = "Idempotency-Key"
@@ -116,6 +117,7 @@ async def create_task(
         total=total,
         idempotency_key=key,
         active_limit=active_limit,
+        max_attempts=get_settings().task_max_attempts,
     )
     if row is None:
         if active_limit is None:

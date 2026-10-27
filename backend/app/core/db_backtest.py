@@ -21,21 +21,40 @@ class BacktestMixin:
         code_sha256: str | None = None,
         data_digest: str | None = None,
         strategy_version: int | None = None,
-    ) -> None:
-        """落一次回测。`request` 与 `report` 都是普通 dict，必须显式包 `Jsonb`——
-        psycopg 不会把 dict 自动转 jsonb，而 `list` 会被适配成数组。
+        task_id: str | None = None,
+    ) -> str:
+        """落一次回测，返回**最终**的 `run_id`。`request` 与 `report` 都是普通 dict，
+        必须显式包 `Jsonb`——psycopg 不会把 dict 自动转 jsonb，而 `list` 会被适配成数组。
 
         `strategy_id` / `code_sha256` 只对用户策略有值：前者供「我的回测」认出策略，
         后者供前端比对「代码是否已改」（M4c 运行契约）。`data_digest`（E7d）是这次运行
         读到的数据指纹（窗口内分片），供「实验可复现」核对；报告 meta 里也有一份。
+
+        `task_id`（P4-S2）是结果幂等键：同一任务被重排后第二次执行时，`ON CONFLICT`
+        不新增行，回查既有 `run_id` 返回——重跑不产生第二条记录。
         """
-        await self._exec(
+        row = await self._one(
             "INSERT INTO backtest_runs "
-            "(id, user_id, request, report, strategy_id, code_sha256, data_digest, strategy_version) "
-            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s, %s, %s)",
+            "(id, user_id, request, report, strategy_id, code_sha256, data_digest, "
+            " strategy_version, task_id) "
+            "VALUES (%s::uuid, %s, %s, %s, %s::uuid, %s, %s, %s, %s::uuid) "
+            "ON CONFLICT (task_id) DO NOTHING RETURNING id",
             (run_id, user_id, Jsonb(request), Jsonb(report), strategy_id, code_sha256,
-             data_digest, strategy_version),
+             data_digest, strategy_version, task_id),
         )
+        if row is not None:
+            return str(row["id"])
+        existing = await self.backtest_run_id_by_task(task_id) if task_id else None
+        if existing is None:  # pragma: no cover —— 唯一冲突必然能回查到
+            raise RuntimeError("backtest_runs 冲突却回查不到既有行")
+        return existing
+
+    async def backtest_run_id_by_task(self, task_id: str) -> str | None:
+        """按任务号回查结果（P4-S2 重排幂等）。旧记录 `task_id` 为 NULL，查不到。"""
+        row = await self._one(
+            "SELECT id FROM backtest_runs WHERE task_id = %s::uuid", (task_id,)
+        )
+        return str(row["id"]) if row is not None else None
 
     async def list_backtest_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         """摘要列表。**只抽 JSONB 子集**，不把整份报告拉回来。
@@ -86,17 +105,35 @@ class BacktestMixin:
         user_id: int,
         request: dict[str, Any],
         summary: dict[str, Any],
-    ) -> None:
-        """落一次批处理汇总。与 `save_backtest_run` 同形：dict 必须显式包 `Jsonb`。
+        *,
+        task_id: str | None = None,
+    ) -> str:
+        """落一次批处理汇总，返回**最终**的 `run_id`。与 `save_backtest_run` 同形：
+        dict 必须显式包 `Jsonb`，`task_id` 走同一条幂等口径。
 
         与回测记录**分开存**是 SPEC §6 M5b 定的：网格落的是「每格一行摘要」，
         与「我的回测」混流会让列表里一半是没法打开的残缺报告。
         """
-        await self._exec(
-            "INSERT INTO optimization_runs (id, user_id, request, summary) "
-            "VALUES (%s::uuid, %s, %s, %s)",
-            (run_id, user_id, Jsonb(request), Jsonb(summary)),
+        row = await self._one(
+            "INSERT INTO optimization_runs (id, user_id, request, summary, task_id) "
+            "VALUES (%s::uuid, %s, %s, %s, %s::uuid) "
+            "ON CONFLICT (task_id) DO NOTHING RETURNING id",
+            (run_id, user_id, Jsonb(request), Jsonb(summary), task_id),
         )
+        if row is not None:
+            return str(row["id"])
+        existing = await self.optimization_run_by_task(task_id) if task_id else None
+        if existing is None:  # pragma: no cover —— 唯一冲突必然能回查到
+            raise RuntimeError("optimization_runs 冲突却回查不到既有行")
+        return str(existing["run_id"])
+
+    async def optimization_run_by_task(self, task_id: str) -> dict[str, Any] | None:
+        """按任务号回查批处理结果（P4-S2 重排幂等）：`{run_id, summary}` 或 None。"""
+        row = await self._one(
+            "SELECT id, summary FROM optimization_runs WHERE task_id = %s::uuid",
+            (task_id,),
+        )
+        return {"run_id": str(row["id"]), "summary": row["summary"]} if row else None
 
     async def list_optimization_runs(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         """摘要列表（最近在前）。**取 `summary - 'cells'`**：去掉最大的那一块（每格矩阵），

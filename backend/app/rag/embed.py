@@ -28,7 +28,8 @@ from pathlib import Path
 from app.core.config import get_settings
 from app.rag import RagNotReady
 from app.rag import collection as col
-from app.rag.encoder import Embedder, get_embedder
+from app.rag.clients import get_embedder
+from app.rag.protocols import Embedder
 from app.rag.text import build_embedding_text
 
 log = logging.getLogger(__name__)

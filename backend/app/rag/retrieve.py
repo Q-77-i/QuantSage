@@ -26,9 +26,11 @@ from qdrant_client import models
 
 from app.backtest.types import CN_TZ
 from app.core.config import get_settings
-from app.rag import RagNotReady
+from app.rag import RagNotReady, RagOverloaded
 from app.rag import collection as col
-from app.rag.encoder import Embedder, Reranker, get_embedder, get_reranker
+from app.rag import metrics as rag_metrics
+from app.rag.clients import get_embedder, get_reranker
+from app.rag.protocols import Embedder, Reranker
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +81,21 @@ class RetrievedEvent:
     text: str
     score: float
     score_kind: str  # "rerank" | "rrf" | "dense"
+    #: 精排降级原因（`queue_full` / `timeout` / `unavailable`）；未降级为 None。
+    #: `score_kind="rrf"` 在 hybrid 模式下是正常档位，只有这个字段非空才表示「降级」。
+    degraded_reason: str | None = None
+
+
+#: 降级原因 → 一句人话（机器码不进给模型/用户看的文本；两个调用面共用一份）
+DEGRADED_LABELS = {
+    "queue_full": "队列满",
+    "timeout": "等待超时",
+    "unavailable": "服务不可用",
+}
+
+
+def degraded_label(reason: str) -> str:
+    return DEGRADED_LABELS.get(reason, reason)
 
 
 def parse_as_of(value: str | None) -> datetime | None:
@@ -137,7 +154,9 @@ def build_filter(spec: SearchQuery) -> models.Filter:
     return models.Filter(must=must)
 
 
-def _to_event(point: Any, score: float, kind: str) -> RetrievedEvent:
+def _to_event(
+    point: Any, score: float, kind: str, degraded_reason: str | None = None
+) -> RetrievedEvent:
     payload: Mapping[str, Any] = point.payload or {}
     return RetrievedEvent(
         event_id=str(payload.get("event_id") or ""),
@@ -158,6 +177,7 @@ def _to_event(point: Any, score: float, kind: str) -> RetrievedEvent:
         text=str(payload.get("text") or ""),
         score=float(score),
         score_kind=kind,
+        degraded_reason=degraded_reason,
     )
 
 
@@ -168,11 +188,15 @@ def search(
     embedder: Embedder | None = None,
     reranker: Reranker | None = None,
     mode: str = MODE_RERANK,
+    request_class: str = "interactive",
 ) -> list[RetrievedEvent]:
     """跑检索管线。依赖不可用抛 `RagNotReady`；精排不可用则降级为 RRF 顺序。
 
     `mode` 是消融开关（默认三档里最完整的一档），生产路径与评测路径共用同一份代码——
     评测另写一套实现的话，量出来的就不是线上跑的东西了。
+
+    `request_class`（`interactive` / `research`）只影响远程精排的排队上限与超时（SPEC §4.3）；
+    降级时原因写进每条结果的 `degraded_reason`，调用方不得只写日志。
     """
     settings = get_settings()
     top_k = spec.top_k or settings.rag_top_k
@@ -215,12 +239,23 @@ def search(
     reranker = reranker or get_reranker()
     head, tail = fused[:candidates], fused[candidates:]
     try:
-        scores = reranker.rerank(spec.query, [str((p.payload or {}).get("text") or "") for p in head])
+        scores = reranker.rerank(
+            spec.query,
+            [str((p.payload or {}).get("text") or "") for p in head],
+            request_class=request_class,
+        )
+    except RagOverloaded as exc:
+        # 过载（队列满/排队超时）：原因来自服务端，如实带给调用方。
+        # **指标不在这里记**：服务端已按 queue_full/timeout 计数，API 只记 unavailable（§4.4）。
+        log.warning("精排过载（%s），降级为 RRF 顺序", exc.reason)
+        return [_to_event(p, p.score, "rrf", exc.reason) for p in fused[:top_k]]
     except Exception as exc:  # noqa: BLE001 —— 精排失败（未就绪 / OOM / 计算异常）都要降级
-        # 降级可以，隐瞒不行：score_kind 会如实写进返回值。只捕 `RagNotReady` 不够：
-        # 模型载入后的 torch/MPS OOM 或 compute_score 异常同样属于「精排失败」。
+        # 降级可以，隐瞒不行：score_kind 与 degraded_reason 都会如实写进返回值。
+        # 只捕 `RagNotReady` 不够：模型载入后的 torch/MPS OOM 或 compute_score 异常
+        # 同样属于「精排失败」。
+        rag_metrics.RERANK_DEGRADED.labels(**{"class": request_class, "reason": "unavailable"}).inc()
         log.warning("精排失败，降级为 RRF 顺序：%s", exc)
-        return [_to_event(p, p.score, "rrf") for p in (fused[:top_k])]
+        return [_to_event(p, p.score, "rrf", "unavailable") for p in fused[:top_k]]
 
     ranked = sorted(zip(head, scores, strict=True), key=lambda pair: pair[1], reverse=True)
     events = [_to_event(p, s, "rerank") for p, s in ranked[:top_k]]

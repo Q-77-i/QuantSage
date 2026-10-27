@@ -20,6 +20,9 @@ os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 # 离线套件不调真模型：空命中用例默认不走「查询改写」这一轮（SPEC 附录 A.2）。
 # 要验改写本身的用例注入 `rewrite_fn`，与这个开关无关。
 os.environ.setdefault("RAG_QUERY_REWRITE", "false")
+# 离线/集成套件**不依赖外部 RAG 服务**：显式置空（开发者 shell/.env 里配了也不影响）。
+# 远程客户端自己的用例用 MockTransport 构造，不走这个全局开关。
+os.environ["RAG_SERVICE_URL"] = ""
 # 沙箱隔离：本机有 sandbox-exec / bwrap 就真跑隔离（安全用例也在这里验）；
 # 没有就降级，避免 CI 因缺少系统包而整片红。生产默认仍是 require（见 core/config.py）。
 os.environ.setdefault("STRATEGY_ISOLATION", "auto")

@@ -5,8 +5,10 @@
 1. **stdio 纪律**：stdout 只走 JSON-RPC 帧，一切日志走 stderr（`core/logging.py` 的
    `StreamHandler()` 默认即 stderr）。**任何一处 `print()` 都会撕坏协议**——排障时先怀疑它。
 2. **直连检索层，不转发 HTTP 到后端**：自包含（后端没起也能用）、没有内部鉴权面。
-   代价是第二个进程要自己载嵌入模型（冷启动 7–15s，M3 实测）⇒ 固定走 **hybrid 档**
-   （dense ∥ sparse → RRF，**不载精排**那份 2.3GB 模型），返回里如实标 `score_kind="rrf"`。
+   模型入口由 `app/rag/clients.py` 选择：配置了 `RAG_SERVICE_URL` 就走独立 RAG 服务
+   （**MCP 进程不载模型**）；为空则进程内回滚（会载模型，重排另加约 2.3GB）。
+   档位与 chat 工具一致（rerank）；服务过载/不可用时降级 RRF，并在返回里如实写
+   `score_kind` 与 `degraded_reason`（S3）。
 3. **返回上限自定**：小石的教训是「单次 500 行硬顶 + `cursor` 被拒收 ⇒ 结构上不可翻页」。
    这里 `top_k ≤ 10`（与内部工具同档）、摘要截断、整份返回有硬上限，且**不设 cursor**——
    检索是**排序**不是枚举，要更多就换查询词或加过滤，不提供假的翻页承诺。
@@ -151,9 +153,10 @@ async def search_events(
         event_type: 限定事件类型：news / announcement / policy / person / research
         top_k: 返回条数，默认 5，上限 10
 
-    返回 JSON：`ok` / `as_of` / `coverage` / `score_kind`（`rrf` = 未精排）/ `count` /
-    `query`（原查询、实际查询、是否改写）/ `hits[]`（标题、双时间戳、方向、重要度、摘要、
-    标的、来源三元组、得分）。检索不可用时返回 `{"ok": false, "error": ...}`，不抛异常。
+    返回 JSON：`ok` / `as_of` / `coverage` / `score_kind` / `degraded_reason`（非空表示
+    精排降级：`queue_full` / `timeout` / `unavailable`）/ `count` / `query`（原查询、实际查询、
+    是否改写）/ `hits[]`（标题、双时间戳、方向、重要度、摘要、标的、来源三元组、得分）。
+    检索不可用时返回 `{"ok": false, "error": ...}`，不抛异常。
     """
     text = _clean(query)
     if text is None:
@@ -183,7 +186,7 @@ async def search_events(
                 event_type=_clean(event_type),
                 top_k=size,
             ),
-            mode=retrieve.MODE_HYBRID,
+            request_class="interactive",
         )
         hits = corrected.hits
         start, end = await asyncio.to_thread(retrieve.coverage_window)
@@ -207,6 +210,7 @@ async def search_events(
             "as_of": effective.isoformat(),
             "coverage": {"start": start, "end": end},
             "score_kind": hits[0].score_kind if hits else None,
+            "degraded_reason": hits[0].degraded_reason if hits else None,
             "count": len(hits),
             "query": {
                 "original": _clip(text, MAX_QUERY_CLIP),

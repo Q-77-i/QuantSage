@@ -13,7 +13,7 @@ from app.agent.deep.roles.base import RoleContext, interpret
 from app.agent.deep.types import EvidenceRef, RoleResult
 from app.rag import RagNotReady
 from app.rag.correct import correction_note, search_with_correction
-from app.rag.retrieve import SearchQuery, search
+from app.rag.retrieve import SearchQuery, degraded_label, search
 
 ROLE = "news"
 
@@ -58,11 +58,17 @@ async def run(ctx: RoleContext) -> RoleResult:
         corrected = await search_with_correction(
             SearchQuery(query=news_query(ctx), as_of=ctx.brief.as_of, top_k=TOP_K),
             search_fn=search,
+            request_class="research",
         )
     except RagNotReady as exc:
         return RoleResult(ROLE, errors=(f"检索不可用：{exc}",))
 
-    note = correction_note(corrected.correction)
+    notes = [correction_note(corrected.correction)]
+    if corrected.hits and corrected.hits[0].degraded_reason:
+        notes.append(
+            f"精排降级（{degraded_label(corrected.hits[0].degraded_reason)}），按融合排序"
+        )
+    note = "；".join(item for item in notes if item)
     evidence = evidence_from_hits(corrected.hits)
     if not evidence:
         message = "该时点之前没有检索到相关事件"

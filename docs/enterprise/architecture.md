@@ -62,9 +62,11 @@ flowchart LR
 - 只有持锁进程启动 task worker、ETL/行情/体检调度器、决策结算调度器
 - 非持锁进程只服务 HTTP；`POST /api/v1/etl/run` 与 `POST /api/v1/data/rollback` 在非主实例返回 **409**
 - 主实例退出后**不自动晋升**，由 supervisor 重启重新竞选
-- 重启时把遗留的 `running` 任务如实标成失败/中断，**不自动重跑**
+- 重启时把遗留的 `running` 任务**有限次重排**（基础设施故障，默认最多执行 2 次）；attempt 用尽才标 `failed/lease_expired`；确定性错误不重试
 
 这条契约的动机是「单机形态下把跨进程状态压到最少」：任务队列、限流、熔断、指标都在进程内，多 worker 会把这些状态复制 N 份。详见 §9.3。
+
+**RAG 推理是独立进程**（S3）：`python -m app.rag.service` 只绑 `127.0.0.1:8200`，单进程持有 BGE-M3 + bge-reranker，精排 `max_inflight=1`（MPS 串行）。API/MCP 经 `app/rag/remote.py` 调它；`RAG_SERVICE_URL` 为空时回退到进程内（单 API 进程，不推荐多 worker）。队列满/等待超时返回 503，调用方降级 RRF 并如实标 `degraded_reason`。
 
 **子进程**有两类：
 
@@ -98,7 +100,7 @@ flowchart LR
 | `app/memory/` | 决策记忆：到期结算、教训、跨账户聚合（LangGraph Store） | 不做 RAG 检索 |
 | `app/rag/` | 嵌入 / 检索 / PIT 硬过滤 / 重排 / 离线评测 / 零命中纠错 | 不把 PIT 过滤放到本地后置 |
 | `app/etl/` | 调度器与日增量通道（事件语料、行情按需刷新） | 三条 job 串行；撞锁跳过并留痕 |
-| `app/tasks/` | 异步任务执行体 + 单 worker 取件循环 + 后台主实例锁 + 进度总线 | 队列实体是 `tasks` 表，不引消息队列 |
+| `app/tasks/` | 异步任务执行体 + 单 worker 取件循环 + 租约/心跳/重排 + 后台主实例锁 + 进度总线 | 队列实体是 `tasks` 表，不引消息队列 |
 | `app/data/` | DuckDB 客户端、交易日历、行情刷新、小石 CLI/MCP 装配、体检/快照/回滚/缓存 | 数据落盘后冻结；不引第二数据源 |
 | `app/mcp/` | 对外 MCP Server：把 PIT 语料检索亮给外部 AI 客户端 | stdio 单工具；无鉴权、无网络暴露面 |
 
@@ -278,11 +280,11 @@ PIT 不是一句口号，它在三个地方是结构性的：
 1. checkpointer → 业务库 → 工具 → Agent
 2. 任一环不可用都不阻断服务启动；具体 API 返回 503
 3. 业务库可用才竞选后台主实例；持锁者启动 worker 与调度器
-4. RAG 模型可后台预热（不阻塞启动，失败只记日志）
+4. RAG 服务可后台预热（`RAG_PRELOAD=true`，不阻塞启动，失败只让首次请求慢）；API 进程在远程模式下不加载模型
 
 ### 7.3 重启与失败语义
 
-- 重启时 `running` 任务标成失败/中断，**不自动重跑**——产品语义，不是缺陷
+- 重启时 `running` 任务**有限次自动重排**：租约过期/进程崩溃属于基础设施故障，回 `queued` 再跑一次；`attempts >= max_attempts` 才标 `failed/lease_expired`。确定性错误（参数/无数据/沙箱拒绝）第一次就终态，不重试；结果按 `task_id` 幂等，重排不产生重复记录
 - 单次回测一旦 running 不可中止（409）；网格/批量写 `cancel_requested_at`，worker 执行期每 0.5s 检查
 - 后台主实例退出后不自动晋升；supervisor 重启重新竞选
 - 会话 cookie `httpOnly + SameSite=Lax`；前端跟随页面 host 访问 API
@@ -295,7 +297,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 2 | LangGraph 只做控制流，合规用纯 Python | LLM 不可决定合规；闸门可测试 | 深路径要多写一层代码闸门 | `agent/deep/graph.py`、`agent/deep/risk_gate.py` |
 | 3 | 读并行、写单点 | 取证可以 fan-out；综合与下单必须单点 | 归并与去重逻辑更复杂 | `agent/deep/graph.py` |
 | 4 | 回测/模拟盘/批量共用撮合与费用实现 | 风控关闭时全部批准的模拟盘 ⇔ 一次回测，逐笔相等 | 同一套实现要同时满足三种调用形态 | `backtest/broker.py`、`backtest/costs.py`、`paper/replay.py` |
-| 5 | 队列实体是 `tasks` 表，单 worker | 持久、原子取件、幂等键、进度、取消、终态都已有；不引 MQ | 单实例、无自动重试 | `tasks/worker.py`、`core/db_tasks.py` |
+| 5 | 队列实体是 `tasks` 表，单 worker | 持久、原子取件（`SKIP LOCKED`）、幂等键、进度、取消、终态、有限次重排都已有；不引 MQ | 单实例；重排只覆盖基础设施故障，重试上限 2 次 | `tasks/worker.py`、`core/db_tasks.py` |
 | 6 | 单实例契约 + 后台主实例锁 | 限流/熔断/指标/闸门都在进程内，多 worker 会复制状态 | 无 HA、主实例退出不自动晋升 | `tasks/worker.py::BACKGROUND_LOCK_KEY` |
 | 7 | PIT 过滤写进 Qdrant 服务端 filter | 本地后置过滤会静默塌陷召回 | 依赖 Qdrant 的 filter 能力 | `rag/retrieve.py` |
 | 8 | 用户策略子进程 + OS 级沙箱 + AST 检查 | `build_namespace()` 不是安全边界；未来函数要在运行前拦 | 平台相关（sandbox-exec/bwrap） | `strategy/isolation.py`、`strategy/static_check.py` |
@@ -309,10 +311,10 @@ PIT 不是一句口号，它在三个地方是结构性的：
 
 ### 9.1 消息队列：不引入
 
-1. 当前队列是 `tasks` 表：持久、原子取件、带幂等键/进度/取消/终态；单 worker 串行是**有意选择**，不是缺失。
-2. 不自动重试、重启不重跑，是产品语义；MQ 的 at-least-once / 重试 / DLQ 会改变这条语义。
-3. 触发重新评估的条件（任一）：持续任务提交 > 1/s，或队列等待 p95 > 30s；需要跨主机 worker / 独立扩缩容；需要延迟任务、重试/死信、多消费者扇出；任务表成为 DB 热点。
-4. 触发后的顺序：**DB 队列 v2 → Redis Streams（独立 `noeviction` 实例）→ Kafka**；不先上 Celery。
+1. 当前队列是 `tasks` 表：持久、原子取件（`FOR UPDATE SKIP LOCKED`）、带幂等键/进度/取消/终态；单 worker 串行是**有意选择**，不是缺失。
+2. 已做**有限次重排**（租约/心跳 + reaper + `max_attempts=2` + `task_id` 结果幂等）：只覆盖基础设施故障，确定性错误不重试；at-least-once / 死信 / 多消费者扇出仍不引入，MQ 会改变这条语义。
+3. 触发重新评估的条件（任一）：持续任务提交 > 1/s，或队列等待 p95 > 30s；需要跨主机 worker / 独立扩缩容；需要死信队列、多消费者扇出、无上限重试；任务表成为 DB 热点。
+4. 触发后的顺序：**Redis Streams（独立 `noeviction` 实例）→ Kafka**；DB 队列 v2 已落地（S2），不先上 Celery。
 
 ### 9.2 容器化：暂缓全量
 
@@ -328,7 +330,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - 维持单实例契约；调度器与 task worker 已收口到后台主实例
 - 限流 / 熔断 / 指标 / 并发闸门仍按进程计算
 - 主实例退出后不自动晋升，由 supervisor 重启重新竞选
-- 真要多副本，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型
+- 真要多副本，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/worker 角色拆分仍不排期
 
 ### 9.4 其它边界
 
