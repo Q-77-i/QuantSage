@@ -8,7 +8,13 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 import threading
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -42,6 +48,117 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
 #: 视图体是 glob，查询时才展开，新增分片不必重建，所以同一目录可以长期复用。
 _LOCAL = threading.local()
 
+#: S4：进程级查询闸门。`memory_limit` 是**每连接**上限（本仓每线程一个 DuckDB 实例），
+#: `asyncio.to_thread` 默认线程池最多 12 条连接——没有闸门，1GB 不构成进程上限。
+_GATE_LOCK = threading.Lock()
+_GATE: threading.BoundedSemaphore | None = None
+_GATE_SIZE = -1
+
+#: 已清扫过的数据目录（每个进程每个目录扫一次）。清扫只删 **pid 已死** 的残留，
+#: 不碰活进程（API / ETL 脚本可能并行）。
+_SWEEP_LOCK = threading.Lock()
+_SWEPT_ROOTS: set[Path] = set()
+
+
+def _temp_root(base: Path) -> Path:
+    """spill 根目录。策略沙箱子进程只允许写它的 work_dir（`TMPDIR`），数据目录是
+    只读绑定——此时不能把临时文件放进 `<data_dir>/_tmp`，否则一条 spill 就是 EPERM。
+    普通进程仍用数据目录（磁盘-backed，避免 Linux 上 /tmp 是 tmpfs 时把内存上限架空）。"""
+    if os.environ.get("QS_SANDBOX"):
+        return Path(tempfile.gettempdir()) / "_tmp"
+    return base / "_tmp"
+
+
+def _thread_temp_dir(base: Path) -> Path:
+    """本连接独占的 spill 目录。同进程多连接共用目录会让 DuckDB 的临时文件撞在一起。"""
+    temp_dir = _temp_root(base) / (
+        f"duckdb-{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex[:8]}"
+    )
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _sweep_stale_temp_dirs(base: Path) -> None:
+    """清掉 `_tmp/duckdb-*` 里进程已退出的目录。kill -9 后 DuckDB 来不及删。"""
+    root = _temp_root(base).resolve()
+    with _SWEEP_LOCK:
+        if root in _SWEPT_ROOTS:
+            return
+        _SWEPT_ROOTS.add(root)
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_dir() or not entry.name.startswith("duckdb-"):
+            continue
+        try:
+            pid = int(entry.name.split("-")[1])
+        except (IndexError, ValueError):
+            continue
+        if pid == os.getpid() or _pid_alive(pid):
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+
+
+def _configure_connection(con: duckdb.DuckDBPyConnection, base: Path) -> Path:
+    """按 S4 上限配置连接，返回本连接的 temp 目录。0/空串 = 不设置（排障回退）。"""
+    settings = get_settings()
+    if settings.duckdb_threads > 0:
+        con.execute(f"SET threads = {int(settings.duckdb_threads)}")
+    memory_limit = settings.duckdb_memory_limit.strip()
+    if memory_limit:
+        con.execute(f"SET memory_limit = {_sql_str(memory_limit)}")
+    temp_dir = _thread_temp_dir(base)
+    con.execute(f"SET temp_directory = {_sql_str(str(temp_dir))}")
+    return temp_dir
+
+
+def _query_gate() -> threading.BoundedSemaphore | None:
+    global _GATE, _GATE_SIZE
+    size = get_settings().duckdb_max_concurrent
+    if size <= 0:
+        return None
+    with _GATE_LOCK:
+        if _GATE is None or size != _GATE_SIZE:
+            _GATE = threading.BoundedSemaphore(size)
+            _GATE_SIZE = size
+        return _GATE
+
+
+@contextmanager
+def _query_slot() -> Iterator[None]:
+    """同时活跃的 DuckDB 查询数上限。等待中的线程不占 DuckDB 查询内存。"""
+    gate = _query_gate()
+    if gate is None:
+        yield
+        return
+    gate.acquire()
+    try:
+        yield
+    finally:
+        gate.release()
+
+
+def reset_query_gate() -> None:
+    """测试用：配置变化后重建闸门（生产只在进程启动时建一次）。"""
+    global _GATE, _GATE_SIZE
+    with _GATE_LOCK:
+        _GATE = None
+        _GATE_SIZE = -1
+
 
 class _CachedConnection:
     """`connect()` 返回的稳定句柄：底层连接由线程本地缓存持有。
@@ -51,11 +168,12 @@ class _CachedConnection:
     也不会把共享连接关掉。
     """
 
-    __slots__ = ("_con", "_base")
+    __slots__ = ("_con", "_base", "_temp_dir")
 
-    def __init__(self, con: duckdb.DuckDBPyConnection, base: Path) -> None:
+    def __init__(self, con: duckdb.DuckDBPyConnection, base: Path, temp_dir: Path) -> None:
         self._con = con
         self._base = base
+        self._temp_dir = temp_dir
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._con, name)
@@ -78,6 +196,7 @@ def reset_connections() -> None:
         return
     _LOCAL.connection = None
     cached._con.close()
+    shutil.rmtree(cached._temp_dir, ignore_errors=True)
 
 
 def connect(data_dir: Path | None = None) -> Any:
@@ -99,10 +218,14 @@ def connect(data_dir: Path | None = None) -> Any:
         return cached
     if cached is not None:
         cached._con.close()
+        shutil.rmtree(cached._temp_dir, ignore_errors=True)
         _LOCAL.connection = None
 
+    _sweep_stale_temp_dirs(base)
     con = duckdb.connect()
+    temp_dir: Path | None = None
     try:
+        temp_dir = _configure_connection(con, base)
         for view, sub in _SUBDIRS.items():
             pattern = str(base / sub / "*.parquet")
             con.execute(
@@ -115,15 +238,20 @@ def connect(data_dir: Path | None = None) -> Any:
         )
     except Exception:
         con.close()
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
         raise
-    cached = _CachedConnection(con, base)
+    assert temp_dir is not None
+    cached = _CachedConnection(con, base, temp_dir)
     _LOCAL.connection = cached
     return cached
 
 
 def _fetch(con: duckdb.DuckDBPyConnection, sql: str, params: list) -> list[dict]:
-    # 走 arrow 而非 df/fetchall：TIMESTAMPTZ 的 Python 转换依赖已废弃的 pytz，arrow 不需要
-    return con.execute(sql, params).to_arrow_table().to_pylist()
+    # 走 arrow 而非 df/fetchall：TIMESTAMPTZ 的 Python 转换依赖已废弃的 pytz，arrow 不需要。
+    # 闸门包住「执行 + 物化」整段：DuckDB 的查询内存与 arrow 结果都在这里产生。
+    with _query_slot():
+        return con.execute(sql, params).to_arrow_table().to_pylist()
 
 
 def bars(

@@ -68,6 +68,19 @@ flowchart LR
 
 **RAG 推理是独立进程**（S3）：`python -m app.rag.service` 只绑 `127.0.0.1:8200`，单进程持有 BGE-M3 + bge-reranker，精排 `max_inflight=1`（MPS 串行）。API/MCP 经 `app/rag/remote.py` 调它；`RAG_SERVICE_URL` 为空时回退到进程内（单 API 进程，不推荐多 worker）。队列满/等待超时返回 503，调用方降级 RRF 并如实标 `degraded_reason`。
 
+**运行底座（S4）**：`scripts/prod.sh` 用 `QS_MODE=prod` 委派 `scripts/dev.sh`，负责
+start/stop/status/health/logs 与前端 build+start；prod/dev 端口相同、日志与 PID 分目录
+（`logs/prod` / `logs/dev`），不能同时起。API 用 `uvicorn --timeout-graceful-shutdown 15`
+停接新请求并 drain 在飞/SSE；worker 停止取件、不 await 在飞任务，退出前把租约释放回
+`queued`（attempts−1；已取消收 `cancelled`）；scheduler `shutdown(wait=False)`。日志用
+copytruncate 轮转（20MB × 3、30min 检查）。
+
+**资源上限（S4）**：Docker 默认三件有 `mem_limit/cpus`（PG 1.25g、Redis cache 640m、
+Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `volatile-lru`、关闭 RDB；PG
+`max_connections=120`、`shared_buffers=512MB`。DuckDB 每连接 `threads=2`、
+`memory_limit=1GB`、逐连接 temp 目录；`_fetch` 有进程级查询闸门 4（1GB 是每连接上限，
+不是进程上限）。业务池 `statement_timeout=5s`、checkpointer 池 30s。
+
 **子进程**有两类：
 
 - **用户策略沙箱**：`strategy/sandbox.py` 起子进程，`strategy/isolation.py` 在 macOS 用 `sandbox-exec`、Linux 用 `bwrap` 做 OS 级隔离
@@ -77,10 +90,10 @@ flowchart LR
 
 | 存储 | 职责 | 关键约束 |
 |---|---|---|
-| PostgreSQL 18 | 业务表（用户/会话/自选/策略/回测/模拟盘/研报/任务/配额/审计等）+ LangGraph checkpointer + Store | 业务库不可用时后台任务与调度器都不启动；降级接口返回 503 |
-| Redis 7 | 数据层 L2 热点缓存 | **可降级**：连不上就熔断直读，缓存层异常不让请求失败 |
-| Qdrant | 事件语料双索引（稠密 + 稀疏） | PIT 过滤写进服务端 filter；RRF 由服务端做 |
-| Parquet + DuckDB | 行情与事件的事实层 | 直读分片，零 ETL；DuckDB 不承担业务事务 |
+| PostgreSQL 18 | 业务表（用户/会话/自选/策略/回测/模拟盘/研报/任务/配额/审计等）+ LangGraph checkpointer + Store | 业务库不可用时后台任务与调度器都不启动；降级接口返回 503；容器 1.25g、`max_connections=120`、`shared_buffers=512MB` |
+| Redis 7 | 数据层 L2 热点缓存 | **可降级**：连不上就熔断直读，缓存层异常不让请求失败；容器 640m、`maxmemory 512MB` + `volatile-lru`、不持久化；coord 随 S5 再加 |
+| Qdrant | 事件语料双索引（稠密 + 稀疏） | PIT 过滤写进服务端 filter；RRF 由服务端做；容器 2.5g |
+| Parquet + DuckDB | 行情与事件的事实层 | 直读分片，零 ETL；DuckDB 不承担业务事务；每连接 `threads=2`/`memory_limit=1GB` + 进程级闸门 4 |
 | Langfuse | LLM trace / token / 成本 | 与 Prometheus 分工，不在两处重复计 token |
 
 ## 3. 模块地图

@@ -62,10 +62,16 @@ _NO_LOCK = object()
 
 @dataclass(slots=True)
 class WorkerHandle:
-    """常驻循环 + 可选的单实例锁连接。`lock_conn=None` 只在离线替身/无池场景出现。"""
+    """常驻循环 + 可选的单实例锁连接。`lock_conn=None` 只在离线替身/无池场景出现。
+
+    `db` 用于停机释放租约（S4）：`stop()` 不 await 在飞任务，但把它的行放回 `queued`；
+    `worker_id` 与取件时一致，作为释放语句的栅栏。
+    """
 
     task: asyncio.Task[None]
     lock_conn: Any = None
+    db: Any = None
+    worker_id: str = WORKER_ID
 
 
 #: 正在跑的任务 → 中止事件。**本地加速口**：同进程的 `POST /cancel` 立即置位；
@@ -377,22 +383,41 @@ async def start(db: Any) -> WorkerHandle | None:
     return WorkerHandle(
         task=asyncio.create_task(run_worker(), name="task-worker"),
         lock_conn=lock_conn,
+        db=db,
     )
 
 
 async def stop(handle: WorkerHandle | asyncio.Task[None] | None) -> None:
-    """收工：取消常驻循环、释放单实例锁。
+    """收工：停止取件、释放在飞任务的租约、释放单实例锁。
 
     **不 await 正在跑的那一件**（与 `api/optimize.py` 的断线姿态同源：取消不了线程/
-    子进程，硬等只会把停机拖长）；它会随进程一起消失，行留在 `running`，
-    下次启动由持锁进程的 `start()` 扫尾：租约启用时有限次重排，否则标 `failed/interrupted`。
+    子进程，硬等只会把停机拖长）；它随进程一起消失，但退出前对快照里的任务调用
+    `release_task`：未取消的回到 `queued`（attempts−1，不算一次失败），已取消的收成
+    `cancelled`。这样不重启也能让下一次启动/另一个持锁进程立刻捡起来；kill -9 没有
+    这段收尾，仍由 `start()` 的全量扫尾重排（S2）。
     """
     if handle is None:
         return
     task = handle.task if isinstance(handle, WorkerHandle) else handle
+    # 快照必须在 cancel 之前：run_once 的 finally 会把 _RUNNING 清空
+    pending = list(_RUNNING)
+    db = getattr(handle, "db", None) if isinstance(handle, WorkerHandle) else None
+    worker_id = getattr(handle, "worker_id", WORKER_ID)
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+    release = getattr(db, "release_task", None)
+    if pending and release is not None:
+        for task_id in pending:
+            try:
+                status = await release(task_id, worker_id=worker_id)
+            except Exception:  # noqa: BLE001 —— 收尾失败不能拖住停机；启动扫尾兜底
+                log.warning("停机释放任务 %s 租约失败（启动扫尾兜底）", task_id, exc_info=True)
+                continue
+            if status:
+                log.info("停机释放任务 %s：%s", task_id, status)
+
     if (
         isinstance(handle, WorkerHandle)
         and handle.lock_conn is not None

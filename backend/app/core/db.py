@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -52,14 +53,28 @@ __all__ = [
 
 @asynccontextmanager
 async def open_pool(
-    conn_string: str, *, min_size: int = 1, max_size: int = 8
+    conn_string: str,
+    *,
+    min_size: int = 1,
+    max_size: int = 8,
+    statement_timeout_ms: int | None = None,
 ) -> AsyncIterator[AsyncConnectionPool]:
+    """业务库连接池。`statement_timeout_ms` 只作用于池里的连接；独立 advisory 连接
+    （`BaseRepo.advisory_lock` 用 `pool.conninfo`）不受影响——`conninfo` 不含这里
+    的 kwargs，这是有意保留的逃生口（Chat 等锁可能超过 5s）。"""
+    kwargs: dict[str, Any] = {
+        "autocommit": True,
+        "prepare_threshold": 0,
+        "row_factory": dict_row,
+    }
+    if statement_timeout_ms and statement_timeout_ms > 0:
+        kwargs["options"] = f"-c statement_timeout={int(statement_timeout_ms)}"
     pool = AsyncConnectionPool(
         conn_string,
         min_size=min_size,
         max_size=max_size,
         open=False,
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        kwargs=kwargs,
     )
     await pool.open(wait=True, timeout=10)
     try:

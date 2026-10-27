@@ -284,6 +284,75 @@ def test_start_sweeps_all_running_then_serves(signed_in: FakeDatabase, data_dir:
     assert signed_in.tasks[task_id]["attempts"] == 1
 
 
+def test_stop_releases_inflight_task_without_counting_an_attempt(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """S4：正常停机把在飞任务放回 queued，attempts 回退（停机不算失败）。"""
+    task_id = queue(signed_in, frozen_request())
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # attempts=1
+
+    async def scenario() -> None:
+        handle = worker.WorkerHandle(
+            task=asyncio.create_task(asyncio.sleep(3600)),
+            db=signed_in,
+            worker_id=WID,
+        )
+        worker._RUNNING[task_id] = asyncio.Event()
+        try:
+            await worker.stop(handle)
+        finally:
+            worker._RUNNING.pop(task_id, None)
+
+    asyncio.run(scenario())
+    row = signed_in.tasks[task_id]
+    assert row["status"] == "queued"
+    assert row["attempts"] == 0
+    assert row["worker_id"] is None
+    assert row["lease_expires_at"] is None
+    assert row["progress"]["done"] == 0
+
+
+def test_stop_marks_cancelled_inflight_task_as_cancelled(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """取消是权威：停机释放时不回 queued，直接收成 cancelled。"""
+    task_id = queue(signed_in, frozen_request())
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    signed_in.tasks[task_id]["cancel_requested_at"] = datetime.now(UTC)
+
+    async def scenario() -> None:
+        handle = worker.WorkerHandle(
+            task=asyncio.create_task(asyncio.sleep(3600)),
+            db=signed_in,
+            worker_id=WID,
+        )
+        worker._RUNNING[task_id] = asyncio.Event()
+        try:
+            await worker.stop(handle)
+        finally:
+            worker._RUNNING.pop(task_id, None)
+
+    asyncio.run(scenario())
+    row = signed_in.tasks[task_id]
+    assert row["status"] == "cancelled"
+    assert row["attempts"] == 1  # 取消不消耗/回退 attempts
+    assert row["finished_at"] is not None
+
+
+def test_release_task_is_fenced_by_worker_id(
+    signed_in: FakeDatabase, data_dir: Path
+) -> None:
+    """租约可能已被 reaper 回收并重新取件：别的 worker 不能放我们的行。"""
+    task_id = queue(signed_in, frozen_request())
+    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+
+    released = asyncio.run(signed_in.release_task(task_id, worker_id="another-worker"))
+
+    assert released is None
+    assert signed_in.tasks[task_id]["status"] == "running"
+    assert signed_in.tasks[task_id]["worker_id"] == WID
+
+
 def test_start_does_not_sweep_when_lock_held(
     signed_in: FakeDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -200,6 +200,8 @@ def _base_env(work_dir: Path, data_dir: Path) -> dict[str, str]:
         "PYTHONNOUSERSITE": "1",
         # 让子进程的 Settings 读一个空文件，而不是仓库根的 .env（见 core/config.py）
         "QS_ENV_FILE": "/dev/null",
+        # 数据目录在沙箱里是只读绑定；DuckDB 的 spill 要放到可写的 TMPDIR（= work_dir）
+        "QS_SANDBOX": "1",
         # 显式给数据目录：沙箱里拿不到 .env 时，取数仍走这里
         "DATA_DIR": str(data_dir),
     }

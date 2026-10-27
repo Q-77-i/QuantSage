@@ -261,6 +261,37 @@ class TasksMixin:
         )
         return row is not None
 
+    async def release_task(self, task_id: str, *, worker_id: str) -> str | None:
+        """优雅停机：释放本 worker 持有的租约（S4 §5.4），不把任务算作一次失败。
+
+        - 未请求取消 → `queued`、`attempts = greatest(attempts-1, 0)`、清租约、进度归零；
+          `attempts-1` 是刻意的：进程正常退出不是执行失败，不该消耗重排次数。
+        - 已请求取消 → `cancelled` + `finished_at`（取消是权威，不重排）。
+        - `worker_id` 栅栏：行已被 reaper 回收并重新取件时返回 `None`，不误放别人的租约。
+
+        与 `requeue_task` 的区别：那个给「执行期瞬时错误」用（保留 attempts、带退避）；
+        这个只给停机收尾用（attempts 回退、立即排队）。
+        """
+        row = await self._one(
+            "UPDATE tasks SET "
+            "  status = CASE WHEN cancel_requested_at IS NOT NULL "
+            "    THEN 'cancelled' ELSE 'queued' END, "
+            "  attempts = CASE WHEN cancel_requested_at IS NULL "
+            "    THEN greatest(attempts - 1, 0) ELSE attempts END, "
+            "  available_at = CASE WHEN cancel_requested_at IS NULL "
+            "    THEN now() ELSE available_at END, "
+            "  finished_at = CASE WHEN cancel_requested_at IS NOT NULL "
+            "    THEN now() ELSE finished_at END, "
+            "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
+            "  progress = CASE WHEN cancel_requested_at IS NULL "
+            "    THEN jsonb_set(progress, '{done}', '0'::jsonb) ELSE progress END, "
+            "  updated_at = now() "
+            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s "
+            "RETURNING status",
+            (task_id, worker_id),
+        )
+        return str(row["status"]) if row else None
+
     async def reap_running_tasks(
         self, *, backoff_seconds: float, expired_only: bool = True
     ) -> dict[str, int]:

@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import os
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
 import pytest
 
+from app.core.config import get_settings
 from app.data import duckdb_client as dc
 from tests.conftest import ts, write_bars_parquet, write_events_parquet
 
@@ -375,3 +378,101 @@ def test_events_page_is_cached_by_generation(
     dc.events_page("600519", data_dir=tmp_path)
     assert len(calls) == 2
     cache.clear_local()
+
+
+# ── S4：DuckDB 上限 / temp 隔离 / 查询闸门 ────────────────────────────────
+
+
+def test_connect_applies_s4_limits(sample_data_dir: Path) -> None:
+    """每条连接显式设 threads / memory_limit / temp_directory。"""
+    settings = get_settings()
+    con = dc.connect(sample_data_dir)
+    threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
+    memory = str(con.execute("SELECT current_setting('memory_limit')").fetchone()[0])
+    temp = Path(str(con.execute("SELECT current_setting('temp_directory')").fetchone()[0]))
+
+    assert threads == settings.duckdb_threads == 2
+    # 1GB 在 DuckDB 里显示为 953.6 MiB（十进制 vs 二进制）；断言上限远低于默认的 19.1GiB
+    assert memory != "19.1 GiB"
+    assert float(memory.split()[0]) < 1200
+    assert temp.parent == (sample_data_dir / "_tmp").resolve()
+    assert temp.name.startswith(f"duckdb-{os.getpid()}-")
+
+
+def test_sandbox_temp_root_uses_tmpdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """策略沙箱的数据目录只读，spill 必须落到可写的 TMPDIR（work_dir）。"""
+    monkeypatch.setenv("QS_SANDBOX", "1")
+    monkeypatch.setattr(dc.tempfile, "gettempdir", lambda: str(tmp_path / "work"))
+    assert dc._temp_root(tmp_path / "data") == tmp_path / "work" / "_tmp"
+
+
+def test_temp_directory_is_unique_per_connection(sample_data_dir: Path) -> None:
+    """同进程两线程各一条连接：temp 目录不能共用（DuckDB 的 spill 文件会撞）。"""
+    seen: list[str] = []
+    errors: list[BaseException] = []
+
+    def read_temp() -> None:
+        try:
+            con = dc.connect(sample_data_dir)
+            seen.append(str(con.execute("SELECT current_setting('temp_directory')").fetchone()[0]))
+        except BaseException as exc:  # noqa: BLE001 —— 线程里的异常要带回主线程
+            errors.append(exc)
+        finally:
+            dc.reset_connections()
+
+    threads = [threading.Thread(target=read_temp) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert len(seen) == 2
+    assert len(set(seen)) == 2
+
+
+def test_reset_connections_removes_temp_directory(sample_data_dir: Path) -> None:
+    con = dc.connect(sample_data_dir)
+    temp = Path(str(con.execute("SELECT current_setting('temp_directory')").fetchone()[0]))
+    assert temp.exists()
+
+    dc.reset_connections()
+    assert not temp.exists()
+
+
+def test_stale_temp_dirs_are_swept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "_tmp"
+    dead = root / "duckdb-999999-1-dead"
+    live = root / "duckdb-424242-1-live"
+    for path in (dead, live):
+        path.mkdir(parents=True)
+
+    monkeypatch.setattr(dc, "_pid_alive", lambda pid: pid == 424242)
+    dc._SWEPT_ROOTS.clear()
+    dc._sweep_stale_temp_dirs(tmp_path)
+
+    assert not dead.exists()
+    assert live.exists()
+
+
+def test_query_gate_bounds_concurrent_queries() -> None:
+    size = get_settings().duckdb_max_concurrent
+    if size <= 0:  # pragma: no cover - 默认 4；关闸门的配置不测闸门本身
+        pytest.skip("DUCKDB_MAX_CONCURRENT=0")
+    dc.reset_query_gate()
+    try:
+        gate = dc._query_gate()
+        assert gate is not None
+        for _ in range(size):
+            assert gate.acquire(blocking=False)
+        assert not gate.acquire(blocking=False)
+        for _ in range(size):
+            gate.release()
+
+        # 异常路径也必须释放，否则一次查询报错会永久占住一个槽
+        with pytest.raises(RuntimeError), dc._query_slot():
+            raise RuntimeError("boom")
+        with dc._query_slot():
+            pass
+    finally:
+        dc.reset_query_gate()

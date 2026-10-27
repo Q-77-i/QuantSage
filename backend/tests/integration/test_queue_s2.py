@@ -104,6 +104,77 @@ def test_concurrent_claims_never_duplicate(jwt_env: Any) -> None:
             conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_release_task_requeues_and_cancels(jwt_env: Any) -> None:
+    """S4 优雅停机：未取消的回 queued 且 attempts−1；已取消的收 cancelled。"""
+    from app.core.db import Database
+
+    dsn = get_settings().postgres_dsn
+    schema = f"probe_s4_{uuid.uuid4().hex[:8]}"
+    queued_id = str(uuid.uuid4())
+    cancelled_id = str(uuid.uuid4())
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f'CREATE SCHEMA "{schema}"')
+        conn.execute(f'CREATE TABLE "{schema}".tasks (LIKE public.tasks INCLUDING ALL)')
+        for task_id, cancel in ((queued_id, None), (cancelled_id, True)):
+            conn.execute(
+                f'INSERT INTO "{schema}".tasks '
+                "(id, user_id, kind, status, request, progress, attempts, max_attempts, "
+                " worker_id, lease_expires_at, cancel_requested_at) "
+                "VALUES (%s::uuid, 1, 'backtest', 'running', '{}'::jsonb, "
+                "'{\"done\": 40, \"total\": 100}'::jsonb, 1, 2, 'release-worker', "
+                "now() + interval '1 hour', CASE WHEN %s THEN now() END)",
+                (task_id, cancel),
+            )
+
+    try:
+        async def scenario() -> tuple[str | None, str | None, str | None]:
+            pool = AsyncConnectionPool(
+                dsn,
+                min_size=1,
+                max_size=4,
+                open=False,
+                kwargs={
+                    "autocommit": True,
+                    "prepare_threshold": 0,
+                    "row_factory": dict_row,
+                    "options": f"-c search_path={schema},public",
+                },
+            )
+            await pool.open(wait=True, timeout=10)
+            try:
+                db = Database(pool)
+                queued = await db.release_task(queued_id, worker_id="release-worker")
+                cancelled = await db.release_task(cancelled_id, worker_id="release-worker")
+                wrong = await db.release_task(queued_id, worker_id="other-worker")
+                return queued, cancelled, wrong
+            finally:
+                await pool.close()
+
+        queued, cancelled, wrong = asyncio.run(scenario())
+        assert (queued, cancelled, wrong) == ("queued", "cancelled", None)
+
+        with psycopg.connect(dsn) as conn:
+            row = conn.execute(
+                f'SELECT status, attempts, worker_id, lease_expires_at, progress, finished_at '
+                f'FROM "{schema}".tasks WHERE id = %s::uuid',
+                (queued_id,),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "queued" and row[1] == 0
+            assert row[2] is None and row[3] is None
+            assert row[4]["done"] == 0 and row[5] is None
+
+            row = conn.execute(
+                f'SELECT status, attempts, finished_at FROM "{schema}".tasks WHERE id = %s::uuid',
+                (cancelled_id,),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "cancelled" and row[1] == 1 and row[2] is not None
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_backtest_run_is_idempotent_by_task_id(jwt_env: Any) -> None:
     """同一 `task_id` 第二次落库不新增行，返回既有 `run_id`。"""
     from app.core.db import Database, open_pool

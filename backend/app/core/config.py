@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -119,6 +120,19 @@ class Settings(BaseSettings):
     # 「代际算不出来时别永久读到旧值」与回收冷键
     cache_ttl_seconds: int = 900
     cache_key_prefix: str = "qs:cache:v1"
+
+    # ── 资源上限（S4）──
+    # PG：API 业务池 5s、checkpointer 30s。worker 与 API 同进程、共用业务池，
+    # 它的 PG 语句都是取件/心跳/进度/终态（亚秒级），所以不单开 worker 池。
+    db_statement_timeout_ms: int = 5000
+    checkpoint_statement_timeout_ms: int = 30000
+    # DuckDB：本仓每线程一条连接 = 一个 DuckDB 实例，这里的 1GB 是**每连接**上限，
+    # 不是进程上限。threads=0 / memory_limit="" = 不设置（回退 DuckDB 默认，仅排障用）。
+    duckdb_threads: int = 2
+    duckdb_memory_limit: str = "1GB"
+    # 进程级查询闸门：同时活跃的 DuckDB 查询数，0 = 关闭。没有它，每连接 1GB ×
+    # `asyncio.to_thread` 最多 12 条连接，上限不成立（S4 规划实测默认 memory_limit=19.1GiB）。
+    duckdb_max_concurrent: int = 4
 
     # ── 数据快照（E3b）：清单归档的保留份数 ──
     # 快照存的是**指针**（两份 _meta 清单的副本，约 170KB/份），字节早在 data/raw/o 的
@@ -306,6 +320,16 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     # TrustedHost 白名单：默认 `["*"]`（本地/测试）；公网部署填真实域名，挡 Host 头注入。
     trusted_hosts: list[str] = ["*"]
+
+    @field_validator("duckdb_memory_limit")
+    @classmethod
+    def _duckdb_memory_limit_shape(cls, value: str) -> str:
+        """DuckDB 的 `SET memory_limit` 只认数字+单位；配错了让它在启动期就炸，
+        而不是等到第一条查询才报错。空串 = 不设置。"""
+        text = value.strip()
+        if text and not re.fullmatch(r"\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB)", text, re.IGNORECASE):
+            raise ValueError("DUCKDB_MEMORY_LIMIT 形如 512MB / 1GB；空串表示不设置")
+        return text
 
     @field_validator("jwt_secret")
     @classmethod
