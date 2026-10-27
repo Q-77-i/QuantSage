@@ -1078,6 +1078,24 @@ class FakeDatabase:
         )
         return True
 
+    async def release_task(self, task_id: str, *, worker_id: str) -> str | None:
+        """优雅停机释放租约（S4）：与真库同形，attempts 回退。"""
+        row = self.tasks.get(task_id)
+        if row is None or row["status"] != "running" or row["worker_id"] != worker_id:
+            return None
+        now = datetime.now(UTC)
+        if row.get("cancel_requested_at") is not None:
+            row.update(status="cancelled", finished_at=now)
+        else:
+            row.update(
+                status="queued",
+                available_at=now,
+                attempts=max(row["attempts"] - 1, 0),
+                progress={**row.get("progress", {}), "done": 0},
+            )
+        row.update(worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
+        return str(row["status"])
+
     async def reap_running_tasks(
         self, *, backoff_seconds: float, expired_only: bool = True
     ) -> dict[str, int]:

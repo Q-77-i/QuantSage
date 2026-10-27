@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.15）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.3** ｜ 2026-10-27 ｜ 状态：**S1/S2 已交付；S3 按 2026-10-27 拍板修订并实施；S4–S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3）。
+> 版本 **v3.4** ｜ 2026-10-27 ｜ 状态：**S1/S2/S3/S4 已交付；S5/S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4）。
 >
 > 本文只覆盖 **P4-Sn 单机工程化（S1–S6）**。后续的平台化/多租户/分布式仍为愿景，**不写规格、不排期**。
 > 实测基线：`docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -362,50 +362,57 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 | 服务 | mem_limit | cpus | 说明 |
 |---|---:|---:|---|
 | qdrant | 2.5g | 2.0 | 当前 RSS 1.8GB；留索引/压缩余量 |
-| postgres | 1g | 2.0 | shared_buffers 512MB；连接预算见 §5.3 |
-| redis（cache） | 512m | 0.5 | `volatile-lru`，缓存键带 TTL |
-| redis（coord） | 128m | 0.25 | `noeviction`，限流/协调键 |
+| postgres | 1.25g | 2.0 | shared_buffers 512MB、`shm_size: 256mb`；连接预算见 §5.3 |
+| redis（cache） | 640m | 0.5 | `maxmemory 512mb` + `volatile-lru` + **关闭 RDB/AOF**；缓存键带 TTL |
+| redis（coord） | — | — | **S5 Go 后再建**（128MB `noeviction` / 192m），S4 不建 |
 
-- Docker VM 上限 8GB；默认四件合计 ≤4.5GB，给 Docker 开销留余量。
+- Docker VM 上限 8GB（实际 7.7GB）；默认三件合计 **4.39GB**，给 Docker 开销与镜像缓存留余量。
+- `mem_limit` 必须高于 `maxmemory`/`shared_buffers`：Redis 自身开销与 PG 连接私有内存都在容器内。cache 不做持久化——RDB fork 的 copy-on-write 会在限额边缘把内存翻倍。
 - Langfuse 全套继续 `observability` profile **按需启动**；不常开。若常开，需先调大 Docker VM 并重测内存预算。
 - 不把后端/RAG/worker 放进 Docker（torch linux/arm64 阻塞仍在）；只用 Docker 管有状态基础设施。
 
 ### 5.2 DuckDB 上限
 
-`duckdb_client.connect()` 每个线程连接显式：
+`duckdb_client.connect()` 每条连接显式：
 
 ```sql
 SET threads = 2;
 SET memory_limit = '1GB';
-SET temp_directory = '<data_dir>/_tmp/duckdb-<pid>';
+SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ```
 
-- `temp_directory` 用绝对路径 + 进程唯一子目录；不要用默认 `.tmp`（相对 cwd，多进程会撞）。
-- 若复测 p95 仍不达标，再加进程级查询闸门（初始 4；API/worker 各一），但不先上复杂调度。
+- **1GB 是每条连接的上限，不是进程上限**：本仓每线程一条连接、每连接一个 DuckDB 实例，`asyncio.to_thread` 默认线程池最多 12 条连接。`_fetch` 必须加**进程级查询闸门**（初始 4），不能等 p95 不达标才加——没有它，资源上限不成立。
+- `temp_directory` 用绝对路径 + **逐连接唯一**子目录；不要用默认 `.tmp`（相对 cwd，多进程会撞）。普通进程放 `<data_dir>/_tmp`；策略沙箱子进程的数据目录是**只读绑定**，放 `TMPDIR/_tmp`（沙箱的 `TMPDIR` = 可写的 work_dir），否则一条 spill 就是 EPERM。进程首次建连时清理临时根下 `duckdb-*` 中 **pid 已死**的残留，不碰其它活进程。
+- 闸门只算活跃查询；等待中的连接不占 DuckDB 查询内存。`DUCKDB_THREADS` / `DUCKDB_MEMORY_LIMIT` / `DUCKDB_MAX_CONCURRENT` 都可配置，`0`/空串 = 不设/无闸门，作为无代码回退口。
+- 实测权衡（2026-10-27）：单次冷查 bars 默认 157.6ms → `threads=2` 408.6ms、`threads=4` 217.2ms；bars 读缓存命中路径，冷查退化不等于 p95 退化。若 S4 验收 p95 或 soak 内存不达标，优先把 `DUCKDB_THREADS=4 / DUCKDB_MAX_CONCURRENT=2`（仍是 8 线程上限，单查更快），不改代码。
 - 大扫描（体检/ETL）继续走低优先级/独立线程，不与回测抢。
 
 ### 5.3 Redis / PostgreSQL
 
-- Redis cache：512MB、`volatile-lru`；缓存键必须带 TTL；不把限流/进度等协调键放进 cache 实例。
-- Redis coord：128MB、`noeviction`；限流键带 TTL；满了要报警，不静默丢键。
-- PG：`max_connections=200`、`shared_buffers=512MB`；连接预算：API 2×(8 业务 + 8 checkpointer) + worker 4 + scheduler 2 + Chat advisory ≤24 + 余量，控制在 80 以内；API `statement_timeout=5s`、worker 30s。
+- Redis cache：`maxmemory 512MB`、`volatile-lru`、关闭 RDB/AOF；缓存键必须带 TTL；不把限流/进度等协调键放进 cache 实例。
+- **Redis coord 不在 S4 建**：S4 的限流/熔断仍进程内，建一个没有消费者的实例只会白占内存；等 S5 的 Go 条件通过后与共享限流一起加（128MB `noeviction`、`mem_limit 192m`）。
+- PG：`max_connections=120`（连接预算 ≤80 + Langfuse ~20 + 余量）、`shared_buffers=512MB`、`shm_size=256MB`；连接预算：API 2×(8 业务 + 8 checkpointer) + worker/scheduler 共用业务池 + Chat advisory ≤24 + 余量，控制在 80 以内。
+- 业务池 `statement_timeout=5s`；checkpointer 池 `30s`（LangGraph 写入可能比业务查询大）。worker 与 API 同进程、共用业务池，其 PG 语句（取件/心跳/进度/终态）均为亚秒级，共用 5s；**不为 worker 单开 30s 池**。Chat 的 advisory lock 走独立连接，不受池 `options` 影响（`pool.conninfo` 不含 kwargs）。
+- `init_checkpoint_db.py` 的建表连接不加超时（`setup()` 可能跑 `CREATE INDEX CONCURRENTLY`）；只有应用运行期池加。
 
 ### 5.4 进程与停机
 
-- 原生进程管理：`scripts/prod.sh`（start/stop/status/logs/health）或 launchd；Docker 只管基础设施。
+- 原生进程管理：`scripts/prod.sh`（`QS_MODE=prod` 委派 `dev.sh`），不引 launchd；Docker 只管基础设施。prod/dev 日志与 PID 分目录（`logs/prod` / `logs/dev`），端口相同，不能同时起。
 - 健康检查：`/health`、`/health/ready`、RAG `/health`；启动顺序 infra → migrate → RAG → API/worker → 前端。
-- 优雅停机：API 停止接新请求、drain 在飞/SSE（上限 15s）；worker 停止取件、续租到结束或释放租约；scheduler `shutdown(wait=False)`。
-- 日志轮转；不把密钥写进 plist/命令行。
+- 优雅停机：API 用 `uvicorn --timeout-graceful-shutdown 15` 停接新请求、drain 在飞/SSE（上限 15s）；worker 停止取件，**不 await 在飞任务**，退出前对 `_RUNNING` 里的任务调用 `release_task`——回 `queued`、`attempts = greatest(attempts-1, 0)`（优雅停机不算一次失败）、清租约；已请求取消的收成 `cancelled`。旧进程的迟到写入仍由 `worker_id` 栅栏挡住；下次启动的全量扫尾继续兜底（S2）。scheduler `shutdown(wait=False)` 不变。
+- 日志轮转：prod 模式每 30min 做一次 copytruncate（20MB 阈值、保留 3 份，`PROD_LOG_*` 可调）；几行丢失窗口如实记录，不假装是 logrotate。不把密钥写进 plist/命令行。
 - 迁移：S2 加列用幂等 DDL；`schema_migrations` 作为 S6 可延项，不阻塞本轮。
 
 ### 5.5 验收
 
 | 项 | 口径 |
 |---|---|
-| 容器上限 | `docker stats` 不超表；Qdrant/Postgres 不 OOM |
-| DuckDB | `current_setting('threads')=2`、`memory_limit=1GB`、temp 路径正确；并发回测不 OOM |
-| Redis | cache/coord 策略与上限生效；coord 不被 LRU 淘汰 |
-| Soak | 5–10min 混合负载无 OOM、swap 不增长（允许基线 8.4GB 不变） |
+| 容器上限 | `docker stats` 不超表；Qdrant/Postgres `OOMKilled=false` |
+| DuckDB | `current_setting('threads')=2`、`memory_limit=1GB`、temp 路径在 `<data_dir>/_tmp/`（沙箱为 `TMPDIR`）下且逐连接唯一；20 并发回测 RSS 不持续增长 |
+| Redis | `CONFIG GET maxmemory maxmemory-policy save` = 512mb / volatile-lru / ""；coord 未建（S5 Go 后加） |
+| PG | `SHOW max_connections/shared_buffers` = 120 / 512MB；业务池 `statement_timeout=5s`、checkpointer 30s；连接峰值 ≤80 |
+| Soak | 5–10min 混合负载无 OOM；swap 以**本次开始前**的 `vm.swapusage` 为基线（规划时 10.63GB，非 S0 的 8.4GB），判「增量 ≤256MB」，绝对值如实写 |
+| 停机 | SSE 在飞时 SIGTERM 不出现 500；长任务停止后 `tasks.status=queued`、`attempts` 不涨；重启后重新执行一次 |
 | 回归 | bars/SSE 不因资源上限出现 >20% p95 退化；若退化，记录并交给 S5 判断 |
 
 ---
@@ -524,7 +531,7 @@ SET temp_directory = '<data_dir>/_tmp/duckdb-<pid>';
 
 | 层 | 落点 |
 |---|---|
-| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S5 限流/进度 |
+| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S4 DuckDB 上限/闸门/超时/停机释放、S5 限流/进度 |
 | 集成 | `pytest -m integration`：真 PG/Redis/Qdrant；迁移/备份可选 |
 | 前端 | `pnpm test && pnpm typecheck && pnpm lint`；events 截断/窗口类型 |
 | 压测 | `docs/private/Pn-n/P4-Sn/harness/`（甲案已有；扩展到 events/RAG/2w） |
@@ -551,6 +558,7 @@ SET temp_directory = '<data_dir>/_tmp/duckdb-<pid>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-27 | v3.4 | S4 按拍板修订：DuckDB `memory_limit` 明确为**每连接**上限，查询闸门改为无条件开启（初始 4），temp 目录逐连接唯一并清扫死 pid 残留；Docker 预算改为 PG 1.25g + `max_connections=120` + `shm_size`，Redis cache 640m / `maxmemory 512MB` / 关闭 RDB，**coord 移到 S5**；PG 业务池 5s、checkpointer 30s，worker 共用业务池（不为 worker 单开池）；worker 正常停机补 `release_task`（queued、attempts−1、取消收 cancelled），S2 的「stop() 不变」由本条取代；`prod.sh` 用 `QS_MODE=prod` 委派 `dev.sh`，补 15s drain 与 copytruncate 轮转；swap 验收改为按本次基线判增量。 |
 | 2026-10-27 | v3.3 | S3 按拍板修订：`/v1/embed` 出参补稀疏权重（hybrid/索引依赖）；过载改用 503 + `reason`（删除含义模糊的 `degraded?`）；补 `batch` 类与索引任务走服务；精排用单 worker + 信号量、排队计数只算等待中、不做抢占；降级原因落到 `RetrievedEvent.degraded_reason`，指标按服务/API 分工；鉴权在 token 为空时回环放行；嵌入用独立的 `RAG_EMBED_WAIT_SECONDS`（初始 5s），不套用精排短超时；交互/研究等待按 2026-10-27 实测调为 0.5s / 2.5s。 |
 | 2026-10-27 | v3.2 | S2 按拍板修订：终态/进度写入补 `worker_id` 栅栏（重新取件后 `status='running'` 拦不住迟到写入）；启动扫尾改扫全部 `running`（持锁即无第二 worker，kill -9 后秒级重排），周期 reaper 仍只看过期租约；重排按异常类型判（`internal` 代码 bug 不重排）；明确本仓无执行级超时；`task_id` 用普通唯一索引（多 NULL 不冲突）；取件归零进度、reaper 收尾已取消任务。 |
 | 2026-10-27 | v3.1 | S1 按实测与拍板修订：订正根因（`/events` 不读字典；真实瓶颈是无结果缓存的 DuckDB 重扫）、当前语料仅 3 个月故 6/12/24 窗口不可区分、新增 `dc.events_page` 有界结果缓存与 `naming.cached_primary_names()`；补 `start > end` 422、`window` 可为 null、缓存验收与回滚、日界已知边界。 |

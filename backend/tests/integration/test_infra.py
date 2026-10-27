@@ -16,8 +16,29 @@ from langgraph.graph import END, START, StateGraph
 
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
+from app.core.db import open_pool
 
 pytestmark = pytest.mark.integration
+
+
+async def test_statement_timeouts_are_scoped_to_pools() -> None:
+    """S4：业务池 5s、checkpointer 30s；建表路径不传超时（默认 0）。"""
+    settings = get_settings()
+    async with (
+        open_pool(settings.postgres_dsn, statement_timeout_ms=5000) as pool,
+        pool.connection() as conn,
+    ):
+        cursor = await conn.execute("SHOW statement_timeout")
+        row = await cursor.fetchone()
+        assert row is not None and row["statement_timeout"] == "5s"
+
+    async with (
+        open_checkpointer(settings.postgres_dsn, statement_timeout_ms=30000) as saver,
+        saver.conn.connection() as conn,
+    ):
+        cursor = await conn.execute("SHOW statement_timeout")
+        row = await cursor.fetchone()
+        assert row is not None and row["statement_timeout"] == "30s"
 
 
 async def test_postgres_reachable_and_langfuse_db_exists() -> None:

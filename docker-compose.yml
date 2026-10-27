@@ -63,6 +63,15 @@ services:
   postgres:
     image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     restart: unless-stopped
+    # P4-S4 资源上限：1.25g = 512MB shared_buffers + 连接私有内存 + 余量。
+    # 120 条连接来自连接预算（≤80 + Langfuse ~20 + 余量）；200 条满载会先吃穿容器内存。
+    mem_limit: 1.25g
+    cpus: 2.0
+    # shm_size 给并行查询的 DSM 留空间；Docker 默认 64MB 在大查询上会报
+    # "could not resize shared memory segment"。
+    shm_size: 256mb
+    # 不用 `deploy.resources`：那是 swarm 语法，compose v2 本地编排不生效。
+    command: ["postgres", "-c", "max_connections=120", "-c", "shared_buffers=512MB"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -88,15 +97,23 @@ services:
   redis:
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
-    # `--maxmemory` + `allkeys-lru`：**业务缓存的必备前提**（E3c），不是可选优化。
-    # 默认的 `maxmemory=0` + `noeviction` 意味着**没有上限、满了也不淘汰**——缓存挂上去
+    # P4-S4：业务缓存的**上限 + 淘汰策略**是可用性前提（E3c），不是可选优化。
+    # 默认 `maxmemory=0` + `noeviction` 意味着没有上限、满了也不淘汰——缓存挂上去
     # 就是一条涨到 OOM 的曲线（实测 2026-10-16：`maxmemory=0`、`policy=noeviction`、`DBSIZE=0`）。
-    # 256MB 的定标：单标的全史载荷约 1.2MB ⇒ 够放约 200 份该量级的载荷，而热点标的远没这么多。
+    # 512MB 的定标：单标的全史载荷约 1.2MB ⇒ 够放约 400 份该量级的载荷。
+    # `volatile-lru` + 全部缓存键带 TTL（`cache.py` 的 `_redis_set(..., ex=...)`）：
+    # 过期键可淘汰，不会把无 TTL 的键一起卷走。
+    # `--save ""`：缓存可丢，关掉 RDB；否则 BGSAVE fork 的 copy-on-write 会在
+    # `mem_limit` 边缘把内存瞬时翻倍（S4 实测前的隐患）。
+    # `mem_limit` 比 `maxmemory` 高 128MB，留给 Redis 自身开销与客户端缓冲。
     # ⚠ `langfuse-redis` 那条**必须保持 noeviction**（BullMQ 的要求，它不能丢队列消息）——
     # 两个实例分开正是为此（见本文件顶部与 SPEC §4.6）。
+    # Redis coord（共享限流）不在 S4 建，随 S5 的 Go 再加（SPEC §5.3）。
+    mem_limit: 640m
+    cpus: 0.5
     command:
-      ["redis-server", "--save", "60", "1", "--appendonly", "no",
-       "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+      ["redis-server", "--save", "", "--appendonly", "no",
+       "--maxmemory", "512mb", "--maxmemory-policy", "volatile-lru"]
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
@@ -111,6 +128,9 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     restart: unless-stopped
+    # P4-S4：RSS 基线 1.8GB；2.5g 给索引/压缩留余量，不把 Docker VM 吃满。
+    mem_limit: 2.5g
+    cpus: 2.0
     ports:
       - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
       - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"

@@ -62,18 +62,44 @@ cd ../frontend && pnpm install && pnpm dev                             # 5. 前�
 
 （3001 是因为 3000 归 Langfuse。）
 
-**一键起（基础设施 + checkpointer 表 + 后端 + 前端）**：
+**一键起（基础设施 + checkpointer 表 + RAG + 后端 + 前端）**：
 
 ```bash
-bash scripts/dev.sh          # 默认 start；已占用的 8000/3001 会跳过，不重复起
+bash scripts/dev.sh          # 默认 start；.env 里 RAG_SERVICE_URL 非空时连 RAG 一起起
 bash scripts/dev.sh status   # compose / 端口 / 健康检查
+bash scripts/dev.sh health   # 只做健康检查；任一依赖失败退出非 0
 bash scripts/dev.sh stop     # 停应用，不动基础设施；手动起的进程用 stop --force
 bash scripts/dev.sh restart  # 停应用后重新起；手动起的进程用 restart --force
-bash scripts/dev.sh logs     # 同时 tail 后端与前端日志
+bash scripts/dev.sh logs     # 同时 tail 后端、前端与 RAG 日志
 ```
 
 脚本假定 `.env`、`backend/.venv`、`frontend/node_modules` 已就绪；缺了会给出对应命令。
 它不替代手动步骤——只是把第 2–5 步串起来。`pnpm build` 前仍要停 dev（共用 `.next`）。
+
+**日常开发只认这一节**：后端 uvicorn 不带 `--reload`，改完后端代码执行
+`bash scripts/dev.sh restart`；前端由 `pnpm dev` 自动热更新，不用单独处理。
+`prod.sh` 只用于 S4/S6 的生产形态验收，不是第二种日常启动方式。
+
+**生产形态（S4/S6 验收专用，不是日常启动；单机、不自启/不守护）**：
+
+```bash
+bash scripts/prod.sh build   # 前端 pnpm build；代码改动后显式重建
+bash scripts/prod.sh start   # infra → RAG → API → 前端；日志/PID 在 logs/prod
+bash scripts/prod.sh status
+bash scripts/prod.sh health  # /health、/health/ready、RAG /health、前端 /login
+bash scripts/prod.sh logs [backend|frontend|rag]
+bash scripts/prod.sh stop    # API 最多等 20s（drain 15s + 收尾），先释放任务租约再退出
+```
+
+prod 与 dev 端口相同（8000/3001/8200），不能同时起。prod 日志用 copytruncate 轮转
+（20MB × 3 份、30min 检查；脚本顶部的 PROD_LOG_MAX_BYTES / PROD_LOG_KEEP /
+PROD_LOG_CHECK_SECONDS 可调，它们是 shell 变量、不读 `.env`）。
+
+**资源上限（S4）**：compose 默认三件有 `mem_limit/cpus`——PG 1.25g、Redis cache 640m、
+Qdrant 2.5g；Redis cache `maxmemory 512MB` + `volatile-lru`、不做持久化；PG
+`max_connections=120`、`shared_buffers=512MB`。DuckDB 每连接 `threads=2 /
+memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_MEMORY_LIMIT` /
+`DUCKDB_MAX_CONCURRENT` 可调）。Redis coord（共享限流）随 S5 的 Go 再加。
 
 提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
 

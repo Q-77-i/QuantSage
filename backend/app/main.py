@@ -170,8 +170,9 @@ async def _start_background(app: FastAPI, db: Any) -> _Background:
 async def _stop_background(background: _Background | None) -> None:
     """停止本进程的后台任务。幂等：重复调用不会二次 shutdown。
 
-    **不等正在跑的那一件**：取消不了线程/子进程，硬等只会拖长停机；它的行留在
-    `running`，下次启动由持锁进程扫成 failed/interrupted。
+    **不等正在跑的那一件**：取消不了线程/子进程，硬等只会拖长停机；`worker.stop()`
+    会把它释放回 `queued`（attempts−1，已取消则 `cancelled`），下次启动重新取件。
+    kill -9 没有这段收尾，由 `worker.start()` 的全量扫尾兜底（S2）。
     """
     if background is None:
         return
@@ -210,7 +211,10 @@ async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
         try:
             app.state.checkpointer = await stack.enter_async_context(
-                open_checkpointer(settings.postgres_dsn)
+                open_checkpointer(
+                    settings.postgres_dsn,
+                    statement_timeout_ms=settings.checkpoint_statement_timeout_ms,
+                )
             )
             app.state.db_ready = True
             log.info("checkpointer 就绪（%s）", settings.postgres_summary)
@@ -224,7 +228,12 @@ async def lifespan(app: FastAPI):
 
         # 业务库（自建表）与 checkpointer 用两个独立的池：各管各的表，互不牵扯
         try:
-            pool = await stack.enter_async_context(open_pool(settings.postgres_dsn))
+            pool = await stack.enter_async_context(
+                open_pool(
+                    settings.postgres_dsn,
+                    statement_timeout_ms=settings.db_statement_timeout_ms,
+                )
+            )
             await init_schema(pool)
             app.state.db = Database(pool)
             log.info("业务库就绪（%s）", settings.postgres_summary)

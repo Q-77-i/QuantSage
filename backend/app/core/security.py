@@ -27,9 +27,19 @@ SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"content-security-policy", b"default-src 'none'; frame-ancestors 'none'"),
 )
 
+#: FastAPI 自带的 Swagger UI / ReDoc 是 **HTML 页面**，要加载 CDN 的 CSS/JS、内联初始化
+#: 脚本与 favicon；`default-src 'none'` 会把它们全部拦掉（表现为白屏 + CSP 报错）。
+#: 这些是开发者文档页，不是业务接口；只对它们跳过 CSP，其余四个安全头照旧。
+#: 若将来把 docs 暴露到公网，优先在 `FastAPI(docs_url=None, redoc_url=None)` 关掉它。
+_DOCS_PATH_PREFIXES = ("/docs", "/redoc")
+_CSP_HEADER = b"content-security-policy"
+
 
 class SecurityHeadersMiddleware:
-    """给每个 HTTP 响应补上 `SECURITY_HEADERS`（只追加，不覆盖同名头）。"""
+    """给每个 HTTP 响应补上 `SECURITY_HEADERS`（只追加，不覆盖同名头）。
+
+    唯一的例外是 `/docs`、`/redoc` 及其子路径：它们跳过 CSP，否则 Swagger UI 白屏。
+    """
 
     def __init__(
         self, app: ASGIApp, headers: Sequence[tuple[bytes, bytes]] = SECURITY_HEADERS
@@ -42,9 +52,14 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        path = scope.get("path", "")
+        headers = self.headers
+        if any(path == prefix or path.startswith(f"{prefix}/") for prefix in _DOCS_PATH_PREFIXES):
+            headers = tuple(item for item in headers if item[0] != _CSP_HEADER)
+
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), *self.headers]}
+                message = {**message, "headers": [*message.get("headers", []), *headers]}
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

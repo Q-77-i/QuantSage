@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
@@ -19,14 +20,27 @@ from psycopg_pool import AsyncConnectionPool
 
 @asynccontextmanager
 async def open_checkpointer(
-    conn_string: str, *, min_size: int = 1, max_size: int = 8
+    conn_string: str,
+    *,
+    min_size: int = 1,
+    max_size: int = 8,
+    statement_timeout_ms: int | None = None,
 ) -> AsyncIterator[AsyncPostgresSaver]:
+    """checkpointer 池。建表脚本（`setup_checkpoint_tables`）不传超时——`.setup()` 里
+    可能有 `CREATE INDEX CONCURRENTLY`；只有应用运行期池加 30s（S4）。"""
+    kwargs: dict[str, Any] = {
+        "autocommit": True,
+        "prepare_threshold": 0,
+        "row_factory": dict_row,
+    }
+    if statement_timeout_ms and statement_timeout_ms > 0:
+        kwargs["options"] = f"-c statement_timeout={int(statement_timeout_ms)}"
     pool = AsyncConnectionPool(
         conn_string,
         min_size=min_size,
         max_size=max_size,
         open=False,
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        kwargs=kwargs,
     )
     await pool.open(wait=True, timeout=10)
     try:

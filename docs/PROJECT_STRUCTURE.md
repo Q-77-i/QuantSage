@@ -26,8 +26,9 @@ QuantSage/
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新；只在后台主实例启动）；归档 / 物化 / 落库
 │   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环 + 后台主实例锁
 │   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止
-│   │   ├── data/                 # DuckDB 客户端、交易日历、行情刷新、小石 CLI/MCP 装配
-│   │   │                         #   + 数据体检/落档、快照/回滚、热点缓存（E3）
+│   │   ├── data/                 # DuckDB 客户端（S4：每连接 threads/memory_limit/temp + 进程闸门）
+│   │   │                         #   + 交易日历、行情刷新、小石 CLI/MCP 装配、数据体检/落档、
+│   │   │                         #     快照/回滚、热点缓存（E3）
 │   │   ├── mcp/                  # 对外 MCP Server（E8b）：把 PIT 语料检索亮给外部 AI 客户端
 │   │   └── core/                 # 配置、checkpointer、LLM/Langfuse、日志脱敏与 JSON 日志
 │   │                             #   + 鉴权/会话/配额/安全头/注入边界、metrics/observability（E7e）
@@ -47,7 +48,8 @@ QuantSage/
 │   └── lib/                      # SSE（POST/GET 两条）、图表主题与手势、对话状态机、分页、格式化
 │                                 #   + 任务轮询与网格事件流的纯函数视图模型
 │                                 #   （纯函数 + 单测；组件本身不做单测，靠走查脚本）
-├── scripts/                      # 跨端运维脚本：dev.sh 一键起停（基础设施 + 后端 + 前端）
+├── scripts/                      # 跨端运维脚本：dev.sh 一键起停；prod.sh 生产形态（S4：
+│                                 #   前端 build+start、15s drain、日志轮转；委派 dev.sh）
 ├── docs/
 │   ├── PRD.md                    # 需求与验收
 │   ├── PROJECT_STRUCTURE.md      # 本文（结构导航）

@@ -48,6 +48,24 @@ def test_secrets_masked_in_repr_and_str() -> None:
     assert "xiaoshi-secret-value" not in str(settings)
 
 
+def test_s4_resource_defaults() -> None:
+    settings = _settings()
+    assert settings.duckdb_threads == 2
+    assert settings.duckdb_memory_limit == "1GB"
+    assert settings.duckdb_max_concurrent == 4
+    assert settings.db_statement_timeout_ms == 5000
+    assert settings.checkpoint_statement_timeout_ms == 30000
+
+
+def test_duckdb_memory_limit_shape() -> None:
+    """DuckDB 只认数字+单位；配错在启动期就炸，别等第一条查询。"""
+    assert _settings(duckdb_memory_limit="512MB").duckdb_memory_limit == "512MB"
+    assert _settings(duckdb_memory_limit="").duckdb_memory_limit == ""
+    for bad in ("1 GiB", "lots", "1024"):
+        with pytest.raises(ValidationError):
+            _settings(duckdb_memory_limit=bad)
+
+
 def test_jwt_secret_has_a_minimum_length() -> None:
     """短 HMAC 密钥等于把签名强度交给运气：非空且 <32 字节就拒绝加载。"""
     with pytest.raises(ValidationError):
