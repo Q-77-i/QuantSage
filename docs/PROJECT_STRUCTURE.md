@@ -22,6 +22,7 @@ QuantSage/
 │   │   ├── report/               # 研报容器：组装 / claim 闸门 / Markdown / PDF / 深研报 / 深研报评测（5c）
 │   │   ├── memory/               # 决策记忆：到期结算、教训、跨账户聚合（LangGraph Store）
 │   │   ├── rag/                  # 嵌入 / 检索 / PIT 硬过滤 / 重排 / 离线评测 / 零命中一轮纠错（5b）
+│   │   │                         #   + 独立推理服务（S3：service/remote/clients/protocols/metrics）
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新；只在后台主实例启动）；归档 / 物化 / 落库
 │   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环 + 后台主实例锁
 │   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止

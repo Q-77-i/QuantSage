@@ -66,6 +66,8 @@ flowchart LR
 
 这条契约的动机是「单机形态下把跨进程状态压到最少」：任务队列、限流、熔断、指标都在进程内，多 worker 会把这些状态复制 N 份。详见 §9.3。
 
+**RAG 推理是独立进程**（S3）：`python -m app.rag.service` 只绑 `127.0.0.1:8200`，单进程持有 BGE-M3 + bge-reranker，精排 `max_inflight=1`（MPS 串行）。API/MCP 经 `app/rag/remote.py` 调它；`RAG_SERVICE_URL` 为空时回退到进程内（单 API 进程，不推荐多 worker）。队列满/等待超时返回 503，调用方降级 RRF 并如实标 `degraded_reason`。
+
 **子进程**有两类：
 
 - **用户策略沙箱**：`strategy/sandbox.py` 起子进程，`strategy/isolation.py` 在 macOS 用 `sandbox-exec`、Linux 用 `bwrap` 做 OS 级隔离
@@ -278,7 +280,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 1. checkpointer → 业务库 → 工具 → Agent
 2. 任一环不可用都不阻断服务启动；具体 API 返回 503
 3. 业务库可用才竞选后台主实例；持锁者启动 worker 与调度器
-4. RAG 模型可后台预热（不阻塞启动，失败只记日志）
+4. RAG 服务可后台预热（`RAG_PRELOAD=true`，不阻塞启动，失败只让首次请求慢）；API 进程在远程模式下不加载模型
 
 ### 7.3 重启与失败语义
 
@@ -328,7 +330,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - 维持单实例契约；调度器与 task worker 已收口到后台主实例
 - 限流 / 熔断 / 指标 / 并发闸门仍按进程计算
 - 主实例退出后不自动晋升，由 supervisor 重启重新竞选
-- 真要多副本，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型
+- 真要多副本，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/worker 角色拆分仍不排期
 
 ### 9.4 其它边界
 

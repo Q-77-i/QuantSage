@@ -164,6 +164,31 @@ class Settings(BaseSettings):
     # collection 名可配：集成用例必须能指向测试库，**绝不能拿生产索引当试验场**
     rag_collection: str = "cn_events_v1"
 
+    # ── RAG 推理服务（S3）：单进程、单 MPS 闸门，只绑 127.0.0.1 ──
+    # 空 = 进程内回滚（与 S3 之前一致）；非空则 API/MCP 只调远程，不载模型
+    rag_service_url: str = ""
+    # 内部 token；非空时 /v1/* 与 /metrics 要 Bearer，为空时只允许回环地址
+    rag_service_token: SecretStr = SecretStr("")
+    rag_service_port: int = 8200
+    # 启动时后台预热两个模型（服务端用；API 的 RAG_WARMUP_ON_START 在远程模式自动跳过）
+    rag_preload: bool = False
+    # 并发：embed 2–4；rerank 必须 1（MPS 不许并发，见 encoder._MPS_LOCK）
+    # 实测（2026-10-27）：embed 2 → 10 并发下有 2 条查询排队超时；4 消掉。
+    rag_embed_inflight: int = 4
+    rag_rerank_inflight: int = 1
+    # 排队上限 / 等待超时（SPEC §4.3）：交互降级快、研究有界排队、批量索引长等。
+    # 实测：交互 1.0s → p95 3.0s；0.5s → p95 1.94s（10 并发，9 条按 timeout 降级）。
+    # 研究 10s → 5 并发 p95 6.7s；2.5s → 尾部 2 条降级，p95 落回 5s 内。
+    rag_interactive_max_queue: int = 8
+    rag_interactive_wait_seconds: float = 0.5
+    rag_research_max_queue: int = 32
+    rag_research_wait_seconds: float = 2.5
+    rag_batch_max_queue: int = 8
+    rag_batch_wait_seconds: float = 600.0
+    # 嵌入的排队等待**单独一档**：查询嵌入是硬依赖（没有 RRF 可降级），
+    # 套用精排的 1.5s 会让高并发下的查询直接 503。批量索引仍用 `rag_batch_wait_seconds`。
+    rag_embed_wait_seconds: float = 5.0
+
     # ── 用户策略沙箱（M4）──
     # 三层配额：CPU 走 RLIMIT_CPU（macOS 实测生效）；**内存不能用 rlimit**——macOS 上
     # setrlimit 与 `ulimit -v/-d` 都设不下去（实测 512MB 限下子进程照样分配 1GB，见 SPEC §5），

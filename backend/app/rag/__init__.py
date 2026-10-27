@@ -23,3 +23,15 @@ class RagNotReady(RuntimeError):
 
     与 `DataNotReady` 同族语义：调用方据此降级并**如实说明原因**。
     """
+
+
+class RagOverloaded(RagNotReady):
+    """RAG 服务过载（队列满/排队超时，SPEC §4.3）。
+
+    `reason` 供调用方把降级原因如实带给用户/模型（`queue_full` / `timeout`）。
+    继承 `RagNotReady`：嵌入路径的调用方只需捕获基类就能得到一句人话。
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"RAG 服务过载（{reason}）")
+        self.reason = reason

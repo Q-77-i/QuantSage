@@ -121,6 +121,15 @@ async def test_degraded_ranking_is_labelled(patched) -> None:
 
 
 @pytest.mark.asyncio
+async def test_degradation_reason_is_labelled(patched) -> None:
+    """S3：过载降级要说清是队列满还是超时，而不是笼统「未精排」。"""
+    patched([hit(score_kind="rrf", degraded_reason="queue_full")])
+    text = await agent_tools.search_events.ainvoke({"query": "降准"})
+    assert "精排降级" in text
+    assert "队列满" in text
+
+
+@pytest.mark.asyncio
 async def test_invalid_as_of_is_rejected_with_hint(patched) -> None:
     patched([hit()])
     text = await agent_tools.search_events.ainvoke({"query": "降准", "as_of": "昨天"})

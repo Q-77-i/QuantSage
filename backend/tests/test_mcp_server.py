@@ -46,9 +46,10 @@ def rag(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """把检索层换成假的，并记下**调用参数**（档位、top_k、as_of 都要被断言）。"""
     calls: dict[str, Any] = {}
 
-    def fake_search(spec, *, mode=None, **_kwargs):
+    def fake_search(spec, *, mode=None, request_class=None, **_kwargs):
         calls["spec"] = spec
         calls["mode"] = mode
+        calls["request_class"] = request_class
         return calls.get("hits", [make_event()])
 
     def fake_coverage(**_kwargs):
@@ -87,11 +88,25 @@ async def test_effective_as_of_is_echoed(rag: dict[str, Any]) -> None:
     assert datetime.fromisoformat(implicit["as_of"]) > datetime(2026, 1, 1, tzinfo=UTC)
 
 
-async def test_default_path_is_hybrid_without_rerank(rag: dict[str, Any]) -> None:
-    """默认档位写死 hybrid：精排要多载一份 2.3GB 模型，且与后端进程争 MPS。"""
+async def test_default_path_uses_rerank_and_interactive_class(rag: dict[str, Any]) -> None:
+    """S3 起默认档位与 chat 工具一致（rerank）；模型在 RAG 服务里，MCP 进程不再载重排。
+
+    不显式传 `mode` ⇒ 用 `retrieve.search` 的默认档位（rerank）；分级固定 interactive。
+    """
     await server.search_events("降准")
 
-    assert rag["mode"] == server.retrieve.MODE_HYBRID
+    assert rag["mode"] is None
+    assert rag["request_class"] == "interactive"
+
+
+async def test_degraded_reason_is_visible(rag: dict[str, Any]) -> None:
+    """精排降级不是只写日志：MCP 返回里要有机器码，调用方才解释得了排序为什么变了。"""
+    rag["hits"] = [make_event(score_kind="rrf", degraded_reason="queue_full")]
+
+    result = await server.search_events("降准")
+
+    assert result["score_kind"] == "rrf"
+    assert result["degraded_reason"] == "queue_full"
 
 
 async def test_top_k_is_clamped(rag: dict[str, Any]) -> None:

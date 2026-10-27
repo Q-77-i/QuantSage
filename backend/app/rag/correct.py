@@ -104,12 +104,20 @@ async def search_with_correction(
     spec: SearchQuery,
     *,
     mode: str | None = None,
+    request_class: str | None = None,
     search_fn=None,
     rewrite_fn=None,
 ) -> CorrectedSearch:
-    """先检索；零命中才改写一次再检索。`mode` 原样传给两次检索（MCP 用 hybrid）。"""
+    """先检索；零命中才改写一次再检索。
+
+    `mode` / `request_class` 原样传给两次检索：改写只动 query，其余口径（含精排分级）不变。
+    """
     searcher = search_fn or _default_search
-    kwargs = {"mode": mode} if mode is not None else {}
+    kwargs = {}
+    if mode is not None:
+        kwargs["mode"] = mode
+    if request_class is not None:
+        kwargs["request_class"] = request_class
     hits = await asyncio.to_thread(searcher, spec, **kwargs)
     if hits:
         return CorrectedSearch(hits)

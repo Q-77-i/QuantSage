@@ -122,7 +122,7 @@ async def search_events(
     """
     from app.rag import RagNotReady
     from app.rag.correct import correction_note, search_with_correction
-    from app.rag.retrieve import SearchQuery, coverage_window
+    from app.rag.retrieve import SearchQuery, coverage_window, degraded_label
 
     moment = _parse_as_of(as_of)
     if moment is _INVALID:
@@ -160,7 +160,14 @@ async def search_events(
         )
 
     kind = hits[0].score_kind
-    lines = [f"{window}｜检索到 {len(hits)} 条{'（未精排，按融合排序）' if kind == 'rrf' else ''}："]
+    reason = hits[0].degraded_reason
+    if reason:
+        tag = f"（精排降级：{degraded_label(reason)}，按融合排序）"
+    elif kind == "rrf":
+        tag = "（未精排，按融合排序）"
+    else:
+        tag = ""
+    lines = [f"{window}｜检索到 {len(hits)} 条{tag}："]
     for index, hit in enumerate(hits, start=1):
         lines.append(f"\n{index}. [{hit.event_type}] {hit.title}")
         lines.append(

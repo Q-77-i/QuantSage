@@ -273,7 +273,11 @@ async def lifespan(app: FastAPI):
         if settings.rag_warmup_on_start:
             # 后台线程预热 RAG 模型：把首次提问要付的 7–15s 载入挪到启动期。
             # 默认关——集成测试也跑 lifespan，默认开会白等十余秒并占 4GB。
-            _start_rag_warmup()
+            # S3：配了 RAG_SERVICE_URL 时模型在服务进程里，本进程**不得**再载一份。
+            if settings.rag_service_url:
+                log.info("RAG 服务模式（%s）：本进程不预热模型", settings.rag_service_url)
+            else:
+                _start_rag_warmup()
 
         try:
             yield

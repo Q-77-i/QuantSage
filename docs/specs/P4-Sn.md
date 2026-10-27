@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.15）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.2** ｜ 2026-10-27 ｜ 状态：**S1 已交付；S2 按 2026-10-27 拍板修订并实施；S3–S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10），S2 按同日拍板补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2）。
+> 版本 **v3.3** ｜ 2026-10-27 ｜ 状态：**S1/S2 已交付；S3 按 2026-10-27 拍板修订并实施；S4–S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3）。
 >
 > 本文只覆盖 **P4-Sn 单机工程化（S1–S6）**。后续的平台化/多租户/分布式仍为愿景，**不写规格、不排期**。
 > 实测基线：`docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -292,30 +292,40 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 
 | 端点 | 入参 | 出参 |
 |---|---|---|
-| `POST /v1/embed` | `texts[]`, `batch_size?` | `vectors[][]` |
-| `POST /v1/rerank` | `query`, `documents[]`, `request_class` | `scores[]`, `degraded?` |
+| `POST /v1/embed` | `texts[]`, `batch_size?`, `request_class?` | `{dense: [[float]], sparse: [{token: weight}], dim}` |
+| `POST /v1/rerank` | `query`, `documents[]`, `request_class` | `{scores: [float]}`；过载 `503 {reason}` |
 | `GET /health` | — | `{status, models, device, queue}` |
 | `GET /metrics` | — | Prometheus 文本 |
 
+- **embed 必须同时返回稀疏**：BGE-M3 一次前向产出 dense + lexical weights，hybrid 检索与建索引都依赖两者；只返回稠密会让稀疏腿永远空。
+- **过载不写在 200 响应里**：`503` + `{"reason": "queue_full" | "timeout"}`；降级是调用方的决定。
 - API/MCP：通过 `app/rag/remote.py` 的 `RemoteEmbedder` / `RemoteReranker` 实现现有 `Embedder`/`Reranker` 协议；**API 进程不再 import/加载 `app.rag.encoder` 的模型**。离线测试注入假实现，不依赖服务。
+- 索引任务（`embed_events.py` / 每晚 ETL 补嵌）同样走服务：`RemoteEmbedder.encode_documents` 按 64 条分块、`request_class=batch`；避免第二个模型实例。
 
 ### 4.3 请求分级与有界队列
 
 | 类别 | 调用点 | 队列上限 | 排队超时 | 过载行为 |
 |---|---|---|---:|---:|---|
-| `interactive` | Chat 的 `search_events`、MCP | `max_queue=8` | **1.5s** | 快速 503/`overloaded` → 调用方降级 RRF |
-| `research` | 深研报 news 角色 | `max_queue=32` | **10s** | 有界排队；满/超时后降级 RRF 或明确 503 |
+| `interactive` | Chat 的 `search_events`、MCP | `max_queue=8` | **0.5s** | 快速 503/`overloaded` → 调用方降级 RRF |
+| `research` | 深研报 news 角色 | `max_queue=32` | **2.5s** | 有界排队；满/超时后降级 RRF 或明确 503 |
+| `batch` | 索引任务（`embed_events.py`） | `max_queue=8` | **600s** | 有界排队；满/超时明确失败，不降级 |
 
-- `max_inflight`：embed 2–4；rerank **1**（MPS 串行，显式承认）。
+> 等待值是 2026-10-27 实测调定：交互 1.5s → 0.5s（10 并发 p95 3.9s → 1.94s）、研究 10s → 2.5s（5 并发 p95 6.7s → 尾部降级、p95 落回 5s 内）。仍是配置项，换机器按实测调。
+
+- `max_inflight`：embed **4**（实测 2 会在 10 并发下让查询嵌入排队超时）；rerank **1**（MPS 串行，显式承认）。
+- **嵌入自成一档等待**（`RAG_EMBED_WAIT_SECONDS`，初始 5s）：查询嵌入是硬依赖，没有 RRF 可降级，不能套用精排的短超时；批量索引仍用 `rag_batch_wait_seconds`（600s）。实测教训：套用 0.5s 时 10 并发下 2 条查询直接 503。
+- 实现口径：精排由**单个 worker executor + 信号量**保证串行；排队计数只算「等待中」，拿到信号量即减一。等待超时 → 503 `timeout`；计数到顶 → 503 `queue_full`。
+- **不做抢占**：交互请求排在研究/索引后面时同样按自己的超时降级——「交互优先降级」指降级快，不是插队。
 - 队列满/超时**必须返回明确结果**：不允许无限等待；调用方把 503 转成 RRF 结果或明确错误帧。
-- 超时值进配置，不在代码里写死；研究类可单独调大，但必须有上限。
+- 超时值进配置，不在代码里写死；研究/批量类可单独调大，但必须有上限。
 
 ### 4.4 降级与可观测
 
 - **交互优先降级**：rerank 队列满/超时/服务不可用 → `search` 返回 RRF 顺序，`score_kind="rrf"`，并在工具/MCP 返回里写明 `degraded_reason`（`queue_full` / `timeout` / `unavailable`）。
 - **研究类**：允许有界排队；排队失败同样降级 RRF 或返回明确 503；不静默换查询/PIT 条件。
 - **指标**：`rag_rerank_queue_depth`、`rag_rerank_inflight`、`rag_rerank_degraded_total{class,reason}`、`rag_rerank_wait_seconds`、`rag_embed_duration_seconds`；RAG 服务 `/metrics` 暴露，Prometheus scrape。
-- **返回可见**：`score_kind` 已是既有字段；降级原因进工具文本/MCP `query` 旁注/结构化字段（具体形状实施时定，但不得只写日志）。
+- **指标分工**：服务端记 `queue_full` / `timeout`；API 进程只记 `unavailable`（连接失败/客户端超时）——同一事件不两处计数。
+- **返回可见**：`score_kind` 已是既有字段；精排降级时 `RetrievedEvent` 带 `degraded_reason ∈ {queue_full, timeout, unavailable}`（非降级为 `None`），chat 工具文本、MCP JSON、深研报 notes 都要读它；不得只写日志。
 - **PIT 红线**：降级只改排序，不改 `as_of`/`symbol`/`event_type`/`top_k`；`available_at <= as_of` 仍在 Qdrant 服务端过滤。
 
 ### 4.5 批处理（可选，非前置）
@@ -328,7 +338,7 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 | 项 | 口径 |
 |---|---|
 | 进程边界 | API 进程不再加载模型（RSS 证明）；RAG 单进程；`/health` 可见模型/设备/队列 |
-| 交互过载 | 10 并发 interactive rerank：p95 ≤2s，`degraded_total>0`，无无限等待 |
+| 交互过载 | 10 并发 interactive rerank：p95 ≤2s，`degraded_total>0`，无无限等待；排队超时是配置，实测超线按配置调小（不改代码） |
 | 研究排队 | 5 并发 research rerank：p95 ≤5s（有界排队）或明确降级；无死等 |
 | 稳定性 | 0 MPS 崩溃；RAG 进程 RSS 与基线（1.7–2.6GB）同量级；soak 不涨 |
 | 可见性 | 队列深度/降级计数/等待时间可从 `/metrics` 读到；工具返回带 `score_kind=rrf` 与原因 |
@@ -338,6 +348,8 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 
 - 不做多 RAG 进程、不做 GPU/MPS 多实例、不换模型。
 - 回滚：`RAG_SERVICE_URL` 置空可回退到进程内（仅单 API 进程；双 worker 不建议）；降级默认值可调，但“队列满/超时必须有明确结果”不退化。
+- 鉴权：`RAG_SERVICE_TOKEN` 非空时 `/v1/*` 要求 `Authorization: Bearer`；为空时**只允许回环地址**（与 API `/metrics` 同姿态）并记 warning。服务只绑 `127.0.0.1`。
+- 索引任务走服务（`request_class=batch`）：服务在线时补嵌不另载模型；服务不可用时索引任务明确失败，不静默跳过。
 
 ---
 
@@ -512,7 +524,7 @@ SET temp_directory = '<data_dir>/_tmp/duckdb-<pid>';
 
 | 层 | 落点 |
 |---|---|
-| 后端离线 | `pytest`（1,821 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 降级/队列、S5 限流/进度 |
+| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S5 限流/进度 |
 | 集成 | `pytest -m integration`：真 PG/Redis/Qdrant；迁移/备份可选 |
 | 前端 | `pnpm test && pnpm typecheck && pnpm lint`；events 截断/窗口类型 |
 | 压测 | `docs/private/Pn-n/P4-Sn/harness/`（甲案已有；扩展到 events/RAG/2w） |
@@ -539,6 +551,7 @@ SET temp_directory = '<data_dir>/_tmp/duckdb-<pid>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-27 | v3.3 | S3 按拍板修订：`/v1/embed` 出参补稀疏权重（hybrid/索引依赖）；过载改用 503 + `reason`（删除含义模糊的 `degraded?`）；补 `batch` 类与索引任务走服务；精排用单 worker + 信号量、排队计数只算等待中、不做抢占；降级原因落到 `RetrievedEvent.degraded_reason`，指标按服务/API 分工；鉴权在 token 为空时回环放行；嵌入用独立的 `RAG_EMBED_WAIT_SECONDS`（初始 5s），不套用精排短超时；交互/研究等待按 2026-10-27 实测调为 0.5s / 2.5s。 |
 | 2026-10-27 | v3.2 | S2 按拍板修订：终态/进度写入补 `worker_id` 栅栏（重新取件后 `status='running'` 拦不住迟到写入）；启动扫尾改扫全部 `running`（持锁即无第二 worker，kill -9 后秒级重排），周期 reaper 仍只看过期租约；重排按异常类型判（`internal` 代码 bug 不重排）；明确本仓无执行级超时；`task_id` 用普通唯一索引（多 NULL 不冲突）；取件归零进度、reaper 收尾已取消任务。 |
 | 2026-10-27 | v3.1 | S1 按实测与拍板修订：订正根因（`/events` 不读字典；真实瓶颈是无结果缓存的 DuckDB 重扫）、当前语料仅 3 个月故 6/12/24 窗口不可区分、新增 `dc.events_page` 有界结果缓存与 `naming.cached_primary_names()`；补 `start > end` 422、`window` 可为 null、缓存验收与回滚、日界已知边界。 |
 | 2026-10-27 | v3.0 | 初稿：基于 P4-S0 基线与用户 5 项拍板，定义 S1–S6；本轮定位为单机工程化演练，非 HA。 |

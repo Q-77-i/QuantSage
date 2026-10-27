@@ -180,12 +180,63 @@ def test_reranker_failure_degrades_to_rrf_and_says_so() -> None:
     )
     assert [h.event_id for h in hits] == ["news:a"]
     assert hits[0].score_kind == "rrf"
+    assert hits[0].degraded_reason == "unavailable"
+
+
+class _OverloadedReranker:
+    """服务端队列满/等待超时——原因要原样带到结果上（不是只写日志）。"""
+
+    def rerank(
+        self, query: str, docs: Sequence[str], *, request_class: str = "interactive"
+    ) -> list[float]:
+        from app.rag import RagOverloaded
+
+        raise RagOverloaded("queue_full")
+
+
+def test_reranker_overload_reports_reason() -> None:
+    client = FakeQdrant()
+    point(client, day="2026-09-01", event_id="news:a", text="doc-a",
+          available_at="2026-09-01T10:00:00+08:00")
+    hits = search(
+        SearchQuery(query="q", as_of=NOW),
+        client=client, embedder=FakeEmbedder(DIM), reranker=_OverloadedReranker(),
+    )
+    assert hits[0].score_kind == "rrf"
+    assert hits[0].degraded_reason == "queue_full"
+
+
+class _ClassRecordingReranker:
+    def __init__(self) -> None:
+        self.classes: list[str] = []
+
+    def rerank(
+        self, query: str, docs: Sequence[str], *, request_class: str = "interactive"
+    ) -> list[float]:
+        self.classes.append(request_class)
+        return [float(index) for index, _ in enumerate(docs)]
+
+
+def test_request_class_is_passed_to_reranker() -> None:
+    """研究类请求必须把自己的分级带到精排（服务端按它选排队上限/超时）。"""
+    client = FakeQdrant()
+    point(client, day="2026-09-01", event_id="news:a", text="doc-a",
+          available_at="2026-09-01T10:00:00+08:00")
+    reranker = _ClassRecordingReranker()
+    search(
+        SearchQuery(query="q", as_of=NOW),
+        client=client, embedder=FakeEmbedder(DIM), reranker=reranker,
+        request_class="research",
+    )
+    assert reranker.classes == ["research"]
 
 
 class _RuntimeBrokenReranker:
     """模型载入成功、计算期炸掉（OOM 一类）——也必须降级，而不是整条检索失败。"""
 
-    def rerank(self, query: str, docs: Sequence[str]) -> list[float]:
+    def rerank(
+        self, query: str, docs: Sequence[str], *, request_class: str = "interactive"
+    ) -> list[float]:
         raise RuntimeError("模拟精排计算期 OOM")
 
 
@@ -199,6 +250,7 @@ def test_reranker_runtime_failure_also_degrades() -> None:
     )
     assert [h.event_id for h in hits] == ["news:a"]
     assert hits[0].score_kind == "rrf"
+    assert hits[0].degraded_reason == "unavailable"
 
 
 def test_mode_hybrid_skips_rerank_and_labels_score_kind() -> None:

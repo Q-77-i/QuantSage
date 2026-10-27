@@ -20,15 +20,26 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Any
 
 from app.core.config import get_settings
 from app.rag import RagNotReady
+from app.rag.protocols import DIM, Embedder, EncodedDocs, Reranker
 
-#: 句向量维度（BGE-M3 稠密）
-DIM = 1024
+__all__ = [
+    "DIM",
+    "Embedder",
+    "EncodedDocs",
+    "FlagEmbeddingEmbedder",
+    "FlagReranker",
+    "Reranker",
+    "configure_hf_env",
+    "get_embedder",
+    "get_reranker",
+    "resolve_device",
+    "warmup",
+]
 
 #: **MPS 的调用闸门**：PyTorch 的 MPS 后端（Apple GPU）**不是线程安全的**——两个线程同时
 #: 提交命令缓冲会在 Metal 层触发 `MTLReleaseAssertionFailure`，而它的处理方式是 `abort()`
@@ -45,30 +56,6 @@ def _run_on_device(device: str, call: Callable[[], Any]) -> Any:
         return call()
     with _MPS_LOCK:
         return call()
-
-
-@dataclass(frozen=True, slots=True)
-class EncodedDocs:
-    """一批文本的稠密 + 稀疏表示。稀疏用 `{token_id: weight}`（BGE-M3 的原生形状）。"""
-
-    dense: list[list[float]]
-    sparse: list[dict[int, float]]
-
-
-class Embedder(Protocol):
-    """编码器协议。测试用假实现注入，**离线用例不下载任何模型**。"""
-
-    dim: int
-
-    def encode_documents(self, texts: Sequence[str]) -> EncodedDocs: ...
-
-    def encode_query(self, text: str) -> tuple[list[float], dict[int, float]]: ...
-
-
-class Reranker(Protocol):
-    """精排器协议：给 (query, doc) 打分，分越高越相关。"""
-
-    def rerank(self, query: str, docs: Sequence[str]) -> list[float]: ...
 
 
 def resolve_device(name: str | None) -> str:
@@ -125,6 +112,8 @@ class FlagEmbeddingEmbedder:
         self._batch_size = batch_size or settings.rag_embed_batch_size
         self._max_length = max_length or settings.rag_max_length
         self._model: Any | None = None
+        # 服务进程里 embed 有 2–4 个 worker，首次并发调用会同时进 `_load`
+        self._load_lock = threading.Lock()
 
     @property
     def dim(self) -> int:
@@ -132,26 +121,28 @@ class FlagEmbeddingEmbedder:
 
     def _load(self) -> Any:
         if self._model is None:
-            try:
-                from FlagEmbedding import BGEM3FlagModel
-            except Exception as exc:  # noqa: BLE001 —— 依赖缺失/版本不兼容都归为「不可用」
-                raise RagNotReady(
-                    f"FlagEmbedding 不可用（{type(exc).__name__}）："
-                    "请在后端环境安装 rag 依赖组"
-                ) from exc
-            try:
-                self._model = BGEM3FlagModel(
-                    self._model_name,
-                    use_fp16=self._device != "cpu",  # CPU 上 fp16 是慢而非快
-                    devices=self._device,
-                    cache_dir=_cache_dir(),
-                    # 用不到 colbert 头，别把它的权重也载进来
-                    return_colbert_vecs=False,
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise RagNotReady(
-                    f"BGE-M3 载入失败（{type(exc).__name__}）：检查权重目录与磁盘空间"
-                ) from exc
+            with self._load_lock:
+                if self._model is None:
+                    try:
+                        from FlagEmbedding import BGEM3FlagModel
+                    except Exception as exc:  # noqa: BLE001 —— 依赖缺失/版本不兼容都归为「不可用」
+                        raise RagNotReady(
+                            f"FlagEmbedding 不可用（{type(exc).__name__}）："
+                            "请在后端环境安装 rag 依赖组"
+                        ) from exc
+                    try:
+                        self._model = BGEM3FlagModel(
+                            self._model_name,
+                            use_fp16=self._device != "cpu",  # CPU 上 fp16 是慢而非快
+                            devices=self._device,
+                            cache_dir=_cache_dir(),
+                            # 用不到 colbert 头，别把它的权重也载进来
+                            return_colbert_vecs=False,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        raise RagNotReady(
+                            f"BGE-M3 载入失败（{type(exc).__name__}）：检查权重目录与磁盘空间"
+                        ) from exc
         return self._model
 
     def _encode(self, texts: Sequence[str]) -> EncodedDocs:
@@ -195,29 +186,37 @@ class FlagReranker:
         # 精排用自己那一档截断：候选文本中位 80 字，长尾才是延迟来源（见 config 注释）
         self._max_length = max_length or settings.rag_rerank_max_length
         self._model: Any | None = None
+        self._load_lock = threading.Lock()
 
     def _load(self) -> Any:
         if self._model is None:
-            try:
-                from FlagEmbedding import FlagReranker as _FlagReranker
-            except Exception as exc:  # noqa: BLE001
-                raise RagNotReady(f"FlagEmbedding 不可用（{type(exc).__name__}）") from exc
-            try:
-                self._model = _FlagReranker(
-                    self._model_name,
-                    use_fp16=self._device != "cpu",
-                    devices=self._device,
-                    cache_dir=_cache_dir(),
-                    batch_size=self._batch_size,
-                    max_length=self._max_length,
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise RagNotReady(
-                    f"重排模型载入失败（{type(exc).__name__}）：检查权重目录与磁盘空间"
-                ) from exc
+            with self._load_lock:
+                if self._model is None:
+                    try:
+                        from FlagEmbedding import FlagReranker as _FlagReranker
+                    except Exception as exc:  # noqa: BLE001
+                        raise RagNotReady(
+                            f"FlagEmbedding 不可用（{type(exc).__name__}）"
+                        ) from exc
+                    try:
+                        self._model = _FlagReranker(
+                            self._model_name,
+                            use_fp16=self._device != "cpu",
+                            devices=self._device,
+                            cache_dir=_cache_dir(),
+                            batch_size=self._batch_size,
+                            max_length=self._max_length,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        raise RagNotReady(
+                            f"重排模型载入失败（{type(exc).__name__}）：检查权重目录与磁盘空间"
+                        ) from exc
         return self._model
 
-    def rerank(self, query: str, docs: Sequence[str]) -> list[float]:
+    def rerank(
+        self, query: str, docs: Sequence[str], *, request_class: str = "interactive"
+    ) -> list[float]:
+        """`request_class` 本地实现不用（队列只存在于 RAG 服务），保留签名以对齐协议。"""
         if not docs:
             return []
         pairs = [(query, doc) for doc in docs]
