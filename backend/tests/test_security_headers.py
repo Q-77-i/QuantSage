@@ -21,11 +21,28 @@ client = TestClient(app)
 @pytest.mark.parametrize(
     ("name", "value"), SECURITY_HEADERS, ids=[name.decode() for name, _ in SECURITY_HEADERS]
 )
-def test_every_response_carries_the_header(name: bytes, value: bytes) -> None:
+def test_api_response_carries_the_header(name: bytes, value: bytes) -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
     assert response.headers[name.decode()] == value.decode()
+
+
+def test_docs_pages_skip_only_the_csp() -> None:
+    """Swagger/ReDoc 是 HTML 页面，需要 CDN + 内联脚本；CSP 只对 JSON API 成立。
+
+    跳过 CSP 是为了不白屏；其余四个安全头（尤其 `frame-ancestors` 对应的
+    `x-frame-options`）必须保留。
+    """
+    for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "content-security-policy" not in response.headers
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+
+    # 普通 API 仍必须是严格 CSP（防止把例外写成全局）
+    assert "content-security-policy" in client.get("/openapi.json").headers
 
 
 def test_csp_is_the_api_flavour() -> None:

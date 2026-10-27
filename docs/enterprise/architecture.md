@@ -248,7 +248,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 幂等 | `api/idempotency.py` | L7 幂等键；重复提交返回同一结果 |
 | RBAC | `core/auth.py` | `users.role`；`require_admin`；ETL 两端点归 admin；角色不进 JWT，改库立即生效 |
 | 会话 | `core/session.py` | 滑动续期（过半程才换）；只在成功响应上换；只给通过 `require_user` 的请求续；登出撤销 `token_version` |
-| 安全响应头 | `core/security.py` | 纯 ASGI 中间件；五个头；未捕获 500 是已知例外 |
+| 安全响应头 | `core/security.py` | 纯 ASGI 中间件；五个头；`/docs`、`/redoc` 及其子路径跳过 CSP（Swagger/ReDoc 需要 CDN 与内联脚本）；未捕获 500 是已知例外 |
 | 请求体上限 | `core/body_limit.py` | 1MB 硬上限，chunked 同限 |
 | 注入边界 | `core/untrusted.py` | 外部文本包 `<untrusted_data>`；只转义分隔标签；块内内容一字不改 |
 | 沙箱 | `strategy/sandbox.py` · `strategy/isolation.py` | 子进程 + CPU/墙钟/内存/stdout 四配额 + OS 级隔离；`STRATEGY_ISOLATION=require` 默认 fail closed |
