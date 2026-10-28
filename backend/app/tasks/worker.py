@@ -25,7 +25,8 @@ from app.backtest.batch import error_of
 from app.core.config import get_settings
 from app.core.db_tasks import RETRY_BACKOFF_SECONDS
 from app.tasks import bus
-from app.tasks.executors import COOPERATIVE_KINDS, EXECUTORS, RunContext
+from app.tasks.executors import EXECUTORS, RunContext
+from app.tasks.kinds import COOPERATIVE_KINDS
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +56,12 @@ CANCEL_POLL_SECONDS = 0.5
 #: `main._start_background` 一并启动 ETL/结算调度器；非持锁进程只服务 HTTP。
 #: **数值不可改**（滚动升级期间新旧进程必须互斥）；改名只是让语义与职责一致。
 BACKGROUND_LOCK_KEY = int.from_bytes(b"QS-TASKS", "big")
+
+#: S5：多 worker 时主实例被 kill，uvicorn 会补一个新进程；旧进程的 PG 后端可能还没
+#: 完全释放 session lock，新进程一次性抢锁会输给这个几毫秒的窗口。初始 + 3 次重试
+#: （每次 0.25s）覆盖它。
+LOCK_RETRY_ATTEMPTS = 4
+LOCK_RETRY_SECONDS = 0.25
 
 #: 离线替身没有 `pool`：区分「没有跨进程概念」与「锁被别的进程持有」
 _NO_LOCK = object()
@@ -226,11 +233,18 @@ async def run_once(db: Any, *, worker_id: str = WORKER_ID) -> bool:
             task_id, worker_id=worker_id, done=done, total=total
         )
 
+    async def record_cell(done: int, cell: dict[str, Any]) -> None:
+        # S5：逐格同时落 done/total 与 cells；任意 API worker 的 SSE 都能从库里读到。
+        await db.append_task_cell(
+            task_id, worker_id=worker_id, done=done, total=total, cell=cell
+        )
+
     ctx = RunContext(
         task=task,
         stop=stop,
         publish=lambda event, payload: bus.publish(task_id, event, payload),
         progress=progress,
+        record_cell=record_cell,
     )
 
     try:
@@ -313,27 +327,40 @@ async def _acquire_instance_lock(db: Any) -> Any:
 
     **单独成函数**是为了让「锁被别的进程持有」这条分支可以离线注入；真库路径用一条
     **独立连接**持有 session 级 advisory lock——不能用池里的连接，那会白占一个槽位直到进程退出。
+
+    S5：`API_WORKERS>1` 时重试 3×0.25s。主实例被 kill 后，uvicorn 补的新进程启动时
+    去抢锁，旧连接的释放可能晚几毫秒；一次性抢锁会让新进程永远不跑后台。
     """
     pool = getattr(db, "pool", None)
     if pool is None:
         return _NO_LOCK  # 替身：没有跨进程概念，按已持有处理
     import psycopg
 
-    try:
-        conn = await psycopg.AsyncConnection.connect(pool.conninfo, autocommit=True)
-    except Exception:  # noqa: BLE001 —— 连不上库时降级启动，worker 不阻塞服务
-        log.exception("任务 worker 锁连接失败，本次不启动 worker")
-        return None
-    try:
-        cursor = await conn.execute("SELECT pg_try_advisory_lock(%s)", (BACKGROUND_LOCK_KEY,))
-        row = await cursor.fetchone()
-    except Exception:
+    attempts = LOCK_RETRY_ATTEMPTS if get_settings().api_workers > 1 else 1
+    for attempt in range(attempts):
+        try:
+            conn = await psycopg.AsyncConnection.connect(pool.conninfo, autocommit=True)
+        except Exception:  # noqa: BLE001 —— 连不上库时降级启动，worker 不阻塞服务
+            log.exception("任务 worker 锁连接失败，本次不启动 worker")
+            return None
+        try:
+            cursor = await conn.execute("SELECT pg_try_advisory_lock(%s)", (BACKGROUND_LOCK_KEY,))
+            row = await cursor.fetchone()
+        except Exception:
+            await conn.close()
+            raise
+        if row and row[0]:
+            return conn
         await conn.close()
-        raise
-    if not row or not row[0]:
-        await conn.close()
-        return None
-    return conn
+        if attempt + 1 < attempts:
+            log.debug(
+                "后台主实例锁被占用，%.2fs 后重试（%d/%d）",
+                LOCK_RETRY_SECONDS,
+                attempt + 1,
+                attempts,
+            )
+            await asyncio.sleep(LOCK_RETRY_SECONDS)
+    return None
 
 
 async def start(db: Any) -> WorkerHandle | None:

@@ -451,7 +451,10 @@ def test_progress_advances_with_the_cells(signed_in: Any, data_dir: Path) -> Non
     assert signed_in.tasks[task_id]["progress"]["done"] == 0
 
     drive_tasks(signed_in)
-    assert signed_in.tasks[task_id]["progress"] == {"done": 3, "total": 3}
+    progress = signed_in.tasks[task_id]["progress"]
+    assert progress["done"] == 3 and progress["total"] == 3
+    # S5：逐格同时落库，任意 API worker 的 SSE 都能从这里补出热力图
+    assert sorted(cell["index"] for cell in progress["cells"]) == [0, 1, 2]
 
 
 def test_cancel_running_grid_is_cooperative(signed_in: Any, data_dir: Path) -> None:
@@ -480,8 +483,15 @@ def test_cancel_running_grid_is_cooperative(signed_in: Any, data_dir: Path) -> N
     async def noop(_done: int) -> None:
         return None
 
+    async def noop_cell(_done: int, _cell: dict) -> None:
+        return None
+
     ctx = RunContext(
-        task=signed_in.tasks[task_id], stop=stop, publish=lambda *_: None, progress=noop
+        task=signed_in.tasks[task_id],
+        stop=stop,
+        publish=lambda *_: None,
+        progress=noop,
+        record_cell=noop_cell,
     )
     result = asyncio.run(execute_grid(signed_in, signed_in.tasks[task_id], ctx))
 

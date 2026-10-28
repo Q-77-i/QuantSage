@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.15）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.4** ｜ 2026-10-27 ｜ 状态：**S1/S2/S3/S4 已交付；S5/S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4）。
+> 版本 **v3.5** ｜ 2026-10-28 ｜ 状态：**S1–S5 已交付；S6 待审**——P4-Sn 单机工程化（S1–S6）规格；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §10），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5）。
 >
 > 本文只覆盖 **P4-Sn 单机工程化（S1–S6）**。后续的平台化/多租户/分布式仍为愿景，**不写规格、不排期**。
 > 实测基线：`docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -72,7 +72,7 @@ S1–S6 六个工作包，按“先修瓶颈 → 再补可靠性 → 再验扩�
 ### 1.4 非目标（写死）
 
 - Redis Streams 全量改造；本 SPEC 仅在 S5 用 **DB 进度轮询**，不引 Streams。
-- Worker 池扩容 / 多 worker 消费；Worker 保持单实例。
+- 任务 Worker 池扩容 / 多 worker 消费；任务 Worker 保持单实例（S5 只扩 API worker，见 §6）。
 - K8s / HPA / 多 AZ / 多机 HA；Qdrant 集群；Redis Cluster；PgBouncer/Read Replica；Vault；Kafka/Celery。
 - 把 agent/backtest/report 拆成独立 HTTP 服务。
 - RAG 多进程 / 多 MPS 实例 / GPU 化。
@@ -305,7 +305,7 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 ### 4.3 请求分级与有界队列
 
 | 类别 | 调用点 | 队列上限 | 排队超时 | 过载行为 |
-|---|---|---|---:|---:|---|
+|---|---|---|---:|---:|
 | `interactive` | Chat 的 `search_events`、MCP | `max_queue=8` | **0.5s** | 快速 503/`overloaded` → 调用方降级 RRF |
 | `research` | 深研报 news 角色 | `max_queue=32` | **2.5s** | 有界排队；满/超时后降级 RRF 或明确 503 |
 | `batch` | 索引任务（`embed_events.py`） | `max_queue=8` | **600s** | 有界排队；满/超时明确失败，不降级 |
@@ -364,9 +364,9 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 | qdrant | 2.5g | 2.0 | 当前 RSS 1.8GB；留索引/压缩余量 |
 | postgres | 1.25g | 2.0 | shared_buffers 512MB、`shm_size: 256mb`；连接预算见 §5.3 |
 | redis（cache） | 640m | 0.5 | `maxmemory 512mb` + `volatile-lru` + **关闭 RDB/AOF**；缓存键带 TTL |
-| redis（coord） | — | — | **S5 Go 后再建**（128MB `noeviction` / 192m），S4 不建 |
+| redis（coord） | 192m | 0.25 | S5 已建（128MB `noeviction`、无持久化）；只放 `rl:*`，不塞缓存/进度 |
 
-- Docker VM 上限 8GB（实际 7.7GB）；默认三件合计 **4.39GB**，给 Docker 开销与镜像缓存留余量。
+- Docker VM 上限 8GB（实际 7.7GB）；默认四件合计 **约 4.58GB**（S4 三件 4.39GB + coord 0.192GB），给 Docker 开销与镜像缓存留余量。
 - `mem_limit` 必须高于 `maxmemory`/`shared_buffers`：Redis 自身开销与 PG 连接私有内存都在容器内。cache 不做持久化——RDB fork 的 copy-on-write 会在限额边缘把内存翻倍。
 - Langfuse 全套继续 `observability` profile **按需启动**；不常开。若常开，需先调大 Docker VM 并重测内存预算。
 - 不把后端/RAG/worker 放进 Docker（torch linux/arm64 阻塞仍在）；只用 Docker 管有状态基础设施。
@@ -390,7 +390,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ### 5.3 Redis / PostgreSQL
 
 - Redis cache：`maxmemory 512MB`、`volatile-lru`、关闭 RDB/AOF；缓存键必须带 TTL；不把限流/进度等协调键放进 cache 实例。
-- **Redis coord 不在 S4 建**：S4 的限流/熔断仍进程内，建一个没有消费者的实例只会白占内存；等 S5 的 Go 条件通过后与共享限流一起加（128MB `noeviction`、`mem_limit 192m`）。
+- **Redis coord 不在 S4 建**：S4 的限流/熔断仍进程内，建一个没有消费者的实例只会白占内存；S5 Go 后已与共享限流一起加入（128MB `noeviction`、`mem_limit 192m`，见 §6.3）。
 - PG：`max_connections=120`（连接预算 ≤80 + Langfuse ~20 + 余量）、`shared_buffers=512MB`、`shm_size=256MB`；连接预算：API 2×(8 业务 + 8 checkpointer) + worker/scheduler 共用业务池 + Chat advisory ≤24 + 余量，控制在 80 以内。
 - 业务池 `statement_timeout=5s`；checkpointer 池 `30s`（LangGraph 写入可能比业务查询大）。worker 与 API 同进程、共用业务池，其 PG 语句（取件/心跳/进度/终态）均为亚秒级，共用 5s；**不为 worker 单开 30s 池**。Chat 的 advisory lock 走独立连接，不受池 `options` 影响（`pool.conninfo` 不含 kwargs）。
 - `init_checkpoint_db.py` 的建表连接不加超时（`setup()` 可能跑 `CREATE INDEX CONCURRENTLY`）；只有应用运行期池加。
@@ -421,46 +421,54 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 ### 6.1 Go/No-Go（S4 后复测）
 
-**Go 条件（同时满足）**：
+**预测量（S4 后，1w/2w 各 3 次取中位）**：
 
-1. 单 API Worker 在压力档未达标：bars c=300 p95 **>300ms**（基线 369ms；S4 后复测）。
+1. 单 API Worker 在压力档未达标：bars c=300 p95 中位 **>300ms**。
 2. 双 Worker 的收益足以覆盖成本：bars c=300 p95 改善 **≥1.3×** 或吞吐 **≥1.5×**；`/health` ≥1.8×。
-3. 内存有余量：2 workers + RAG + 基础设施峰值 **≤18GB**，系统可用 **≥2GB**，swap 增长 **<1GB**。
-4. 共享限流/指标/优雅停机/DB 进度四项验收全过。
+3. 内存：**2 个 API 进程树 RSS + RAG 进程 RSS + `docker stats` 默认四件合计峰值 ≤18GB**；系统 available **≥2GB**；swap 增量 **<1GB**（以测试前快照为基线）。
 
-**No-Go**：以上任一不满足 → 保持单 API Worker；S5 可只做“能力演示”或不做，直接 S6 收口。文档如实写“多进程未启用”。
+**实现后验收**：共享限流 / 多进程指标 / 优雅停机 / 跨进程进度四项全过（§6.3–§6.7）。
+
+2026-10-28 实测（harness 8100，S0 同口径）：1w bars c=300 p95 中位 **390ms / 904 req/s**；2w **234ms / 1,651 req/s（1.83×）**、`/health` **5,813 → 11,754（2.02×）**；进程合计约 **5.4GB**、available **≥5.84GB**、swap **9.20→8.68GB**。Go 条件 1–3 成立。
+
+**No-Go**：预测量任一不满足 → 保持单 API Worker；S5 可只做“能力演示”或不做，直接 S6 收口。文档如实写“多进程未启用”。
 
 ### 6.2 进程模型
 
-- **2 个 uvicorn workers**（或两个受 supervisor 管理的 API 进程），共享 8000；无 HPA/自动扩缩。
-- 后台主实例仍由 Postgres advisory lock 只选一个：只有持锁进程跑 task worker/scheduler；另一个只服务 HTTP。
-- 每个 API worker 不加载 RAG 模型（S3 已剥离）；xiaoshi MCP 子进程会每 worker 一份，S5 验收记录内存成本，必要时懒加载。
+- **2 个 uvicorn workers**，共享 8000；无 HPA/自动扩缩。用 `uvicorn --workers N`（0.54.0 的 `keep_subprocess_alive()` 会重启死掉的 worker），父进程 PID 由 `dev.sh`/`prod.sh` 记录。
+- 后台主实例仍由 Postgres advisory lock 只选一个：只有持锁进程跑 task worker/scheduler；另一个只服务 HTTP。主实例被 kill 后，uvicorn 重启的新进程在启动时**重新竞选**；不做运行中晋升。抢锁在 `API_WORKERS>1` 时重试 3×0.25s，避免旧连接未释放时新进程永远不跑后台。
+- 每个 API worker 不加载 RAG 模型（S3 已剥离）。`langchain-mcp-adapters 0.3.2` 是**每次工具调用新建会话**，不是常驻每 worker 一份；内存成本按瞬时子进程记录，必要时再懒加载。
+- `init_schema` 加跨进程 `pg_advisory_xact_lock`，两个 worker 同时启动时串行建表。
 - Chat 同 thread 的跨进程串行仍靠 PG advisory lock；池预算见 §5.3。
 
 ### 6.3 共享限流
 
-- 独立 `redis-coord`，Lua 令牌桶；键 `rl:{bucket}:{user_id}`，TTL = 窗口。
-- API 每进程调用同一 Lua；放行/拒绝语义与现有 `Limiter` 一致；`Retry-After` 用剩余等待。
-- Redis coord 不可用：降级为进程内限流，额度 **1/N**（保守），记 warning/指标；chat/research 等昂贵端点可 fail-closed。
-- 验收：同用户 `RATE_LIMIT_CHAT=5`，2 workers 下 20 并发 → **5 放行 / 15 个 429**（不是 10）。
+- 独立 `redis-coord` 服务：`127.0.0.1:6380`、`maxmemory 128mb`、`noeviction`、无 RDB/AOF、`mem_limit 192m`；只在 S5 Go 后加入 compose 默认服务。
+- Lua 令牌桶：键 `rl:{bucket}:{user_id}`，TTL = 窗口；放行/拒绝语义与现有 `Limiter` 一致；`Retry-After` 用剩余等待（Lua 返回毫秒整数，避免浮点截断）。
+- 配置：`REDIS_COORD_URL`、`RATE_LIMIT_SHARED`（默认 false）、`API_WORKERS`（默认 1）；shared 只在多 worker 形态启用。
+- Redis coord 不可用：降级为进程内限流，额度 **`max(1, capacity // N)`**（保守），全部桶同策略，记 warning + `quantsage_rate_limit_degraded_total`；**不默认 fail-closed**（避免 Redis 抖动把 chat/research 打成 503）。
+- 验收：同用户 `RATE_LIMIT_CHAT=5`，2 workers 下 20 并发 → **5 放行 / 15 个 429**（不是 10）；停 coord 后约 4 放行（2×floor(5/2)）。
 
 ### 6.4 Prometheus 多进程
 
-- `PROMETHEUS_MULTIPROC_DIR` + `MultiProcessCollector`；HTTP 计数/耗时聚合。
-- `TASKS` gauge 由**单一 exporter 从 DB 查**，不每进程各算一份；worker/RAG 各自小端口。
+- `PROMETHEUS_MULTIPROC_DIR` + `MultiProcessCollector`；HTTP 计数/耗时聚合。目录由 `dev.sh`/`prod.sh` 在**后端子进程环境**里每次启动清空重建；不全局 export（避免 RAG 进程继承）。
+- `TASKS` 改为**自定义 collector**：scrape 时从 DB 取一次，只产出一份序列，不每进程各 set 一份。
+- **worker 启动（uvicorn 补进程时）**清理**已死 pid 的 mmap 文件**（`mark_process_dead` 只覆盖 live gauge；Counter/Histogram 文件按文件名里的 pid 直接删），防 kill -9 后计数翻倍；不在 scrape 里删，避免与并发 scrape 抢文件。
+- `worker/RAG 各自小端口`：RAG 服务保留自己的 `/metrics`；API 的 `/metrics` 由任意 worker 服务，多进程聚合。
 - 验收：多次 scrape 的 `sum(quantsage_http_requests_total)` 与总请求数同量级；任务状态不重复计数。
 
 ### 6.5 优雅停机
 
 - SIGTERM：停止接新请求 → drain 在飞/SSE（上限 15s）→ 退出；worker 停止取件、续租到结束或释放租约；scheduler 停 job。
-- supervisor 重启后重新竞选后台主实例；不自动晋升。
-- 验收：20 条 SSE 期间 SIGTERM，不出现 500；客户端可重连；任务不 orphan。
+- 主实例被 kill 后由 uvicorn 重启的新进程按启动逻辑竞选（§6.2）；不做运行中晋升。
+- 验收：20 条 SSE 期间 SIGTERM，不出现 500；客户端可重连；任务不 orphan；kill -9 非 master 后另一 worker 继续服务、uvicorn 补进程。
+- **2026-10-28 实施记录**：2 workers 干净停机；在飞网格 SIGTERM → 回 queued、重启仅 1 条结果；20 条 SSE 在飞时 SIGTERM → 20/20 打开 200、任务在 drain 内跑完、服务端 0 个 500/Traceback；**kill -9 非 master** → uvicorn 补进程、另一 worker 继续；**kill -9 master** → 新进程在锁重试窗口内接手，日志打印「本进程为后台主实例 / 任务 worker 就绪」，health 仍 200。
 
 ### 6.6 跨进程网格进度（DB 轮询）
 
-- **不引 Redis Streams**。`tasks.progress` JSONB 增 `cells`（有界，最多 1,000 格）或新增 `task_events` 表；worker 逐格写入 DB。
-- API `task_frames` 每 0.5–1s 读 `tasks.progress`，按 seq/index 去重后发 SSE；终态仍从 `optimization_runs.summary.cells` 回放。
-- 进程内 `bus` 可保留为本地加速，但**DB 是跨进程权威**；任意 API worker 都能服务进度。
+- **不引 Redis Streams**。`tasks.progress` JSONB 增 `cells`（有界，最多 1,000 格；当前 `MAX_CELLS=100`），worker 逐格追加；沿用 `worker_id` 栅栏。
+- API `task_frames` 对 `grid`/`batch` 每 **1s** 读一次轻量进度（`status/progress/result/error`），按 `index` 去重后发 SSE；终态仍从 `optimization_runs.summary.cells` 回放，并跳过已发 index。任务列表摘要同时去掉 `progress.cells`（只留 done/total），避免 50 条列表被逐格数组撑大。
+- 进程内 `bus` 保留为本地加速，但**DB 是跨进程权威**；任意 API worker 都能服务进度；新增 `quantsage_task_progress_db_cells_total` 记录由 DB 轮询补出的格数。
 - 验收：网格任务在非 master worker 上也能看到逐格进度；断线重连不重复/不丢格；100 格任务 DB 写入不拖慢主流程。
 
 ### 6.7 验收
@@ -468,12 +476,12 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 | 项 | 口径 |
 |---|---|
 | 吞吐 | `/health` ≥1.8×（基线 5,946 → ≥10,700）；bars c=300 p95 ≤300ms |
-| 限流 | 5→5（不是 10） |
-| 指标 | 多进程聚合可读；任务 gauge 不重复 |
-| 停机 | SIGTERM 不丢 SSE/任务；重启健康 |
-| 进度 | 任意 worker 可见网格进度；重连正确 |
-| 内存 | 2 workers + RAG + infra 峰值 ≤18GB；swap 增长 <1GB |
-| 回退 | 任何一项失败 → 回退单 API worker，保留 S1–S4 |
+| 限流 | 5→5（不是 10）；停 coord 后约 4 放行，恢复后 5 |
+| 指标 | 多进程聚合可读；任务 gauge 不重复；kill -9 后计数不翻倍 |
+| 停机 | SIGTERM 不丢 SSE/任务；重启健康；kill -9 非 master 后另一 worker 继续；kill -9 master 后新进程接管后台主实例 |
+| 进度 | 任意 worker 可见网格进度；重连不重复/不丢；DB 轮询计数 >0 |
+| 内存 | 2 API 进程树 + RAG + docker stats 合计峰值 ≤18GB；available ≥2GB；swap 增量 <1GB |
+| 回退 | 任何一项失败 → `API_WORKERS=1` + `RATE_LIMIT_SHARED=false`，保留 S1–S4；无 schema 迁移 |
 
 ---
 
@@ -493,7 +501,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 |---|---|
 | kill -9 worker 中途 | 60s 内重排；max_attempts 后终态；0 重复结果 |
 | kill -9 API worker | 另一 worker 继续；SSE 可重连；任务不受影响 |
-| Redis coord 挂 | 限流降级 1/N；进度回退 DB；任务继续 |
+| Redis coord 挂 | 限流降级 `floor(capacity/N)`；进度回退 DB；任务继续 |
 | Redis cache 挂 | 熔断直读；请求不失败 |
 | PG 重启 | 池重连；任务不丢；Chat 明确 503/重试 |
 | Qdrant 挂 | RAG 明确错误/降级；不假装有结果 |
@@ -558,6 +566,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-28 | v3.5 | S5 按预测量与拍板修订：Go/No-Go 拆成「预测量（1–3 条）+ 实现后验收（第 4 条）」；内存口径写死为「2 API 进程树 + RAG + docker stats ≤18GB」，另判 available/swap；明确用 `uvicorn --workers`（0.54 的 worker 重启）与主实例锁重试；订正 MCP 为每次调用新建会话；`init_schema` 加跨进程串行；coord 定 6380/128MB/192m，降级 `floor(capacity/N)` 不全量 fail-closed；指标改自定义 TASKS collector + 死 pid 清理；进度选 `tasks.progress.cells` JSONB + 1s 轮询，不新增 `task_events` 表。实现并验收通过：限流 5/15、bars 1,699 req/s / p95 231ms、10×81 格 0 重复、停机重排仅 1 条结果。 |
 | 2026-10-27 | v3.4 | S4 按拍板修订：DuckDB `memory_limit` 明确为**每连接**上限，查询闸门改为无条件开启（初始 4），temp 目录逐连接唯一并清扫死 pid 残留；Docker 预算改为 PG 1.25g + `max_connections=120` + `shm_size`，Redis cache 640m / `maxmemory 512MB` / 关闭 RDB，**coord 移到 S5**；PG 业务池 5s、checkpointer 30s，worker 共用业务池（不为 worker 单开池）；worker 正常停机补 `release_task`（queued、attempts−1、取消收 cancelled），S2 的「stop() 不变」由本条取代；`prod.sh` 用 `QS_MODE=prod` 委派 `dev.sh`，补 15s drain 与 copytruncate 轮转；swap 验收改为按本次基线判增量。 |
 | 2026-10-27 | v3.3 | S3 按拍板修订：`/v1/embed` 出参补稀疏权重（hybrid/索引依赖）；过载改用 503 + `reason`（删除含义模糊的 `degraded?`）；补 `batch` 类与索引任务走服务；精排用单 worker + 信号量、排队计数只算等待中、不做抢占；降级原因落到 `RetrievedEvent.degraded_reason`，指标按服务/API 分工；鉴权在 token 为空时回环放行；嵌入用独立的 `RAG_EMBED_WAIT_SECONDS`（初始 5s），不套用精排短超时；交互/研究等待按 2026-10-27 实测调为 0.5s / 2.5s。 |
 | 2026-10-27 | v3.2 | S2 按拍板修订：终态/进度写入补 `worker_id` 栅栏（重新取件后 `status='running'` 拦不住迟到写入）；启动扫尾改扫全部 `running`（持锁即无第二 worker，kill -9 后秒级重排），周期 reaper 仍只看过期租约；重排按异常类型判（`internal` 代码 bug 不重排）；明确本仓无执行级超时；`task_id` 用普通唯一索引（多 NULL 不冲突）；取件归零进度、reaper 收尾已取消任务。 |

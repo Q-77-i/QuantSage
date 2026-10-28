@@ -83,9 +83,22 @@ async def open_pool(
         await pool.close()
 
 
+#: 建表串行锁（S5）。与 `tasks.worker.BACKGROUND_LOCK_KEY` 不同 key：前者只管 DDL，
+#: 后者管后台主实例，互不阻塞。取 **8 字节** ASCII 常量（int64 内，psycopg 才会推断 bigint；
+#: 9 字节会变成 numeric，`pg_advisory_xact_lock(numeric)` 不存在）。
+SCHEMA_LOCK_KEY = int.from_bytes(b"QS-SCHMA", "big")
+
+
 async def init_schema(pool: AsyncConnectionPool) -> None:
-    """建表（幂等）。重复执行安全，表已存在时不动。"""
-    async with pool.connection() as conn:
+    """建表（幂等）。重复执行安全，表已存在时不动。
+
+    S5：多个 API worker 会同时启动；同一批 DDL 放进一个事务并用 advisory xact lock
+    串行，避免并发 `CREATE TABLE/INDEX IF NOT EXISTS` 在系统表上撞车。
+    """
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(%s::bigint)", (SCHEMA_LOCK_KEY,)
+        )
         for statement in SCHEMA:
             await conn.execute(statement)
 

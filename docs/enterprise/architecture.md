@@ -56,15 +56,24 @@ flowchart LR
 
 ### 2.1 进程模型
 
-**一个 FastAPI 进程承担 HTTP 与后台任务**，但后台任务有主实例竞选：
+**API 层默认 1 个、可条件跑 2 个 FastAPI worker；后台任务仍只有一个主实例**：
 
 - 启动时用 Postgres advisory lock 竞选**后台主实例**（`BACKGROUND_LOCK_KEY`）
 - 只有持锁进程启动 task worker、ETL/行情/体检调度器、决策结算调度器
 - 非持锁进程只服务 HTTP；`POST /api/v1/etl/run` 与 `POST /api/v1/data/rollback` 在非主实例返回 **409**
-- 主实例退出后**不自动晋升**，由 supervisor 重启重新竞选
+- 主实例退出后不做运行中晋升；uvicorn 补进程后由新进程在启动时重新竞选（`API_WORKERS>1` 时锁重试 3×0.25s）
 - 重启时把遗留的 `running` 任务**有限次重排**（基础设施故障，默认最多执行 2 次）；attempt 用尽才标 `failed/lease_expired`；确定性错误不重试
 
-这条契约的动机是「单机形态下把跨进程状态压到最少」：任务队列、限流、熔断、指标都在进程内，多 worker 会把这些状态复制 N 份。详见 §9.3。
+**多 API worker（S5，条件启用）**：`API_WORKERS=2` 时 uvicorn 起 2 个 API worker
+（`keep_subprocess_alive` 负责补死掉的进程），任务 worker / 调度器仍只有一个。共享限流
+走独立 `redis-coord`（Lua 令牌桶）；coord 不可用降级为进程内 `floor(capacity/N)`。指标用
+`PROMETHEUS_MULTIPROC_DIR` + `MultiProcessCollector` 聚合，任务状态由自定义 collector 从
+DB 取一次。网格逐格进度落 `tasks.progress.cells`，非 master 的 SSE 每 1s 从 DB 轮询补齐。
+回退：`API_WORKERS=1` + `RATE_LIMIT_SHARED=false`。实现后复测 bars c=300
+**1,699 req/s / p95 231ms**、`/health` **11,810 req/s**（预测量 1w p95 390ms）。
+
+这条契约的动机是「单机形态下把跨进程状态压到最少」：任务队列仍单实例；限流与指标在 S5
+已跨进程（coord / 多进程聚合），熔断与 DuckDB/模拟盘并发闸门仍按进程计算。详见 §9.3。
 
 **RAG 推理是独立进程**（S3）：`python -m app.rag.service` 只绑 `127.0.0.1:8200`，单进程持有 BGE-M3 + bge-reranker，精排 `max_inflight=1`（MPS 串行）。API/MCP 经 `app/rag/remote.py` 调它；`RAG_SERVICE_URL` 为空时回退到进程内（单 API 进程，不推荐多 worker）。队列满/等待超时返回 503，调用方降级 RRF 并如实标 `degraded_reason`。
 
@@ -75,8 +84,8 @@ start/stop/status/health/logs 与前端 build+start；prod/dev 端口相同、�
 `queued`（attempts−1；已取消收 `cancelled`）；scheduler `shutdown(wait=False)`。日志用
 copytruncate 轮转（20MB × 3、30min 检查）。
 
-**资源上限（S4）**：Docker 默认三件有 `mem_limit/cpus`（PG 1.25g、Redis cache 640m、
-Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `volatile-lru`、关闭 RDB；PG
+**资源上限（S4）**：Docker 默认四件有 `mem_limit/cpus`（PG 1.25g、Redis cache 640m、
+Redis coord 192m（S5）、Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `volatile-lru`、关闭 RDB；PG
 `max_connections=120`、`shared_buffers=512MB`。DuckDB 每连接 `threads=2`、
 `memory_limit=1GB`、逐连接 temp 目录；`_fetch` 有进程级查询闸门 4（1GB 是每连接上限，
 不是进程上限）。业务池 `statement_timeout=5s`、checkpointer 池 30s。
@@ -91,7 +100,7 @@ Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `volatile-lru`、关闭 RDB；P
 | 存储 | 职责 | 关键约束 |
 |---|---|---|
 | PostgreSQL 18 | 业务表（用户/会话/自选/策略/回测/模拟盘/研报/任务/配额/审计等）+ LangGraph checkpointer + Store | 业务库不可用时后台任务与调度器都不启动；降级接口返回 503；容器 1.25g、`max_connections=120`、`shared_buffers=512MB` |
-| Redis 7 | 数据层 L2 热点缓存 | **可降级**：连不上就熔断直读，缓存层异常不让请求失败；容器 640m、`maxmemory 512MB` + `volatile-lru`、不持久化；coord 随 S5 再加 |
+| Redis 7 | 数据层 L2 热点缓存 + 共享限流协调 | **可降级**：cache 连不上就熔断直读，缓存层异常不让请求失败；容器 640m、`maxmemory 512MB` + `volatile-lru`、不持久化。coord 独立实例（6380、192m、128MB noeviction），只放 `rl:*`；coord 挂了限流降级为进程内 `floor(capacity/N)` |
 | Qdrant | 事件语料双索引（稠密 + 稀疏） | PIT 过滤写进服务端 filter；RRF 由服务端做；容器 2.5g |
 | Parquet + DuckDB | 行情与事件的事实层 | 直读分片，零 ETL；DuckDB 不承担业务事务；每连接 `threads=2`/`memory_limit=1GB` + 进程级闸门 4 |
 | Langfuse | LLM trace / token / 成本 | 与 Prometheus 分工，不在两处重复计 token |
@@ -256,7 +265,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 机制 | 落点 | 关键口径 |
 |---|---|---|
 | 错误分类 / 重试 / 熔断 | `core/reliability.py` | 按异常结构分类，不 import 上游 SDK；`rate_limited` 立即开路且不计失败；熔断状态进程内、重启清零 |
-| L0 限流 | `api/limits.py` | 进程内令牌桶；429 带 `Retry-After`；SSE 在开流前拒（回 JSON，不改状态码） |
+| L0 限流 | `api/limits.py` | 默认进程内令牌桶；多 worker + `RATE_LIMIT_SHARED=true` 走 redis-coord Lua；coord 挂了降级进程内 `floor(capacity/N)`；429 带 `Retry-After`；SSE 在开流前拒（回 JSON，不改状态码） |
 | 用户配额 | `core/quota.py` | 在飞任务数 = 直查 `tasks` 表（gauge，进终态自动释放）；Agent 请求/日 = `usage_counters`（counter）；计发起不计成功；≤0 不限额 |
 | 幂等 | `api/idempotency.py` | L7 幂等键；重复提交返回同一结果 |
 | RBAC | `core/auth.py` | `users.role`；`require_admin`；ETL 两端点归 admin；角色不进 JWT，改库立即生效 |
@@ -311,12 +320,12 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 3 | 读并行、写单点 | 取证可以 fan-out；综合与下单必须单点 | 归并与去重逻辑更复杂 | `agent/deep/graph.py` |
 | 4 | 回测/模拟盘/批量共用撮合与费用实现 | 风控关闭时全部批准的模拟盘 ⇔ 一次回测，逐笔相等 | 同一套实现要同时满足三种调用形态 | `backtest/broker.py`、`backtest/costs.py`、`paper/replay.py` |
 | 5 | 队列实体是 `tasks` 表，单 worker | 持久、原子取件（`SKIP LOCKED`）、幂等键、进度、取消、终态、有限次重排都已有；不引 MQ | 单实例；重排只覆盖基础设施故障，重试上限 2 次 | `tasks/worker.py`、`core/db_tasks.py` |
-| 6 | 单实例契约 + 后台主实例锁 | 限流/熔断/指标/闸门都在进程内，多 worker 会复制状态 | 无 HA、主实例退出不自动晋升 | `tasks/worker.py::BACKGROUND_LOCK_KEY` |
+| 6 | 单实例契约 + 后台主实例锁 | 任务队列仍单实例；限流/指标在 S5 跨进程（coord / 多进程聚合），熔断/并发闸门仍进程内 | 无 HA、主实例退出不自动晋升（uvicorn 补进程后重新竞选） | `tasks/worker.py::BACKGROUND_LOCK_KEY` |
 | 7 | PIT 过滤写进 Qdrant 服务端 filter | 本地后置过滤会静默塌陷召回 | 依赖 Qdrant 的 filter 能力 | `rag/retrieve.py` |
 | 8 | 用户策略子进程 + OS 级沙箱 + AST 检查 | `build_namespace()` 不是安全边界；未来函数要在运行前拦 | 平台相关（sandbox-exec/bwrap） | `strategy/isolation.py`、`strategy/static_check.py` |
 | 9 | 策略版本 append-only | 运行可绑定确定版本；回滚不丢历史 | 存储只增不减 | `core/db_strategies.py` |
 | 10 | Agent 下单只到提案 | 人必须逐条裁决；Agent 不能批准/成交/改风控 | 交互多一步 | `paper/proposal.py` |
-| 11 | 可靠性策略不绑外部组件 | 关键路径不依赖 Redis；熔断/限流进程内 | 重启清零、单实例 | `core/reliability.py` |
+| 11 | 可靠性策略不硬依赖外部组件 | 关键路径不硬依赖 Redis；限流默认进程内，多 worker 时 coord 失败降级 | 重启清零、单实例 | `core/reliability.py` |
 | 12 | LLM 观测在 Langfuse，服务指标在 Prometheus | 两套口径各司其职，不重复计 token | 两处看板 | `core/langfuse.py`、`core/metrics.py` |
 | 13 | 不引消息队列、暂缓全量容器化 | 当前规模收益低、运维/一致性成本高 | 需要时按触发条件升级 | 见 §9 |
 
@@ -338,12 +347,12 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - 触发条件：多租户 / 上云 / 需要独立 executor
 - **不得为跑通容器静默降级 `STRATEGY_ISOLATION`**；要么 require 通过，要么明确改方案
 
-### 9.3 多 worker：不是受支持形态
+### 9.3 多 API worker：条件启用（S5）
 
-- 维持单实例契约；调度器与 task worker 已收口到后台主实例
-- 限流 / 熔断 / 指标 / 并发闸门仍按进程计算
-- 主实例退出后不自动晋升，由 supervisor 重启重新竞选
-- 真要多副本，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/worker 角色拆分仍不排期
+- **默认 1 个 API worker**；`API_WORKERS=2` 是压力档的可选升级，不是多副本/HA
+- 任务 worker / 调度器仍单实例（advisory lock）；限流走 redis-coord 共享令牌桶（coord 挂了降级进程内 `floor(capacity/N)`）；指标用 Prometheus 多进程聚合；跨进程进度以 `tasks.progress.cells` + DB 轮询为准
+- 熔断与 DuckDB / 模拟盘并发闸门仍按进程计算；主实例退出后不做运行中晋升，uvicorn 补进程后重新竞选
+- 真要多副本/HA，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/后台角色拆分仍不排期
 
 ### 9.4 其它边界
 

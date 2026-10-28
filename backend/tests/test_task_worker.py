@@ -407,7 +407,11 @@ def test_claim_sets_attempts_and_resets_progress(
             task_id, TEST_USER["id"], "grid", frozen_request(), total=100
         )
     )
-    signed_in.tasks[task_id]["progress"] = {"done": 40, "total": 100}
+    signed_in.tasks[task_id]["progress"] = {
+        "done": 40,
+        "total": 100,
+        "cells": [{"index": 0, "ok": True}],
+    }
 
     claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
     assert claimed is not None
@@ -416,6 +420,8 @@ def test_claim_sets_attempts_and_resets_progress(
     assert task["worker_id"] == WID
     assert task["lease_expires_at"] is not None
     assert task["progress"]["done"] == 0
+    # S5：重排后旧 cells 不能带进新一次执行（否则会重复追加/串格）
+    assert "cells" not in task["progress"]
 
 
 def test_heartbeat_extends_lease_and_requires_owner(

@@ -78,9 +78,9 @@ bash scripts/dev.sh logs     # 同时 tail 后端、前端与 RAG 日志
 
 **日常开发只认这一节**：后端 uvicorn 不带 `--reload`，改完后端代码执行
 `bash scripts/dev.sh restart`；前端由 `pnpm dev` 自动热更新，不用单独处理。
-`prod.sh` 只用于 S4/S6 的生产形态验收，不是第二种日常启动方式。
+`prod.sh` 只用于 S4–S6 的生产形态验收，不是第二种日常启动方式。
 
-**生产形态（S4/S6 验收专用，不是日常启动；单机、不自启/不守护）**：
+**生产形态（S4–S6 验收专用，不是日常启动；单机、不自启/不守护）**：
 
 ```bash
 bash scripts/prod.sh build   # 前端 pnpm build；代码改动后显式重建
@@ -95,11 +95,19 @@ prod 与 dev 端口相同（8000/3001/8200），不能同时起。prod 日志用
 （20MB × 3 份、30min 检查；脚本顶部的 PROD_LOG_MAX_BYTES / PROD_LOG_KEEP /
 PROD_LOG_CHECK_SECONDS 可调，它们是 shell 变量、不读 `.env`）。
 
-**资源上限（S4）**：compose 默认三件有 `mem_limit/cpus`——PG 1.25g、Redis cache 640m、
-Qdrant 2.5g；Redis cache `maxmemory 512MB` + `volatile-lru`、不做持久化；PG
+**资源上限（S4）**：compose 默认四件有 `mem_limit/cpus`——PG 1.25g、Redis cache 640m、
+Redis coord 192m（S5）、Qdrant 2.5g；Redis cache `maxmemory 512MB` + `volatile-lru`、不做持久化；PG
 `max_connections=120`、`shared_buffers=512MB`。DuckDB 每连接 `threads=2 /
 memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_MEMORY_LIMIT` /
-`DUCKDB_MAX_CONCURRENT` 可调）。Redis coord（共享限流）随 S5 的 Go 再加。
+`DUCKDB_MAX_CONCURRENT` 可调）。共享限流在 `RATE_LIMIT_SHARED=true` 且
+`API_WORKERS>1` 时走 redis-coord（coord 不可用降级为进程内）。
+
+**多 API worker（S5，条件启用）**：`API_WORKERS=2` 时 uvicorn 起 2 个 API worker，
+任务 worker / ETL / 结算仍只有一个（advisory lock）。实现后复测 bars c=300
+**1,699 req/s / p95 231ms**、`/health` **11,810 req/s**（预测量 1w p95 390ms；吞吐 1.88×）；共享限流走 redis-coord，coord
+不可用降级为进程内 `floor(capacity/N)`；指标用 Prometheus 多进程聚合；网格逐格进度
+落 `tasks.progress.cells`，任意 worker 的 SSE 都能回放。回退：`API_WORKERS=1` +
+`RATE_LIMIT_SHARED=false`。
 
 提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
 
@@ -281,7 +289,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 - **深路径是回放式的、不是实时的**：模拟盘只能回放到**本地行情末端**；深研报锁 `as_of`，可重放但不能「分析此刻」
 - **回测引擎不含组合与实盘**：模拟盘是**单账户多标的等额配额**，不是组合优化；样本不足时年化与夏普会被放大，UI 常驻提示。**风控开启的会话不再与回测逐笔平价**——上限是硬顶不是目标（单标的上限在 5 只以上池子里通常不触发），止损按收盘价判定、次日开盘成交，跳空可能成交在更差价位
 - **网格/批量与回测一样是任务**：`POST /api/v1/optimize/{grid,batch}` 回 202 + 任务号，进度订阅 `GET /api/v1/tasks/{id}/events`。**断开订阅不影响执行**——关掉页面/刷新，任务照跑完并落库（`?task=` 刷新后自动接回）。「停止」是真取消（协作式），**中止的结果不落库**
-- **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例契约**：同一业务库只允许一个进程承担后台任务；启动时用 advisory lock 竞选后台主实例，只有持锁者跑 task worker / ETL / 结算调度器，非持锁进程只服务 HTTP（`POST /etl/run` 与 `POST /data/rollback` 返回 409）。主实例退出后不自动晋升，由 supervisor 重启重新竞选；被重启/崩溃打断的任务**有限次自动重排**（租约 + 心跳 + reaper，默认最多执行 2 次；确定性错误不重试），结果按 `task_id` 幂等，重排不产生重复记录
+- **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例契约**：同一业务库只允许一个进程承担后台任务；启动时用 advisory lock 竞选后台主实例，只有持锁者跑 task worker / ETL / 结算调度器，非持锁进程只服务 HTTP（`POST /etl/run` 与 `POST /data/rollback` 返回 409）。API 层可条件跑 2 个 worker（S5），任务 worker 仍单实例；主实例退出后不做运行中晋升，uvicorn 补进程后由新进程在启动时重新竞选（`API_WORKERS>1` 时锁重试 3×0.25s）；被重启/崩溃打断的任务**有限次自动重排**（租约 + 心跳 + reaper，默认最多执行 2 次；确定性错误不重试），结果按 `task_id` 幂等，重排不产生重复记录
 - **Agent 下单只到提案**：Agent 工具只能创建**当前交易日、待审批**的模拟盘决策，不能批准 / 成交 / 改数量 / 改风控；用户必须逐条裁决，有待审批 Agent 提案时「跑到结束」直接 409。只支持会话池内标的、等额配额买入 / 全仓卖出（M6 不支持部分成交）；不做盘中触发
 - **策略版本按内容计**：只有 `code` / `params` 实际变化才 +1，只改名不增版；回滚追加新版本并保留当前名字；删除策略会级联删版本行。模拟盘创建时锁定 `strategy_id + version`（旧会话缺键时按名字回落），回测记录绑定 `strategy_version`，**优化记录本轮不绑定版本**（源码已在任务行冻结，但历史摘要无法证明当时版本）
 
@@ -296,9 +304,9 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 
 ### 运行时与可靠性
 
-- **消息队列 / 容器化 / 多 worker 的边界**：不引 MQ（`tasks` 表即队列）、全量容器化暂缓、多 worker 不是受支持形态；四句话的触发判据见 [企业级文档 · 已知边界与未来触发](docs/enterprise/architecture.md#9-已知边界与未来触发)
-- **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流/熔断仍走进程内，不依赖 Redis（E4 定稿）；调度器与 task worker 已收口到后台主实例（E 批）
-- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**指标进程内、重启清零、单实例**；调度器与 task worker 已收口到后台主实例，但限流/熔断/指标/并发闸门仍按进程计算——多 worker 不是受支持形态。没有 Prometheus server / 告警，**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
+- **消息队列 / 容器化 / 多 worker 的边界**：不引 MQ（`tasks` 表即队列）、全量容器化暂缓、API 可条件跑 2 个 worker（S5；任务 worker / 调度器仍单实例）；四句话的触发判据见 [企业级文档 · 已知边界与未来触发](docs/enterprise/architecture.md#9-已知边界与未来触发)
+- **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流默认进程内；多 worker 时 `RATE_LIMIT_SHARED=true` 走 redis-coord 共享令牌桶，coord 挂了降级为进程内 `floor(capacity/N)`；熔断仍进程内。调度器与 task worker 已收口到后台主实例（E 批）
+- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。没有 Prometheus server / 告警，**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
 
 ### 展示与前端
 

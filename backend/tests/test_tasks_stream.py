@@ -106,7 +106,9 @@ def test_release_drops_the_buffer() -> None:
 
 async def collect(db: FakeDatabase, task_id: str, *, limit: int = 50) -> list[Any]:
     frames: list[Any] = []
-    async for frame in task_frames(db, USER_ID, task_id, keepalive_seconds=0.05):
+    async for frame in task_frames(
+        db, USER_ID, task_id, keepalive_seconds=0.05, poll_seconds=0.05
+    ):
         if frame is None:
             continue  # 保活帧不算事件
         frames.append(frame)
@@ -243,3 +245,54 @@ def test_unknown_task_yields_error_frame() -> None:
         return await collect(db, str(uuid.uuid4()))
 
     assert asyncio.run(scenario()) == [("error", {"code": "not_found", "message": "任务不存在"})]
+
+
+def test_db_progress_reaches_a_non_master_subscriber() -> None:
+    """S5：本进程没有 bus 帧，SSE 仍从 `tasks.progress.cells` 补出逐格进度并收口。"""
+
+    async def scenario() -> list[Any]:
+        bus.reset()
+        db = FakeDatabase()
+        await make_task(db, status="running")
+        await db.append_task_cell(
+            TASK_ID, worker_id=WID, done=1, total=2, cell={"index": 0, "ok": True}
+        )
+        await db.save_optimization_run(
+            "run-1",
+            USER_ID,
+            {"kind": "grid"},
+            {
+                "kind": "grid",
+                "cells": [{"index": 0, "ok": True}, {"index": 1, "ok": True}],
+                "cells_total": 2,
+                "cells_ok": 2,
+                "best_index": 0,
+                "overfit": None,
+                "duration_s": 0.5,
+            },
+        )
+        await db.finish_task(TASK_ID, worker_id=WID, result={"run_id": "run-1"})
+        return await collect(db, TASK_ID)
+
+    frames = asyncio.run(scenario())
+    assert [name for name, _ in frames] == ["start", "cell", "cell", "done"]
+    assert [payload["index"] for name, payload in frames if name == "cell"] == [0, 1]
+
+
+def test_bus_and_db_do_not_duplicate_a_cell() -> None:
+    """S5：同一格同时走了 bus 与 DB 时，单条连接只发一次。"""
+
+    async def scenario() -> list[Any]:
+        bus.reset()
+        db = FakeDatabase()
+        await make_task(db, status="running")
+        await db.append_task_cell(
+            TASK_ID, worker_id=WID, done=1, total=2, cell={"index": 0, "ok": True}
+        )
+        bus.publish(TASK_ID, "cell", {"index": 0, "ok": True})
+        bus.publish(TASK_ID, "done", {"run_id": "run-1"})
+        return await collect(db, TASK_ID)
+
+    frames = asyncio.run(scenario())
+    assert [name for name, _ in frames] == ["start", "cell", "done"]
+    assert frames[1][1]["index"] == 0

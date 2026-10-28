@@ -32,6 +32,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # QS_MODE=prod 由 scripts/prod.sh 设置；直接跑本脚本时是 dev。
 MODE="${QS_MODE:-dev}"
+# S5：API worker 数。shell 环境优先；没设则读 .env（app 也从 .env 读同名键，
+# 两处必须是同一个值——否则 dev.sh 起 1 个而 app 以为自己有 2 个，限流降级分母会错）。
+API_WORKERS="${API_WORKERS:-}"
+if [[ -z "$API_WORKERS" && -f "$ROOT/.env" ]]; then
+  # grep 找不到键会 exit 1；set -o pipefail 下必须吞掉，否则整个脚本在解析期退出。
+  API_WORKERS="$(grep -E '^[[:space:]]*API_WORKERS=' "$ROOT/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+fi
+API_WORKERS="${API_WORKERS:-1}"
+export API_WORKERS
 LOG_DIR="$ROOT/logs/$MODE"
 BACKEND_PID="$LOG_DIR/backend.pid"
 FRONTEND_PID="$LOG_DIR/frontend.pid"
@@ -95,7 +104,7 @@ check_prereqs() {
 }
 
 start_infra() {
-  say "→ 启动基础设施（postgres / redis / qdrant；compose 配置有变时会重建容器，命名卷数据保留）"
+  say "→ 启动基础设施（postgres / redis / redis-coord / qdrant；compose 配置有变时会重建容器，命名卷数据保留）"
   (cd "$ROOT" && docker compose up -d --wait)
 }
 
@@ -115,11 +124,21 @@ start_backend() {
     warn "端口 $BACKEND_PORT 已被占用（不是本脚本启动的？）；跳过后端启动"
     return 0
   fi
-  say "→ 启动后端 :$BACKEND_PORT"
+  say "→ 启动后端 :${BACKEND_PORT}（${API_WORKERS} worker）"
   (
     cd "$ROOT/backend"
+    # S5：多 worker 才开 Prometheus 多进程聚合。只在本子 shell export，
+    # RAG/前端进程不继承（它们有自己的 registry）。
+    # 每次启动清空重建，避免上一轮死进程的 mmap 文件把计数带进来。
+    if (( API_WORKERS > 1 )); then
+      PROM_DIR="$LOG_DIR/prom"
+      rm -rf "$PROM_DIR"
+      mkdir -p "$PROM_DIR"
+      export PROMETHEUS_MULTIPROC_DIR="$PROM_DIR"
+    fi
     # S4：SIGTERM 后先停接新请求、drain 在飞/SSE（上限 15s），再走 lifespan 收尾。
     nohup .venv/bin/python -m uvicorn app.main:app --port "$BACKEND_PORT" \
+      --workers "$API_WORKERS" \
       --timeout-graceful-shutdown 15 >>"$BACKEND_LOG" 2>&1 &
     echo $! >"$BACKEND_PID"
   )

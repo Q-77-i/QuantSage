@@ -1,4 +1,4 @@
-"""任务事件流（P3-E1b）：`(事件名, 载荷)` 的异步迭代器，喂给 SSE 编码。
+"""任务事件流（P3-E1b / S5）：`(事件名, 载荷)` 的异步迭代器，喂给 SSE 编码。
 
 两个消费者共用它：`POST /optimize/{grid,batch}`（发起时的流）与
 `GET /api/v1/tasks/{id}/events`（断线重连）。两侧的帧**逐字同形**——前端的消费器因此
@@ -9,21 +9,31 @@
 
 **先订阅、再查状态**（反了就有空档：任务在两次调用之间结束，那一格落进缝隙里，
 客户端什么都收不到还查不出原因）。
+
+**S5 跨进程**：`grid`/`batch` 的逐格进度以 `tasks.progress.cells` 为权威。订阅后先补
+库里的格，之后每 `poll_seconds`（1s）查一次轻量进度；bus 里的实时帧照常优先，按
+`index` 去重。非 master worker 的 SSE 因此也能长出完整热力图。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.core.metrics import TASK_PROGRESS_DB_CELLS
 from app.tasks import bus
+from app.tasks.kinds import COOPERATIVE_KINDS
 
 log = logging.getLogger(__name__)
 
 #: 静默超过这个秒数发一个保活帧（`None`）。逐格推送密集得多，这里是兜底。
 KEEPALIVE_SECONDS = 15.0
+
+#: 跨进程逐格轮询间隔（S5，SPEC §6.6）。只对 grid/batch 生效。
+POLL_SECONDS = 1.0
 
 #: 任务状态机的终态（与 `api/tasks.py` 的 409 判据同一套取值）
 TERMINAL = frozenset({"done", "failed", "cancelled"})
@@ -38,6 +48,7 @@ async def task_frames(
     task_id: str,
     *,
     keepalive_seconds: float = KEEPALIVE_SECONDS,
+    poll_seconds: float = POLL_SECONDS,
 ) -> AsyncIterator[tuple[str, object] | None]:
     """任务的事件流。`None` = 保活（由编码层翻成注释帧）。"""
     async with bus.subscribe(task_id) as queue:
@@ -55,34 +66,106 @@ async def task_frames(
                 yield frame
             return
 
-        # 还在跑：先把订阅时拿到的回放（订阅之前已发布的格）吐出去，再续流。
-        # 这一步不能省——断线重连时用户要看到「已经长出这么多」的热力图。
+        seen: set[int] = set()
+        cooperative = str(task.get("kind") or "") in COOPERATIVE_KINDS
+        interval = poll_seconds if cooperative else keepalive_seconds
+
+        # 订阅前已经落库的格（断线重连/非 master 的常见路径）
+        if cooperative:
+            for frame in _db_cells(task, seen):
+                yield frame
+
+        # 再把订阅时拿到的回放（订阅之前已发布的格）吐出去。
         while not queue.empty():
             frame = queue.get_nowait()
+            if _is_duplicate_cell(frame, seen):
+                continue
+            _mark_seen(frame, seen)
             yield frame
             if frame[0] in _CLOSING:
                 return
 
+        last_keepalive = time.monotonic()
         while True:
             try:
-                frame = await asyncio.wait_for(queue.get(), keepalive_seconds)
+                frame = await asyncio.wait_for(queue.get(), interval)
             except TimeoutError:
-                # 订阅可能落在非主实例：本进程拿不到 worker 的实时帧，但数据库是共享真值。
-                # keepalive 超时补查一次，任务已终结就按 `_replay` 收流——否则页面会永远
-                # 停在「运行中」。逐格实时仍不跨进程，这是单实例契约的已知边界。
-                latest = await db.get_task(user_id, task_id)
-                if latest is None:
-                    yield ("error", {"code": "not_found", "message": "任务不存在"})
-                    return
-                if latest["status"] in TERMINAL:
-                    async for replay in _replay(db, user_id, latest):
-                        yield replay
-                    return
-                yield None
+                if cooperative:
+                    latest = await db.get_task_progress(user_id, task_id)
+                    if latest is None:
+                        yield ("error", {"code": "not_found", "message": "任务不存在"})
+                        return
+                    if latest["status"] in TERMINAL:
+                        async for replay in _replay(db, user_id, latest, skip=seen):
+                            yield replay
+                        return
+                    for progress_frame in _db_cells(latest, seen):
+                        yield progress_frame
+                    if time.monotonic() - last_keepalive >= keepalive_seconds:
+                        last_keepalive = time.monotonic()
+                        yield None
+                else:
+                    # 非逐格任务保持原语义：保活超时查一次终态。
+                    latest = await db.get_task(user_id, task_id)
+                    if latest is None:
+                        yield ("error", {"code": "not_found", "message": "任务不存在"})
+                        return
+                    if latest["status"] in TERMINAL:
+                        async for replay in _replay(db, user_id, latest, skip=seen):
+                            yield replay
+                        return
+                    yield None
                 continue
+            if _is_duplicate_cell(frame, seen):
+                continue
+            _mark_seen(frame, seen)
             yield frame
             if frame[0] in _CLOSING:
                 return
+
+
+def _progress_cells(task: dict[str, Any]) -> list[dict[str, Any]]:
+    cells = (task.get("progress") or {}).get("cells")
+    if not isinstance(cells, list):
+        return []
+    return [cell for cell in cells if isinstance(cell, dict)]
+
+
+def _cell_index(value: object) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    index = value.get("index")
+    return index if isinstance(index, int) else None
+
+
+def _mark_seen(frame: tuple[str, object], seen: set[int]) -> None:
+    if frame[0] != "cell":
+        return
+    index = _cell_index(frame[1])
+    if index is not None:
+        seen.add(index)
+
+
+def _is_duplicate_cell(frame: tuple[str, object], seen: set[int]) -> bool:
+    if frame[0] != "cell":
+        return False
+    index = _cell_index(frame[1])
+    return index is not None and index in seen
+
+
+def _db_cells(
+    task: dict[str, Any], seen: set[int]
+) -> list[tuple[str, object]]:
+    """取库里尚未发过的格，并记入 `seen`（bus 与 DB 同格只发一次）。"""
+    frames: list[tuple[str, object]] = []
+    for cell in _progress_cells(task):
+        index = _cell_index(cell)
+        if index is None or index in seen:
+            continue
+        seen.add(index)
+        TASK_PROGRESS_DB_CELLS.inc()
+        frames.append(("cell", cell))
+    return frames
 
 
 def _start_payload(task: dict[str, Any]) -> dict[str, Any] | None:
@@ -92,9 +175,16 @@ def _start_payload(task: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def _replay(
-    db: Any, user_id: int, task: dict[str, Any]
+    db: Any,
+    user_id: int,
+    task: dict[str, Any],
+    *,
+    skip: set[int] | None = None,
 ) -> AsyncIterator[tuple[str, object]]:
-    """终态回放：成功从库里取 cells + 摘要；失败/取消给一帧说明。"""
+    """终态回放：成功从库里取 cells + 摘要；失败/取消给一帧说明。
+
+    `skip` 是本次连接已经发过的 index（S5）——终态回放不重复发同一格。
+    """
     status = task["status"]
     run_id = (task.get("result") or {}).get("run_id")
 
@@ -103,6 +193,9 @@ async def _replay(
         if row is not None:
             summary = row["summary"]
             for cell in summary.get("cells") or []:
+                index = _cell_index(cell)
+                if skip is not None and index is not None and index in skip:
+                    continue
                 yield ("cell", cell)
             yield ("done", done_payload(str(run_id), summary))
             return
@@ -131,4 +224,4 @@ def done_payload(run_id: str, summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-__all__ = ["KEEPALIVE_SECONDS", "TERMINAL", "done_payload", "task_frames"]
+__all__ = ["KEEPALIVE_SECONDS", "POLL_SECONDS", "TERMINAL", "done_payload", "task_frames"]

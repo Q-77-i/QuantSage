@@ -29,7 +29,7 @@ from app.api.optimize import streaming_headers
 from app.api.sse import sse_from, sse_response
 from app.core.auth import require_db, require_user
 from app.tasks import worker as task_worker
-from app.tasks.executors import COOPERATIVE_KINDS
+from app.tasks.kinds import COOPERATIVE_KINDS
 from app.tasks.stream import task_frames
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])

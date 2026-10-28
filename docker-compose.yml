@@ -1,6 +1,6 @@
 # QuantSage 本地基础设施（单机一键起）
 #
-#   默认（T1 验收）：  docker compose up -d            → postgres / redis / qdrant
+#   默认（T1 验收）：  docker compose up -d            → postgres / redis / redis-coord / qdrant
 #   全量（T3 接 trace）：docker compose --profile observability up -d
 #                                                     → 另加 Langfuse 自托管全套
 #
@@ -108,7 +108,7 @@ services:
     # `mem_limit` 比 `maxmemory` 高 128MB，留给 Redis 自身开销与客户端缓冲。
     # ⚠ `langfuse-redis` 那条**必须保持 noeviction**（BullMQ 的要求，它不能丢队列消息）——
     # 两个实例分开正是为此（见本文件顶部与 SPEC §4.6）。
-    # Redis coord（共享限流）不在 S4 建，随 S5 的 Go 再加（SPEC §5.3）。
+    # Redis coord（共享限流）在 S5 加为独立实例（见下），与 cache 分开。
     mem_limit: 640m
     cpus: 0.5
     command:
@@ -118,6 +118,26 @@ services:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  redis-coord:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    restart: unless-stopped
+    # S5：共享限流专用。**noeviction**——限流键不能像缓存那样被淘汰，丢了就等于
+    # 额度突然复原；128MB 足够放全部 `rl:*` 键（TTL=窗口），192m 限额留 Redis 自身开销。
+    # 不做持久化：重启后额度清零是可接受的（比丢键更保守）。
+    mem_limit: 192m
+    cpus: 0.25
+    command:
+      ["redis-server", "--save", "", "--appendonly", "no",
+       "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_COORD_HOST_PORT:-6380}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

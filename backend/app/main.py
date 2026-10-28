@@ -26,7 +26,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.agent.graph import build_agent
@@ -58,7 +58,8 @@ from app.api.tasks import router as tasks_router
 from app.api.watchlist import router as watchlist_router
 from app.backtest.batch import BatchRequestError
 from app.backtest.types import BacktestError, NoDataError
-from app.core import llm
+from app.core import coord, llm
+from app.core import metrics as metrics_mod
 from app.core.body_limit import BodyLimitMiddleware
 from app.core.checkpoint import open_checkpointer
 from app.core.config import get_settings
@@ -73,7 +74,6 @@ from app.core.db import (
 )
 from app.core.langfuse import build_langfuse_handler
 from app.core.logging import setup_logging
-from app.core.metrics import TASK_STATUSES, TASKS
 from app.core.observability import ObservabilityMiddleware
 from app.core.quota import QuotaExceeded
 from app.core.security import SecurityHeadersMiddleware
@@ -191,6 +191,8 @@ async def _stop_background(background: _Background | None) -> None:
 async def lifespan(app: FastAPI):
     setup_logging()
     settings = get_settings()
+    # S5：清掉上一轮死 worker 的 mmap 指标文件（单进程模式是 no-op）。
+    metrics_mod.cleanup_dead_processes()
 
     # 先立默认值：路由在任何阶段都能安全地 getattr，而不是撞 AttributeError
     app.state.checkpointer = None
@@ -300,6 +302,7 @@ async def lifespan(app: FastAPI):
             holder = app.state.memory
             if holder is not None and hasattr(holder, "aclose"):
                 await holder.aclose()  # 按需建的 Store 连接在这里收
+            await coord.aclose()  # S5：共享限流的懒建连接；未启用时是 no-op
 
 
 app = FastAPI(title="QuantSage API", version="0.1.0", lifespan=lifespan)
@@ -585,6 +588,5 @@ async def metrics(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001 —— 指标读不到不该让整个 scrape 失败
             log.warning("任务队列指标读取失败（%s），本次跳过", type(exc).__name__)
         else:
-            for task_status in TASK_STATUSES:
-                TASKS.labels(status=task_status).set(counts.get(task_status, 0))
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+            metrics_mod.set_task_counts(counts)
+    return Response(content=metrics_mod.render(), media_type=CONTENT_TYPE_LATEST)

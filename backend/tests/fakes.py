@@ -34,6 +34,12 @@ from app.core.db import (
     StrategyVersionConflict,
     SymbolTracked,
 )
+from app.core.db_tasks import MAX_PROGRESS_CELLS
+
+
+def _reset_progress(progress: dict[str, Any] | None) -> dict[str, Any]:
+    """与 `db_tasks._PROGRESS_RESET` 同义：丢掉上一次的 `cells`，`done` 归零。"""
+    return {k: v for k, v in (progress or {}).items() if k != "cells"} | {"done": 0}
 
 
 class ToolCallingFakeModel(FakeMessagesListChatModel):
@@ -985,6 +991,19 @@ class FakeDatabase:
         row = self.tasks.get(task_id)
         return None if row is None or row["user_id"] != user_id else self._task_row(task_id)
 
+    async def get_task_progress(
+        self, user_id: int, task_id: str
+    ) -> dict[str, Any] | None:
+        row = self.tasks.get(task_id)
+        if row is None or row["user_id"] != user_id:
+            return None
+        return {
+            "status": row["status"],
+            "progress": dict(row.get("progress") or {}),
+            "result": row.get("result"),
+            "error": row.get("error"),
+        }
+
     async def list_tasks(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         """摘要：与真库同形（不带整份 `request`，只抽 symbol / strategy 两列）。"""
         out: list[dict[str, Any]] = []
@@ -994,6 +1013,11 @@ class FakeDatabase:
                 continue
             summary = {
                 k: v for k, v in self._task_row(task_id).items() if k != "request"
+            }
+            summary["progress"] = {
+                k: v
+                for k, v in (row.get("progress") or {}).items()
+                if k != "cells"
             }
             summary["symbol"] = row["request"].get("symbol")
             summary["strategy"] = row["request"].get("strategy")
@@ -1032,7 +1056,7 @@ class FakeDatabase:
             started_at=now,
             attempts=row["attempts"] + 1,
             worker_id=worker_id,
-            progress={**row.get("progress", {}), "done": 0},
+            progress=_reset_progress(row.get("progress")),
         )
         if lease_seconds > 0:
             row["lease_expires_at"] = now + timedelta(seconds=lease_seconds)
@@ -1091,7 +1115,7 @@ class FakeDatabase:
                 status="queued",
                 available_at=now,
                 attempts=max(row["attempts"] - 1, 0),
-                progress={**row.get("progress", {}), "done": 0},
+                progress=_reset_progress(row.get("progress")),
             )
         row.update(worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
         return str(row["status"])
@@ -1114,6 +1138,7 @@ class FakeDatabase:
                 row.update(
                     status="queued",
                     available_at=now + timedelta(seconds=backoff_seconds),
+                    progress=_reset_progress(row.get("progress")),
                 )
                 counts["queued"] = counts.get("queued", 0) + 1
             else:
@@ -1139,7 +1164,28 @@ class FakeDatabase:
             and row["status"] == "running"
             and row["worker_id"] == worker_id
         ):
-            row["progress"] = {"done": done, "total": total}
+            row["progress"] = {**row.get("progress", {}), "done": done, "total": total}
+
+    async def append_task_cell(
+        self,
+        task_id: str,
+        *,
+        worker_id: str,
+        done: int,
+        total: int,
+        cell: dict[str, Any],
+    ) -> None:
+        row = self.tasks.get(task_id)
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["worker_id"] != worker_id
+        ):
+            return
+        cells = list((row.get("progress") or {}).get("cells") or [])
+        if len(cells) < MAX_PROGRESS_CELLS:
+            cells.append(dict(cell))
+        row["progress"] = {"done": done, "total": total, "cells": cells}
 
     async def finish_task(
         self, task_id: str, *, worker_id: str, result: dict[str, Any]
