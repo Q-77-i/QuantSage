@@ -305,7 +305,7 @@ RAG 当前在 API 进程内懒加载；hybrid 单请求 222ms，10 并发 p95 1.
 ### 4.3 请求分级与有界队列
 
 | 类别 | 调用点 | 队列上限 | 排队超时 | 过载行为 |
-|---|---|---|---:|---:|---|
+|---|---|---|---:|---:|
 | `interactive` | Chat 的 `search_events`、MCP | `max_queue=8` | **0.5s** | 快速 503/`overloaded` → 调用方降级 RRF |
 | `research` | 深研报 news 角色 | `max_queue=32` | **2.5s** | 有界排队；满/超时后降级 RRF 或明确 503 |
 | `batch` | 索引任务（`embed_events.py`） | `max_queue=8` | **600s** | 有界排队；满/超时明确失败，不降级 |

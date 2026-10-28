@@ -6,11 +6,11 @@
 
 ## 当前焦点
 
-**阶段**：P1-Tn / P2-Mn / P3-En 全部交付（`m-p1` / `m-p2` / `m-p3`，P3 收口于 2026-10-20）；**P4-Sn 单机工程化（S1/S2/S3/S4 已交付，S5/S6 待审）**；后续愿景仍不排期。
+**阶段**：P1-Tn / P2-Mn / P3-En 全部交付（`m-p1` / `m-p2` / `m-p3`，P3 收口于 2026-10-20）；**P4-Sn 单机工程化（S1–S4 已交付；S5 预测量 Go、待拍板实现；S6 待审）**；后续愿景仍不排期。
 
-**进行中**：P4-Sn 单机工程化（S1–S4 已交付；S5/S6 待审）。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）；按 S5→S6 实施。
+**进行中**：P4-Sn 单机工程化（S1–S4 已交付；S5 预测量 Go、待拍板实现；S6 待审）。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）；按 S5→S6 实施。
 
-**下一个动作**：审 [`docs/specs/P4-Sn.md`](docs/specs/P4-Sn.md) 的 S5/S6；S5 先做 go/no-go（S4 后 bars c=300 p95 **370ms**，仍 >300ms；双 worker 收益/内存待 S5 复测）。
+**下一个动作**：拍板是否实现 S5（预测量 2026-10-28：bars c=300 p95 1w **390ms** → 2w **234ms**，吞吐 **1.83×**、health **2.02×**，内存/swap 达标；Go 条件 1–3 成立，第 4 条待实现验收）；S6 待 S5 决定后收口。
 
 **待决事项**
 
@@ -79,6 +79,8 @@
 **S3 复验（2026-10-27，同机测试栈 + 真模型）**：进程边界 **API 52MB / RAG 服务 2.3GB**，MCP 经服务检索通过；交互 10 并发全链路 p95 **1.91s**（0.5s 等待，9/10 按 timeout 降级；5 轮 1.91–2.85s，高 swap 轮略超 2s，如实记录）；研究 5 并发 p95 **4.20s**（2.5s 等待，2 条降级）；隔离精排接口 10 并发 p95 **0.51s**；200 条评测 rerank NDCG@10 **0.8142**（与 M3c 基线一致）；0 MPS 崩溃，队列/降级/等待指标可从 `/metrics` 读到。规格 v3.3：独立 RAG 服务 + 有界队列 + 降级原因可见。
 
 **S4 复验（2026-10-27，同机）**：Docker 三件上限生效——PG **1.25g / max_connections 120 / shared_buffers 512MB**、Redis cache **640m / maxmemory 512MB volatile-lru / 无 RDB**、Qdrant **2.5g**，`OOMKilled=false`；DuckDB 每连接 **threads=2 / memory_limit=1GB / 独立 temp**，进程查询闸门 4；业务池 `statement_timeout=5s`、checkpointer 30s。5min soak（50 读 + 10 SSE + RAG 循环 + 20 回测）：API RSS 503→480MB（峰值 875MB，无泄漏）、swap **13.16→13.11GB**（未增长）、PG 连接峰值 21；回归 bars c=300 p95 **370ms**（基线 369ms）、events c=50 p95 **33ms**（基线 1,028ms）、SSE 20 并发 p95 **311–403ms**（中位 318ms，基线 314ms）、20 回测 queue p95 **2,482ms**（基线 2,224ms）。prod.sh start/health/stop 与 copytruncate 轮转通过。如实记录：soak 读 47,373 条中 **8 条 `RemoteProtocolError`**（keepalive 断连，0.017%）、1 条 chat LLM 连接中断（0.27%），无 OOM/进程崩溃。规格 v3.4：DuckDB 闸门 + PG/Redis 预算 + worker 释放租约 + prod 运行底座。
+
+**S5 预测量（2026-10-28，harness 8100，S0 同口径）**：1w bars c=300 p95 中位 **390ms / 904 req/s**；2w **234ms / 1,651 req/s（1.83×）**、health **5,813 → 11,754（2.02×）**；2w 进程树峰值 **2.40GB**、RAG 0.47GB（空闲）、docker 0.37GB，系统 available 5.84–6.18GB、swap **9.20→8.68GB（未增长）**；2w 5min soak 89,128 读 0 错误、PG 连接峰值 22。限流缺口复现：`RATE_LIMIT_CHAT=5`、2w、100 并发 → **10 放行 / 90 个 429**（5×2）。Go 条件 1–3 成立；第 4 条（共享限流 / 多进程指标 / 跨进程进度 / 停机）待实现验收。原始文件在 `docs/private/Pn-n/P4-Sn/baseline/s5-premeasure-20261028/`。
 
 **S2 复验（2026-10-27，同机测试栈）**：4 路并发 ×100 件取件 **0 重复 / 0 遗漏**；任务执行中 `kill -9` 后端 → 重启后 **8.3s** 回 `queued`，第二次执行 `attempts=2` 跑完、`optimization_runs` **仅 1 条**；第二次再杀 → `failed/lease_expired`（不无限重排）；20 任务 queue p95 **2,365ms**（基线 2.2s）。规格 v3.2：`SKIP LOCKED` + 租约/心跳 + `worker_id` 栅栏 + 启动全量扫尾 + `task_id` 结果幂等。
 
