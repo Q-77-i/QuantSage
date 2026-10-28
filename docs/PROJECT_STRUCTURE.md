@@ -26,12 +26,14 @@ QuantSage/
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新；只在后台主实例启动）；归档 / 物化 / 落库
 │   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环 + 后台主实例锁
 │   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止
+│   │   │                         #   + S5：逐格进度落 tasks.progress.cells，非 master 的 SSE 每 1s 轮询补齐
 │   │   ├── data/                 # DuckDB 客户端（S4：每连接 threads/memory_limit/temp + 进程闸门）
 │   │   │                         #   + 交易日历、行情刷新、小石 CLI/MCP 装配、数据体检/落档、
 │   │   │                         #     快照/回滚、热点缓存（E3）
 │   │   ├── mcp/                  # 对外 MCP Server（E8b）：把 PIT 语料检索亮给外部 AI 客户端
 │   │   └── core/                 # 配置、checkpointer、LLM/Langfuse、日志脱敏与 JSON 日志
 │   │                             #   + 鉴权/会话/配额/安全头/注入边界、metrics/observability（E7e）
+│   │                             #   + S5：共享限流 coord（redis-coord + Lua）、Prometheus 多进程聚合
 │   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py、build_deep_eval.py）
 │   └── tests/                    # 离线 + tests/integration
 ├── frontend/                     # Next.js 15（App Router）

@@ -55,6 +55,8 @@ class RunContext:
     stop: asyncio.Event
     publish: Callable[[str, object], None]
     progress: Callable[[int], Awaitable[None]]
+    #: S5：网格/批量逐格落库（done/total + cells 一条 UPDATE）。其它执行体不调用。
+    record_cell: Callable[[int, dict[str, Any]], Awaitable[None]]
 
     @property
     def total(self) -> int:
@@ -215,7 +217,8 @@ async def _execute_cells(
         nonlocal finished
         finished += 1
         ctx.publish("cell", cell)  # 广播给订阅者（断线重连的靠它补齐）
-        await ctx.progress(finished)  # 落任务行（列表/状态端点看得到「跑到第几格」）
+        # S5：跨进程权威在 DB（done/total + cells 一条 UPDATE）；总线只是本进程的即时加速。
+        await ctx.record_cell(finished, cell)
 
     summary = await run_cells(specs, options, kind=kind, on_cell=on_cell, stop=ctx.stop)
 
@@ -262,12 +265,8 @@ EXECUTORS: dict[str, Executor] = {
     "batch": execute_batch,
 }
 
-#: 支持**协作式中止**的 kind（单次回测中止不了：它跑在线程/子进程里，见 SPEC §2.3）
-COOPERATIVE_KINDS = frozenset({"grid", "batch"})
-
 __all__ = [
     "CANCELLED",
-    "COOPERATIVE_KINDS",
     "EXECUTORS",
     "EXEC_KEY",
     "Executor",

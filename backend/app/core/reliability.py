@@ -259,7 +259,7 @@ _DEPS: dict[str, Dependency] = {}
 _LIMITERS: dict[str, Limiter] = {}
 
 
-def _bucket_of(name: str) -> Bucket:
+def bucket_of(name: str) -> Bucket:
     """按桶名取额度（settings 可改，默认取「演示友好」档）。"""
     from app.core.config import get_settings
 
@@ -282,7 +282,7 @@ def _bucket_of(name: str) -> Bucket:
 def get_limiter(name: str) -> Limiter:
     limiter = _LIMITERS.get(name)
     if limiter is None:
-        limiter = _LIMITERS[name] = Limiter(name=name, bucket=_bucket_of(name))
+        limiter = _LIMITERS[name] = Limiter(name=name, bucket=bucket_of(name))
     return limiter
 
 
@@ -328,6 +328,12 @@ _DEP_DEFAULTS: dict[str, tuple[Retry, Circuit]] = {
     "xiaoshi-mcp": (
         Retry(max_attempts=2, base=0.3, max_total_seconds=20.0, respect_retry_after=False),
         Circuit(threshold=5, cooldown=60.0),
+    ),
+    # S5 共享限流：coord 是软依赖。失败 3 次开路 30s，期间直接走进程内降级；
+    # 半开只放一个探测，成功即恢复（`coord.take` 手工调 allow/record_*，不走 guard）。
+    "redis-coord": (
+        Retry(max_attempts=1, respect_retry_after=False),
+        Circuit(threshold=3, cooldown=30.0),
     ),
 }
 

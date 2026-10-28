@@ -21,7 +21,7 @@
 | 后端 | FastAPI + Pydantic v2 + Uvicorn | ✅ 已用 |
 | 行情数据 | Parquet + DuckDB（直读分片，零 ETL） | ✅ 已用（E3c 热点缓存 L1/L2） |
 | 业务库 | PostgreSQL 18（兼 LangGraph checkpointer + Store） | ✅ checkpointer + **Store（M7b 决策记忆）** + **17 张自有表**（用户 / 会话 / 自选 / 回测 / 策略 / 策略版本 / 优化 / 模拟盘 / 研报 / 任务 / 配额 / 审计等） |
-| 缓存 | Redis（E3c 数据层热点缓存，可降级） | ✅ 已用（代际键 + L1 进程内 + L2 Redis；**失效 = 换键**，不靠「ETL 之后记得清缓存」；Redis 挂了熔断直读。限流/熔断仍走进程内、不依赖 Redis） |
+| 缓存/协调 | Redis（E3c 数据层热点缓存 + S5 共享限流 coord） | ✅ 已用（代际键 + L1 进程内 + L2 Redis；**失效 = 换键**，不靠「ETL 之后记得清缓存」；cache 挂了熔断直读。S5 起 coord 独立实例承载共享限流，coord 不可用降级为进程内 `floor(capacity/N)`；熔断仍进程内） |
 | 向量库 | Qdrant | ✅ **P2 起已用**：BGE-M3 双索引 + 服务端 RRF / PIT 过滤；对外 MCP Server 直连 |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | ✅ 两档均已用：辩论 / 综合用 pro，取证 / 路由 / 反思用 flash；E4 降级链 pro → flash |
 | LLM 网关 | LiteLLM | ✅ 已用（`ChatLiteLLM` 唯一构造点） |

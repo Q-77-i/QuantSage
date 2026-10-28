@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from prometheus_client import generate_latest
 
+from app.core import metrics
 from app.core.config import get_settings
 from app.core.logging import JsonFormatter, request_id_var
-from app.core.metrics import CACHE_HITS, TASKS
+from app.core.metrics import CACHE_HITS
 from app.data import cache
 from app.main import app
 
@@ -35,7 +35,7 @@ def test_metrics_endpoint_exposes_http_request_id_and_counters() -> None:
     assert health.headers["x-request-id"]
 
     CACHE_HITS.labels(tier="l1").inc()
-    TASKS.labels(status="queued").set(2)
+    metrics.set_task_counts({"queued": 2})
     response = client.get("/metrics")
 
     assert response.status_code == 200
@@ -45,6 +45,8 @@ def test_metrics_endpoint_exposes_http_request_id_and_counters() -> None:
     assert 'route="/health"' in text
     assert "quantsage_cache_hits_total" in text
     assert 'quantsage_tasks{status="queued"} 2.0' in text
+    # 自定义 collector 每个状态只产出一行（多进程聚合时也不能翻倍）
+    assert text.count('quantsage_tasks{status="queued"}') == 1
 
 
 def test_request_id_is_echoed_when_it_looks_safe() -> None:
@@ -93,10 +95,10 @@ def test_cache_through_counts_l1_hit_and_miss(
         calls.append(1)
         return {"x": 1}
 
-    before = generate_latest().decode()
+    before = metrics.render().decode()
     cache.through("probe", (1,), producer, data_dir=tmp_path)
     cache.through("probe", (1,), producer, data_dir=tmp_path)
-    after = generate_latest().decode()
+    after = metrics.render().decode()
 
     assert len(calls) == 1  # 第二次是 L1 命中，producer 不再跑
     assert metric_value(after, "quantsage_cache_misses_total") > metric_value(

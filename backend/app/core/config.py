@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # SecretStr：DSN 里带口令，不能随 repr / 日志回显
     database_url: SecretStr = SecretStr("")  # 留空则由上面几项推导；填了则以它为准
     redis_url: str = "redis://127.0.0.1:6379/0"
+    # S5：共享限流专用实例（与 cache 分开；128MB noeviction、无持久化）。
+    # 只在 API_WORKERS>1 且 RATE_LIMIT_SHARED=true 时使用；不可用会降级回进程内。
+    redis_coord_url: str = "redis://127.0.0.1:6380/0"
     qdrant_url: str = "http://127.0.0.1:6333"
 
     # ── 小石数据源（稳定入口绝对路径由安装器回填）──
@@ -247,6 +250,10 @@ class Settings(BaseSettings):
 
     # ── 限流（E4b / L0）：进程内令牌桶，三桶各一对「容量 / 窗口秒」──
     # 默认取「演示友好」档：正常用不会碰到，连打才拦得住（演练第三幕要的正是这个）
+    # S5：多 API worker 时额度会按进程复制，故提供共享限流（redis-coord + Lua）。
+    # `rate_limit_shared=false` 是回退口；coord 不可用时自动降级为进程内 floor(capacity/N)。
+    api_workers: int = 1
+    rate_limit_shared: bool = False
     rate_limit_chat: int = 10
     rate_limit_chat_window: float = 60.0
     rate_limit_research: int = 3
@@ -320,6 +327,14 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     # TrustedHost 白名单：默认 `["*"]`（本地/测试）；公网部署填真实域名，挡 Host 头注入。
     trusted_hosts: list[str] = ["*"]
+
+    @field_validator("api_workers")
+    @classmethod
+    def _api_workers_positive(cls, value: int) -> int:
+        """`API_WORKERS=0` 不是「关掉」而是配置错误；回退单 worker 用 1。"""
+        if value < 1:
+            raise ValueError("API_WORKERS 必须 ≥1（回退单 worker 用 1）")
+        return value
 
     @field_validator("duckdb_memory_limit")
     @classmethod

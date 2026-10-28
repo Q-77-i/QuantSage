@@ -71,6 +71,13 @@ KIND_PRIORITY = {"backtest": 10}
 #: 重排后至少等这么久再取件（SPEC §3.3）——给源侧抖动/瞬时错误一点缓冲。
 RETRY_BACKOFF_SECONDS = 5.0
 
+#: 逐格进度的 JSONB 硬上限。当前网格上限 100（`backtest.batch.MAX_CELLS`）；1,000 是
+#: 防御未来放宽上限时单行无限增长。
+MAX_PROGRESS_CELLS = 1000
+
+#: 取件/重排/释放时把进度归零并丢掉上一次的 `cells`（保留 `total`）。
+_PROGRESS_RESET = "jsonb_set(progress - 'cells', '{done}', '0'::jsonb)"
+
 
 class TasksMixin:
     # ── 异步任务（P3-E1a）────────────────────────────────────
@@ -180,12 +187,31 @@ class TasksMixin:
             (task_id, user_id),
         )
 
+    async def get_task_progress(
+        self, user_id: int, task_id: str
+    ) -> dict[str, Any] | None:
+        """SSE 每 1s 轮询用的轻量视图（S5）。
+
+        **不取 `request`**：里面冻着网格的全部格规格，1s 拉一次是纯浪费；终态回放
+        也只需要 `result` / `error`。
+        """
+        return await self._one(
+            "SELECT status, progress, result, error FROM tasks "
+            "WHERE id = %s::uuid AND user_id = %s",
+            (task_id, user_id),
+        )
+
     async def list_tasks(self, user_id: int, limit: int) -> list[dict[str, Any]]:
         """倒序摘要。**不带整份 `request`**（用户策略源码在里面），只抽列表要用的两列——
-        与 `list_backtest_runs` 同一个理由：列表不为每行拖几 KB 回来。"""
+        与 `list_backtest_runs` 同一个理由：列表不为每行拖几 KB 回来。
+
+        S5 又去掉 `progress.cells`（网格最多 100 格，50 条列表就是几 MB）；列表只要
+        `done/total`，逐格进度由详情/SSE 取。
+        """
         return await self._all(
-            "SELECT id, kind, status, progress, result, error, created_at, started_at, "
-            "finished_at, request->>'symbol' AS symbol, request->>'strategy' AS strategy "
+            "SELECT id, kind, status, progress - 'cells' AS progress, result, error, "
+            "created_at, started_at, finished_at, "
+            "request->>'symbol' AS symbol, request->>'strategy' AS strategy "
             "FROM tasks WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
             (user_id, limit),
         )
@@ -217,7 +243,7 @@ class TasksMixin:
             "  lease_expires_at = CASE WHEN %s > 0 "
             "    THEN now() + make_interval(secs => %s) ELSE NULL END, "
             "  last_heartbeat_at = CASE WHEN %s > 0 THEN now() ELSE NULL END, "
-            "  progress = jsonb_set(progress, '{done}', '0'::jsonb), "
+            f"  progress = {_PROGRESS_RESET}, "
             "  updated_at = now() "
             "WHERE id = (SELECT id FROM picked) "
             "RETURNING user_id, cancel_requested_at, attempts, max_attempts, "
@@ -253,6 +279,7 @@ class TasksMixin:
             "UPDATE tasks SET status = 'queued', "
             "  available_at = now() + make_interval(secs => %s), "
             "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
+            f"  progress = {_PROGRESS_RESET}, "
             "  updated_at = now() "
             "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s "
             "  AND attempts < max_attempts "
@@ -284,7 +311,7 @@ class TasksMixin:
             "    THEN now() ELSE finished_at END, "
             "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
             "  progress = CASE WHEN cancel_requested_at IS NULL "
-            "    THEN jsonb_set(progress, '{done}', '0'::jsonb) ELSE progress END, "
+            f"    THEN {_PROGRESS_RESET} ELSE progress END, "
             "  updated_at = now() "
             "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s "
             "RETURNING status",
@@ -325,6 +352,10 @@ class TasksMixin:
             "    WHEN cancel_requested_at IS NOT NULL OR attempts >= max_attempts "
             "    THEN now() ELSE finished_at END, "
             "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
+            "  progress = CASE "
+            "    WHEN cancel_requested_at IS NULL AND attempts < max_attempts "
+            f"    THEN {_PROGRESS_RESET} "
+            "    ELSE progress END, "
             "  updated_at = now() "
             f"WHERE {where} "
             "RETURNING status",
@@ -344,9 +375,35 @@ class TasksMixin:
         `worker_id` 栅栏：任务被回收并重新取件后，旧 worker 的进度不能盖住新 worker 的。
         """
         await self._exec(
-            "UPDATE tasks SET progress = %s, updated_at = now() "
+            "UPDATE tasks SET progress = progress || %s::jsonb, updated_at = now() "
             "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
             (Jsonb({"done": done, "total": total}), task_id, worker_id),
+        )
+
+    async def append_task_cell(
+        self,
+        task_id: str,
+        *,
+        worker_id: str,
+        done: int,
+        total: int,
+        cell: dict[str, Any],
+    ) -> None:
+        """网格/批量逐格进度（S5）：`done/total` 与 `cells` 一条 UPDATE 写入。
+
+        `cells` 是 JSONB 数组；`MAX_CELLS=100`，上限 1,000 是防御性硬顶（未来放宽
+        网格上限时不会让单行无限长）。`worker_id` 栅栏与 `update_task_progress` 同源。
+        """
+        await self._exec(
+            "UPDATE tasks SET progress = jsonb_build_object("
+            "  'done', %s, 'total', %s, "
+            "  'cells', CASE "
+            f"    WHEN jsonb_array_length(COALESCE(progress->'cells', '[]'::jsonb)) < {MAX_PROGRESS_CELLS} "
+            "    THEN COALESCE(progress->'cells', '[]'::jsonb) || %s::jsonb "
+            "    ELSE COALESCE(progress->'cells', '[]'::jsonb) END"
+            "), updated_at = now() "
+            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
+            (done, total, Jsonb(cell), task_id, worker_id),
         )
 
     async def finish_task(

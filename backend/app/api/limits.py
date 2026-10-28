@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import Depends, Request
 
-from app.core import reliability
+from app.core import coord
 from app.core.auth import require_user
 
 
@@ -42,12 +42,13 @@ def _reject_if_limited(bucket: str, wait: float | None) -> None:
 def limit(bucket: str) -> Callable[..., Awaitable[None]]:
     """按**用户**造一个依赖。用法：`_: None = Depends(limit("llm-chat"))`。
 
-    桶名见 `core/reliability._bucket_of`（`llm-chat` / `llm-research` / `task-submit` /
+    桶名见 `core/reliability.bucket_of`（`llm-chat` / `llm-research` / `task-submit` /
     `paper-run` / `pdf`）；额度在 settings 里（`rate_limit_*`），默认取「演示友好」档。
+    S5 起走 `core/coord.take`：多 worker + shared 时用 redis-coord，否则/失败时进程内。
     """
 
     async def dependency(user: dict[str, Any] = Depends(require_user)) -> None:
-        _reject_if_limited(bucket, reliability.take(bucket, int(user["id"])))
+        _reject_if_limited(bucket, await coord.take(bucket, int(user["id"])))
 
     return dependency
 
@@ -64,6 +65,6 @@ def limit_ip(bucket: str) -> Callable[..., Awaitable[None]]:
         host = request.client.host if request.client is not None else "unknown"
         digest = hashlib.sha256(host.encode("utf-8")).digest()
         key = int.from_bytes(digest[:8], "big")
-        _reject_if_limited(bucket, reliability.take(bucket, key))
+        _reject_if_limited(bucket, await coord.take(bucket, key))
 
     return dependency

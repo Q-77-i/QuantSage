@@ -57,6 +57,16 @@ def test_s4_resource_defaults() -> None:
     assert settings.checkpoint_statement_timeout_ms == 30000
 
 
+def test_s5_defaults() -> None:
+    """S5：单 worker 默认关闭共享限流；coord 独立端口；worker 数必须 ≥1。"""
+    settings = _settings()
+    assert settings.api_workers == 1
+    assert settings.rate_limit_shared is False
+    assert settings.redis_coord_url == "redis://127.0.0.1:6380/0"
+    with pytest.raises(ValidationError):
+        _settings(api_workers=0)
+
+
 def test_duckdb_memory_limit_shape() -> None:
     """DuckDB 只认数字+单位；配错在启动期就炸，别等第一条查询。"""
     assert _settings(duckdb_memory_limit="512MB").duckdb_memory_limit == "512MB"
