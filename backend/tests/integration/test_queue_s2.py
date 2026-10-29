@@ -211,3 +211,63 @@ def test_backtest_run_is_idempotent_by_task_id(jwt_env: Any) -> None:
         assert found == first
     finally:
         purge_rows([email], [])
+
+
+def test_claim_next_task_filters_by_kind_s7(jwt_env: Any) -> None:
+    """S7：真库上 `kinds` 过滤只取本 kind；取空后返回 None。"""
+    from app.core.db import Database
+
+    dsn = get_settings().postgres_dsn
+    schema = f"probe_s7_{uuid.uuid4().hex[:8]}"
+    backtest_id = str(uuid.uuid4())
+    grid_id = str(uuid.uuid4())
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f'CREATE SCHEMA "{schema}"')
+        conn.execute(f'CREATE TABLE "{schema}".tasks (LIKE public.tasks INCLUDING ALL)')
+        for task_id, kind in ((grid_id, "grid"), (backtest_id, "backtest")):
+            conn.execute(
+                f'INSERT INTO "{schema}".tasks '
+                "(id, user_id, kind, status, request, progress) "
+                "VALUES (%s::uuid, 1, %s, 'queued', '{}'::jsonb, "
+                "'{\"done\": 0, \"total\": 1}'::jsonb)",
+                (task_id, kind),
+            )
+
+    try:
+
+        async def scenario() -> tuple[Any, Any, Any]:
+            pool = AsyncConnectionPool(
+                dsn,
+                min_size=1,
+                max_size=2,
+                open=False,
+                kwargs={
+                    "autocommit": True,
+                    "prepare_threshold": 0,
+                    "row_factory": dict_row,
+                    "options": f"-c search_path={schema},public",
+                },
+            )
+            await pool.open(wait=True, timeout=10)
+            try:
+                db = Database(pool)
+                grid = await db.claim_next_task(
+                    "kind-worker", lease_seconds=60, kinds=("grid",)
+                )
+                backtest = await db.claim_next_task(
+                    "kind-worker", lease_seconds=60, kinds=("backtest",)
+                )
+                empty = await db.claim_next_task(
+                    "kind-worker", lease_seconds=60, kinds=("grid",)
+                )
+                return grid, backtest, empty
+            finally:
+                await pool.close()
+
+        grid, backtest, empty = asyncio.run(scenario())
+        assert grid is not None and str(grid["id"]) == grid_id
+        assert backtest is not None and str(backtest["id"]) == backtest_id
+        assert empty is None
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(f'DROP SCHEMA "{schema}" CASCADE')

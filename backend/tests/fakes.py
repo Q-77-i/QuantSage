@@ -1027,10 +1027,18 @@ class FakeDatabase:
         return out
 
     async def claim_next_task(
-        self, worker_id: str, *, lease_seconds: int
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        kinds: tuple[str, ...] | None = None,
     ) -> dict[str, Any] | None:
-        """与真库同序：priority DESC, available_at, created_at, id；取件置 attempts+1、清进度。"""
+        """与真库同序：priority DESC, available_at, created_at, id；取件置 attempts+1、清进度。
+
+        `kinds` 与真库的 `kind = ANY(...)` 同义；`None` = 任何 kind。
+        """
         now = datetime.now(UTC)
+        allowed = set(kinds) if kinds is not None else None
         ordered = sorted(
             enumerate(self._task_order),
             key=lambda item: (
@@ -1045,6 +1053,7 @@ class FakeDatabase:
                 for _, tid in ordered
                 if self.tasks[tid]["status"] == "queued"
                 and self.tasks[tid]["available_at"] <= now
+                and (allowed is None or self.tasks[tid]["kind"] in allowed)
             ),
             None,
         )

@@ -268,6 +268,14 @@ class Settings(BaseSettings):
     # false = 只保留 `SKIP LOCKED`（仍修重复取件）：不设租约、不心跳、不跑周期 reaper，
     # 启动扫尾退回旧的 `failed/interrupted` 语义。
     task_lease_enabled: bool = True
+    # ── 任务 worker 池（P4-S7）：单进程内按 kind 分道，不是多进程 ──
+    # 总开关 false = 回到今天的一个 `serve(db)`（无 kinds 过滤），作为一键回滚。
+    # 默认 3+1+1：回测排队 p95 从 S6 的 2.4s 往 1s 压；grid/batch 各 1 道，
+    # 避免长网格占满所有道。未注册/未配置的 kind 在 worker_slots() 里默认 1 道。
+    task_worker_pool_enabled: bool = True
+    task_workers_backtest: int = 3
+    task_workers_grid: int = 1
+    task_workers_batch: int = 1
     # 模拟盘推进/创建会跑整段 replay（用户策略还要 spawn 子进程），单独一桶
     rate_limit_paper: int = 60
     rate_limit_paper_window: float = 60.0

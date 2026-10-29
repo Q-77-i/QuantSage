@@ -217,7 +217,11 @@ class TasksMixin:
         )
 
     async def claim_next_task(
-        self, worker_id: str, *, lease_seconds: int
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        kinds: tuple[str, ...] | None = None,
     ) -> dict[str, Any] | None:
         """取排队最前的一件并**原子地**置为 `running`。没有可取的返 None。
 
@@ -228,13 +232,18 @@ class TasksMixin:
         `lease_seconds=0` = 租约关闭（`TASK_LEASE_ENABLED=false` 的回滚形态）：
         不写 `lease_expires_at` / `last_heartbeat_at`，只保留 `SKIP LOCKED`。
 
+        `kinds=None` 保持旧行为（任何 kind）；P4-S7 的 worker 池按 kind 传元组，
+        让每个协程只取自己负责的 kind。**不是多进程**：仍由持锁进程内的多个协程调用。
+
         取件**多带** worker 判活用的列（`attempts` / `max_attempts` / `cancel_requested_at`
         / `user_id`），它们都不进对外 `_TASK_COLUMNS`。进度归零：重排后从 0 重新计。
         """
+        kinds_arg = list(kinds) if kinds is not None else None
         return await self._one(
             "WITH picked AS ("
             "  SELECT id FROM tasks "
             "  WHERE status = 'queued' AND available_at <= now() "
+            "    AND (%s::text[] IS NULL OR kind = ANY(%s)) "
             "  ORDER BY priority DESC, available_at, created_at, id "
             "  LIMIT 1 FOR UPDATE SKIP LOCKED"
             ") "
@@ -248,7 +257,7 @@ class TasksMixin:
             "WHERE id = (SELECT id FROM picked) "
             "RETURNING user_id, cancel_requested_at, attempts, max_attempts, "
             f"{_TASK_COLUMNS}",
-            (worker_id, lease_seconds, lease_seconds, lease_seconds),
+            (kinds_arg, kinds_arg, worker_id, lease_seconds, lease_seconds, lease_seconds),
         )
 
     async def heartbeat_task(

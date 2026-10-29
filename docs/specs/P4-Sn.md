@@ -2,9 +2,9 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.15）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.8** ｜ 2026-10-29 ｜ 状态：**S1–S6 已交付；P4-S7（§8）与 P4-S8（§9）规格已定，待执行**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §12），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §12）。
+> 版本 **v3.10** ｜ 2026-10-30 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池实现完成（queue p95 1,312ms；RAG 合批按 A 不做；≤1s 由 P4-S9 复验）；P4-S8（§9）与 P4-S9（§10）规格已定，待执行**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10）。
 >
-> 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8）与 P4-S8 可观测性与缓存（§9），后两者规格已定待执行**。角色拆分、平台化/多租户/分布式（P4-S9 及以后）仍为愿景，**不写规格、不排期**。
+> 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8）、P4-S8 可观测性与缓存（§9）与 P4-S9 数据层热点优化（§10）；S7 worker 池已实现，S8/S9 规格已定待执行**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
 > 实测基线：S1–S6 见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；S7 基线见 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
 > P3 SPEC（v2.46）是历史规格；其中“重启不重跑”“多 worker 不受支持”在本文 S2/S5 有明确沿革，**不是静默改口径**。
 
@@ -21,9 +21,10 @@
 | [§7](#7-s6-验证备份与文档收口) | S6 验证、备份与文档收口 |
 | [§8](#8-p4-s7-单机承压升级规格) | P4-S7 单机承压升级（规格，待执行） |
 | [§9](#9-p4-s8-可观测性与缓存规格) | P4-S8 可观测性与缓存（规格，待执行） |
-| [§10](#10-测试策略) | 测试策略 |
-| [§11](#11-已知边界与不做) | 已知边界与不做 |
-| [§12](#12-变更记录) | 变更记录 |
+| [§10](#10-p4-s9-数据层热点优化规格) | P4-S9 数据层热点优化（规格，待执行） |
+| [§11](#11-测试策略) | 测试策略 |
+| [§12](#12-已知边界与不做) | 已知边界与不做 |
+| [§13](#13-变更记录) | 变更记录 |
 
 ---
 
@@ -71,7 +72,7 @@ S1–S6 六个工作包，按“先修瓶颈 → 再补可靠性 → 再验扩�
 5. **S5** 双 API Worker + 共享限流 + Prometheus 多进程 + 优雅停机（条件项，S4 后 go/no-go）。
 6. **S6** 压测复验、故障演练、备份恢复、文档收口。
 
-> **P4-S7 另立（2026-10-29 拍板）**：S1–S6 已交付；S7 只含 RAG 合批/SLO + task worker 池化（**§8**），缓存命中率/监控告警整块归 **P4-S8（§9）**。两者都不是 S1–S6 的补丁，也不改 S1–S6 的历史读数。
+> **P4-S7 另立（2026-10-29 拍板）**：S1–S6 已交付；S7 只含 RAG SLO（合批经门禁否决）+ task worker 池化（**§8**），缓存命中率/监控告警整块归 **P4-S8（§9）**；数据层热点优化为 **P4-S9（§10）**。三者都不是 S1–S6 的补丁，也不改 S1–S6 的历史读数。
 
 ### 1.4 非目标（写死）
 
@@ -538,7 +539,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 |---|---|---|
 | `docs/PRD.md` | P4-Sn 状态（已交付）/NFR 读数/变更记录 | 收口 |
 | `ROADMAP.md` | S6 状态/P4-Sn DoD/下一个动作 | 收口 |
-| `docs/specs/P4-Sn.md` | 本文 §7 + §12 v3.6 | S6 开工前 |
+| `docs/specs/P4-Sn.md` | 本文 §7 + §13 v3.6 | S6 开工前 |
 | `README.md` | P4-Sn 验证结果摘要 + 备份/恢复命令 + 当前事实 | 收口 |
 | `docs/enterprise/architecture.md` | §2.1/§9.3 最终读数与故障语义；§7.3 备份边界 | 收口 |
 | `docs/PROJECT_STRUCTURE.md` | 新增脚本/drill 落点 | 收口 |
@@ -558,7 +559,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 ## 8. P4-S7 单机承压升级（规格）
 
-> 2026-10-29 拍板：S7 是 P4-Sn 之后的**纯数字迭代**（P4-S7 → P4-S8…），不回到 a/b/c 分段。**S7 只含 RAG 合批 + worker 池**；缓存命中率/冷查询与监控告警/备份定时归 **P4-S8（§9）**；角色拆分等愿景顺延到 **P4-S9 及以后**，**不写规格、不排期**。
+> 2026-10-29 拍板：S7 是 P4-Sn 之后的**纯数字迭代**（P4-S7 → P4-S8…），不回到 a/b/c 分段。**S7 只含 RAG 合批 + worker 池**；缓存命中率/冷查询与监控告警/备份定时归 **P4-S8（§9）**；角色拆分等愿景顺延到 **P4-S10 及以后**，**不写规格、不排期**。
 > 基线：`docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`（S6，HEAD `d5bcae3`）。私有评估底稿：`docs/private/Pn-n/P4-Sn/P4-S7.md`。
 > 定位：**单机承压升级**——把 S6 暴露的两个瓶颈（RAG 精排降级、任务排队）做成可验收的工程化改动。仍是单机、演练、非 HA；不承诺 SLA。
 
@@ -566,22 +567,22 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 **目标（按优先级）**：
 
-1. **RAG 分级/合批 + SLO 合同**：先原型门禁，再决定是否实现跨请求合批；无论合批与否，把 interactive/research 的 SLO 写成可复验的口径。
+1. **RAG 分级/SLO 合同**：合批经 2026-10-29 原型门禁否决（见 8.2.2），不做；只把 interactive/research 的 SLO 写成可复验、如实记录的测量口径。
 2. **task worker 池化**：单进程内按 `kind` 起多条 `serve()`，backtest 3 道 + grid 1 + batch 1；20 回测 queue p95 **≤1s**；S2 的租约/幂等/kill -9 语义不变。
 
 **拆分（2026-10-29 拍板）**：缓存命中率/冷查询与监控告警/备份定时**不在 S7**，整块归 **P4-S8（§9）**。S7 只保留以上两项。
 
-**迭代粒度（2026-10-29 拍板）**：S7 是一个迭代包，内部只按主题分节，**不再用 S7-1/S7-2 这类子 ID**。若 5–7 天做不完，按整块工作流顺延到 **P4-S9 及以后**（P4-S8 已定为可观测性/缓存），不在 S7 内部再分。
+**迭代粒度（2026-10-29 拍板）**：S7 是一个迭代包，内部只按主题分节，**不再用 S7-1/S7-2 这类子 ID**。若 5–7 天做不完，按整块工作流顺延到 **P4-S10 及以后**（P4-S8/S9 已定），不在 S7 内部再分。
 
 **对既有边界的取代（必须显式）**：
 
-- 本节 **取代 §1.4 第 2 条与 §11「不做」中的「Worker 池」**：S1–S6 不做多进程 worker 池；S7 只放开**单进程内按 kind 的多协程消费**。仍不引多进程 worker、不引 Redis Streams、不做任务 Worker 多实例竞选。
+- 本节 **取代 §1.4 第 2 条与 §12「不做」中的「Worker 池」**：S1–S6 不做多进程 worker 池；S7 只放开**单进程内按 kind 的多协程消费**。仍不引多进程 worker、不引 Redis Streams、不做任务 Worker 多实例竞选。
 - 本节 **不改变** §1.4 的其他条（K8s / 多机 HA / Qdrant 集群 / RAG 多进程 / GPU 化等）。
 - S1–S6 的历史读数与验收不改；S7 的 before 一律取 S6 最终报告。
 
 **非目标（S7 写死）**：
 
-- 不做 API/worker/RAG/PDF 角色拆分、反向代理、多 API 实例（P4-S9 及以后）。
+- 不做 API/worker/RAG/PDF 角色拆分、反向代理、多 API 实例（P4-S10 及以后）。
 - 不做 RAG 多进程、多 MPS 副本、GPU 化；不做 Qdrant 集群、PG 只读副本、pgBouncer。
 - 不做 Kubernetes / Kafka / Celery / Vault；不承诺多机 HA 或 SLA。
 - 不把 RAG 合批写成「必然收益」：原型门禁不通过就只调 SLO/等待/队列，不改架构。
@@ -612,7 +613,22 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - **选 N 的硬约束**：c10 + 0.5s 等待 + 单槽下，第一轮批次之外的请求在批推理期间等不到槽位，会在 0.5s 超时降级；因此**降级率 ≤50% 要求至少 5 条进同一批（`batch_max ≥5`）**，而**非降级 p95 ≤3.5s 要求 `batch_wall(5×50) ≤3.5s`**。原型必须同时给出 `5×50` 的结果；只测 4×50 不能证明 SLO 可达成。
 - 若 `5×50` 过不了 3.5s：两条 SLO 不能同时成立。**不自行二选一**——按 2026-10-29 拍板先记录数据，回到用户拍板（候选：放宽降级率 / 降 candidates 50→20 / 调等待）。在拍板前，合批项只做 SLO/等待/队列调参，不合批；**门禁不通过时不以合批交付、不宣称 SLO 达标**，只交付测量与调参记录。
 
-#### 8.2.3 合批契约（门禁通过才落地）
+**2026-10-29 门禁实测（真 MPS，50 篇真语料，`max_length=256`，model batch 8，3 次中位）**：
+
+| N | serial wall | batch wall | speedup | 门禁 |
+|---:|---:|---:|---:|---|
+| 2 | 2,205ms | 1,946ms | 1.13× | FAIL（吞吐） |
+| 4 | 4,410ms | 3,635ms | 1.21× | FAIL（吞吐 + 3.5s） |
+| 5 | 5,681ms | 4,652ms | 1.22× | FAIL（吞吐 + 3.5s） |
+| 8 | 9,599ms | 7,634ms | 1.26× | FAIL（吞吐 + 3.5s） |
+
+- 分数一致：max abs diff **0.0**、Spearman **1.0**、top-10 **10/10**；合批不改变结果，只是没有足够吞吐收益（`rerank` 内部本来就按 batch_size=8 批处理）。
+- 额外：N=5、model batch=16 → **5,391ms**，比 batch 8 更慢。
+- **拍板 A（2026-10-29）：不合批**。S7 的 RAG 项只交付 SLO 测量与调参记录，不宣称降级率 ≤50% 达标。证据：`docs/private/Pn-n/P4-Sn/baseline/s7-rag-batch-probe-20261029-232704/`。
+
+#### 8.2.3 合批契约（设计记录；门禁未过，不实施）
+
+> 2026-10-29 门禁未过（见 8.2.2），本节保留为设计记录，不进入实现。
 
 - 新增 `RerankBatcher`（RAG 服务内）：**单 batcher + 按 `request_class` 分的队列**（interactive/research；batch 若调用也排队），每次组批先取 interactive、再 research（同级 FIFO），同一时刻只跑一个批次；单槽 `rag_rerank_inflight=1` 由 **batcher 独占**，不再由每个请求各自 `admit`。这样「交互优先」是调度顺序，不是两个 batcher 抢同一个槽。
 - HTTP 契约不变：`POST /v1/rerank` 的 `{query, documents, request_class}` 与 `{scores}` 不变；合批是服务内实现，API/MCP 无感。
@@ -621,7 +637,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - 逐请求等待语义：从提交到**被编入批次**之间受该 class 的 `wait_seconds` 约束；超时 → `RagOverloaded("timeout")` + `RERANK_DEGRADED{reason=timeout}`；**一旦批次开跑，请求等推理完成，不再套等待超时**（与今天 `admit` 后推理不受 wait 约束同义）。
 - 取消：客户端断线不取消批次（与 `Runtime.run` 的 shield 同义）；批次跑完再释放槽位，避免下一条与 MPS 并发。
 - 单请求/回滚：`RAG_RERANK_BATCH_MAX=1` 时**绕过 batcher**，走现有 `Runtime.run` 单请求路径；`≥2` 才启用合批。
-- 配置：`RAG_RERANK_BATCH_MAX`（代码默认 **1**＝不合批、走旧路径；门禁通过后把默认改为验证过的 N（2–5，上限 8），并在 §12 记读数）、`RAG_RERANK_BATCH_WINDOW_MS`（默认 15，范围 0–50）；`RAG_RERANK_INFLIGHT` 仍 1；`RAG_RERANK_BATCH_SIZE`（默认 8）是**模型内部** batch，不与跨请求 `BATCH_MAX` 混用，文档与注释必须分开写。
+- 配置：`RAG_RERANK_BATCH_MAX`（代码默认 **1**＝不合批、走旧路径；门禁通过后把默认改为验证过的 N（2–5，上限 8），并在 §13 记读数）、`RAG_RERANK_BATCH_WINDOW_MS`（默认 15，范围 0–50）；`RAG_RERANK_INFLIGHT` 仍 1；`RAG_RERANK_BATCH_SIZE`（默认 8）是**模型内部** batch，不与跨请求 `BATCH_MAX` 混用，文档与注释必须分开写。
 - 指标：沿用 `rag_rerank_wait_seconds`（提交→编入批次）、`rag_rerank_queue_depth`、`rag_rerank_degraded_total{reason}`；新增 `rag_rerank_batch_requests`（每次批次的请求数直方图）与 `rag_rerank_batch_seconds`（批次推理墙钟直方图）。
 
 #### 8.2.4 SLO 合同（写死；每次复验同时给三列）
@@ -639,6 +655,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - interactive 的两条目标互相牵制（见 8.2.2 的 `5×50` 约束）：合批后若只能做到「非降级达标、降级率高于 50%」或反之，按 8.2.2 回到用户拍板，不在验收里把其中一条悄悄删掉。
 - 若合批后仍达不到：如实写「c10 降级率 X%，单用户交互达标」，不把降级后的数字写成达标；可选把交互等待从 0.5s 调到 0.8–1.0s 再测一轮，但改等待值要单独复验 research 不受影响。
 - 复验口径：`harness/rag_bench.py --mode rerank --request-class interactive --concurrency 10` 同口径 3 次中位；模型真权重、RAG 服务独立进程。
+- **2026-10-29 门禁未过、拍板 A**：不合批；上表仍作为测量口径，但 S7 的 RAG 验收只要求「如实记录现状」，不要求 c10 降级率 ≤50% 或非降级 ≤3.5s 同时成立。
 
 #### 8.2.5 测试与回滚
 
@@ -673,7 +690,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 项 | 目标 |
 |---|---|
-| 20 回测 queue p95 | **≤1s**（S6 2,423ms）；20/20 done、0 重复结果 |
+| 20 回测 queue p95 | 目标 **≤1s**（S6 2,423ms）；S7 实测 **1,312ms**（3 道 3 轮中位；4 道 1,401ms 无改善）→ **≤1s 由 P4-S9 复验**；20/20 done、0 重复结果 |
 | 5 grid + 20 backtest 并发 | backtest 不被 grid 长期饿死；grid/batch 各 ≤1 道；无「取错 kind」 |
 | kill -9 worker | S2 语义不变：60s 内重排、`max_attempts=2`、0 重复 |
 | 停机 | `stop()` 释放全部在飞租约；重启后 attempts/结果不重 |
@@ -690,11 +707,11 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 项 | S6 before | S7 目标 | 判定 |
 |---|---|---|---|
-| 20 回测 queue p95 | 2,423ms | ≤1,000ms | 3+1+1；降档 2+1+1 |
-| bars c=300 p95 | 280ms | ≤308ms（+10%） | 回退即降档 |
+| 20 回测 queue p95 | 2,423ms | ≤1,000ms（S9 复验；S7 实测 1,312ms） | 3+1+1；4 道无改善 |
+| bars c=300 p95 | 280ms | ≤308ms（+10%） | S7 实测 1,583 req/s / 236ms |
 | health c=100 | 11,599 req/s | 不回归（±10%） | 2w |
-| RAG interactive c10 | 2,973ms / 80% 降级 | 非降级 ≤3.5s / 降级 ≤50% | 合批门禁通过才按新值 |
-| RAG research c5 | 4,851ms / 40% | 总 p95 ≤5s / 降级 ≤20% | |
+| RAG interactive c10 | 2,973ms / 80% 降级 | 记录现状（门禁未过，A 不合批） | 不宣称 ≤50% 达标 |
+| RAG research c5 | 4,851ms / 40% | 记录现状（同上） | 不宣称 ≤20% 达标 |
 | RAG hybrid c5 | 794ms / 0 | ≤1s / 0 | |
 | API 进程树峰值 | 2.64GB | ≤3.0GB | available ≥2GB、swap 不增 |
 | 回归 | 离线/集成/前端/ruff | 全绿 | CI 三 job |
@@ -707,18 +724,18 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 风险 | 应对 |
 |---|---|
-| 合批在 MPS 上无收益 | 原型门禁三条；不过就不做，只调 SLO/等待/队列 |
+| 合批在 MPS 上无收益 | **已实测**：1.13–1.26×、5×50 4.65s，未过门禁；拍板 A 不做，只记录 SLO |
 | 合批拉长非降级尾延迟 | 交互/研究分桶；窗口 10–20ms；`batch_wall(N) ≤3.5s` 门禁 |
 | 降级率与延迟两条 SLO 互斥 | 原型必测 `5×50`；不自行二选一，回用户拍板 |
-| worker 池打满 DuckDB/CPU | 3+1+1 起步；bars p95 回退 >10% 降 2+1+1；GIL 以实测为准 |
+| worker 池打满 DuckDB/CPU | 3+1+1 实测 queue 1,312ms、bars 1,583/236ms；4 道无改善；GIL 以实测为准 |
 | 24GB 内存不够 | 不加 RAG 副本；API 进程树峰值 ≤3.0GB、available ≥2GB |
-| 角色拆分被误读成 HA | §8.1 写死：S7 是单机、非 HA、非 SLA；角色拆分是 P4-S9 及以后 |
+| 角色拆分被误读成 HA | §8.1 写死：S7 是单机、非 HA、非 SLA；角色拆分是 P4-S10 及以后 |
 
 **回滚开关**：`RAG_RERANK_BATCH_MAX=1`；`TASK_WORKER_POOL_ENABLED=false`。回滚不需要改数据。
 
 **文档同步（S7/S8 执行时一并做）**：
 
-- 本 SPEC：头部版本/状态、目录、§1.3、§1.4、§8（S7）、§9（S8）、§10（测试策略）、§11（边界）、§12（变更记录）。
+- 本 SPEC：头部版本/状态、目录、§1.3、§1.4、§8（S7）、§9（S8）、§10（S9）、§11（测试策略）、§12（边界）、§13（变更记录）。
 - `ROADMAP.md`：P4-S7 行、P4-S8 行、当前焦点/下一个动作。
 - `docs/PRD.md`：P4 节追加「承压升级」（S7）与「可观测性与缓存」（S8）两段。
 - `CLAUDE.md`：路线图表 P4 行（S7/S8）、§六路线图。
@@ -731,11 +748,10 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 | 步骤 | 内容 | 估时（天） |
 |---|---|---:|
 | 1 | 本 §8 过审 + 落地记录 | 0.5 |
-| 2 | 原型门禁 | 0.5 |
-| 3 | 合批/SLO（门禁通过才做） | 2–3 |
-| 4 | worker 池 + 测试 | 2 |
-| 5 | 真机压测 + 文档 | 1 |
-| | **合计** | **5–7** |
+| 2 | RAG SLO 测量/调参（合批已否决） | 0.5–1 |
+| 3 | worker 池 + 测试 | 2 |
+| 4 | 真机压测 + 文档 | 1 |
+| | **合计** | **4–5** |
 
 ---
 
@@ -750,7 +766,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 1. **缓存命中率与冷查询**：命中率可算、可查；冷查询先测后治；热标预热可选。
 2. **监控与告警**：Prometheus + Alertmanager（compose `monitoring` profile，默认不启动）；6 条告警；备份年龄与 launchd。
 
-**范围边界**：只做可观测性/缓存，不改 S7 的 RAG/worker 行为；不做 API/worker/RAG 角色拆分、反向代理、多 API 实例（P4-S9 及以后）；不承诺多机 HA 或 SLA。
+**范围边界**：只做可观测性/缓存，不改 S7 的 RAG/worker 行为；不做 API/worker/RAG 角色拆分、反向代理、多 API 实例（P4-S10 及以后）；不承诺多机 HA 或 SLA。
 
 ### 9.2 缓存命中率与冷查询
 
@@ -847,48 +863,200 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 | 24GB 内存不够 | 监控 profile 默认不启动；不加 RAG 副本 |
 | 备份 launchd 未装 | S8 启动时单独确认；未装则 `backup_age` 一直是高值，告警可见 |
 | 缓存 L2 默认开关 | 验收时临时开；默认是否改 true 单独拍板 |
-| 角色拆分被误读成 P4-S8 | §9.1 写死：S8 是可观测性/缓存；角色拆分是 P4-S9 及以后 |
+| 角色拆分被误读成 P4-S8 | §9.1 写死：S8 是可观测性/缓存；角色拆分是 P4-S10 及以后 |
 
 ---
 
-## 10. 测试策略
+## 10. P4-S9 数据层热点优化（规格）
+
+> 2026-10-30 拍板：S9 是 S7 之后的纯数字迭代，目标是把 20 回测 queue p95 从 **1,312ms** 压到 **≤1,000ms**；S7 的原始 ≤1s 目标由 S9 复验（S7 收口口径待用户后续拍板）。
+> 基线：S7 worker 池 3+1+1 实测（SPEC §8，v3.9/v3.10）；S6 的 20 回测 queue p95 2,423ms。私有评估底稿：`docs/private/Pn-n/P4-Sn/P4-S9.md`。
+> 定位：**数据层热点缓存**，不改引擎、不改 PIT、不改用户策略沙箱；仍是单机、演练、非 HA。
+
+### 10.1 目标、范围与非目标
+
+**目标**：
+
+1. 20 回测 queue p95 **≤1,000ms**（warmup 后 3 次中位；3+1+1）。
+2. run p50 **≤150ms**；报告 metrics / `meta.data_digest` 逐键不变。
+3. bars c=300（`ab`）p95 ≤308ms、吞吐 ≥1,500 req/s（不回归）。
+4. 缓存失效**只认代际/文件戳**，不靠「ETL 后记得清」；`BT_DATA_CACHE_ENABLED=false` 一键回旧路径。
+
+**范围**：
+
+- `naming.cached_st_symbols`：复用 S1 的 `cached_primary_names`（字典文件戳 + 数据代际），消掉 `_limit_bands` 每任务 21.5ms 的 `load_dictionary`。
+- `market_benchmark._daily_rows`：全市场等权基准的 daily rows 走 `cache.through`（35.2ms → 命中）。
+- `window_digest`：窗口指纹走 `cache.through`（22.4ms → 命中）。
+- 执行体「顺带」：`progress+finish` 合并为一次 UPDATE（用户 2026-10-30「顺带做了」）。
+- 新增 `BT_DATA_CACHE_ENABLED`（默认 true）作为以上缓存的总开关。
+
+**非目标**：
+
+- 不改回测引擎 / 不把 engine 搬子进程 / 不改 `_limit_bands` 的涨跌停口径。
+- 不改 PIT 事件过滤、数据源、用户策略沙箱子进程。
+- 不做用户策略路径的缓存（子进程不共享父进程 L1）。
+- 不新增缓存模块（复用 `app/data/cache.py`）；不做 band 结果缓存（除非复测 >1s，见 10.3.5）。
+- 不承诺冷启动首任务（1.8s 冷查询如实记录）。
+
+### 10.2 现状与门禁（2026-10-30 实测）
+
+**warm 分项（000001 / 2024 / ma_cross，3 次中位）**：
+
+| 分项 | ms | 判断 |
+|---|---:|---|
+| `_load_bars`（窗口 qfq） | 1.0 | 已 L1 |
+| `_limit_bands` 合计 | **28.7** | 可缓存 |
+| ├ `naming.load_dictionary` | **21.5** | **第一优先**（复用 `cached_primary_names`） |
+| ├ `naming.st_symbols` | 1.4 | 随字典缓存 |
+| ├ `dc.bars(raw)` 全史 | 3.3 | 已 L1（冷查询 530ms） |
+| └ band 循环（1,636 行） | 2.2 | 可选，不是大头 |
+| engine（252 bar 循环） | **32.4** | GIL 地板 |
+| `market_benchmark._daily_rows` | **35.2** | 直查无缓存 |
+| `window_digest` | **22.4** | 读文件无缓存 |
+| 执行体/DB | ~87 | 待拆；顺带合并 progress+finish |
+
+- **GIL 地板**：`_limit_bands` 28.7 + engine 32.4 = 61.1ms/任务 → 20 × 61.1 = **1.22s**，对应 S7 queue p95 1.31–1.41s；4 道实测 1,401ms（无改善）。
+- **门禁结论（2026-10-30）**：字典缓存后 `_limit_bands` ~6.9ms → GIL 地板 **(32.4+6.9)×20 = 0.79s**；engine×20=0.65s；字典缓存省 21.5ms/任务（≥25ms 门槛按「含 st/raw 的 28.7 → 6.9」算达标）。**门禁通过**；band 结果缓存（2.2ms）不先做。
+- 冷启动：3 次 `dc.bars` 冷查询 1.825s（cProfile）；首任务冷，验收前必须 warmup。
+
+### 10.3 缓存契约
+
+#### 10.3.1 naming ST 缓存
+
+- `app/data/naming.py` 新增：
+
+  ```python
+  def cached_st_symbols(data_dir=None) -> set[str]:
+      from app.backtest.a_share_rules import is_st_name
+      return {s for s, n in cached_primary_names(data_dir).items() if is_st_name(n)}
+  ```
+
+- `app/backtest/engine.py::_limit_bands` 把 `naming.st_symbols(naming.load_dictionary(...))` 换成 `naming.cached_st_symbols(config.data_dir)`；`is_st` / `limit_pct` / `RuleStatus` 语义不变。
+- 键/失效：复用 `cached_primary_names` 的 `(str(path), mtime_ns, size)` + `cache.through` 的数据代际；字典手工重建（`_meta` 未变）也会换键。
+- 预期：`_limit_bands` 28.7 → ~6.9ms/任务；20 任务省 ~430ms。
+
+#### 10.3.2 market_benchmark 缓存
+
+- `app/backtest/benchmark.py::_daily_rows` 改成 `cache.through("bt.market_daily", (start, end, adjust), producer, data_dir=data_dir)`；缓存 **daily rows**（`trade_date`/`ret`/`kept`/`dropped`），levels/describe 现算（252 循环可忽略）。
+- 键含 `start/end/adjust/data_dir` + 数据代际；**`initial_cash` 不进键**（只缩放 levels）。
+- 20 个同窗任务 19 次命中；不同窗口各自一份；JSON `_encode` 处理 date 值。
+
+#### 10.3.3 window_digest 缓存
+
+- `app/report/snapshot.py::window_digest` 改成 `cache.through("bt.window_digest", (start, end, adjust), producer, data_dir=data_dir)`；载荷是 hex 字符串；键含代际。
+- 同代际同窗口必得同一指纹；清单变 → 新键 → 重算，不读旧值。
+
+#### 10.3.4 开关与回滚
+
+- 新增 `BT_DATA_CACHE_ENABLED`（默认 `true`）；false 时三个缓存全部绕过，走原路径。与 `CACHE_ENABLED`（只管 L2）分开。
+- 缓存复用 `app/data/cache.py` 的 L1/L2、代际键、失败开路；不新造模块。
+- 回滚：`BT_DATA_CACHE_ENABLED=false`；不改数据、不改表。
+
+#### 10.3.5 band 结果缓存（可选，非第一版）
+
+- 仅当复测 queue p95 仍 >1s 时再加；键 `(symbol, end, naming_stamp)`；载荷 `[{day: ISO, up: float, down: float}]` + `status` dict（`_encode` 是 JSON，**不能**缓存 `{date: LimitBand}`）；预计再省 2.2ms/任务，不先做以避免多一层序列化。
+
+### 10.4 执行体「顺带」（用户 2026-10-30 拍板）
+
+- `app/tasks/worker.py::run_once` 成功路径目前 `progress(total)` + `finish_task` 两次 UPDATE；合并为 `finish_task` 内一次写 `progress.done=total` / `total`，保留 `cells`，去掉单独 `progress(total)`。
+- `app/core/db_tasks.py::finish_task` 增加可选 `progress_done/progress_total`（默认 None = 旧行为）；`tests/fakes.py::finish_task` 同步；S5 的「done 必满格」不变量不变。
+- 87ms 的其余部分（`save_backtest_run` 的 JSONB 写等）先量；**不**改报告落库语义、**不**为压指标牺牲正确性。
+
+### 10.5 验收矩阵
+
+| 项 | S7 before | S9 目标 | 判定 |
+|---|---|---|---|
+| 20 回测 queue p95 | 1,312ms（3 道中位） | **≤1,000ms** | warmup + 3×median |
+| run p50 | 209–304ms | **≤150ms** | 3×median |
+| bars c=300（`ab`） | 1,583 req/s / 236ms | ≥1,500 / ≤308ms | 不回归 |
+| metrics / digest | — | **逐键相等** | 黄金对照 |
+| PIT / 用户策略 | 绿 | 绿 | 定向 |
+| 缓存失效 | — | 清单/字典戳变 → 键变 | 单测 |
+| 内存 | — | 无 OOM；L1 ≤256 条 | 20 回测 + bars |
+| 冷首任务 | 1.8s | 如实记录，不承诺 | 单独记录 |
+
+**判定**：主指标任一不过 → 不宣称 S9 达标；queue p95 若落 1.0–1.3s，按「部分达成」记录，S7 的 ≤1s 不成立，S7 收口口径回用户（2026-10-30「之后再商榷」）。
+
+### 10.6 测试与回滚
+
+- 单测（tmp 数据目录）：`cached_st_symbols` 命中/文件戳变；benchmark daily rows round-trip（date 值）；digest 同代际命中、`_meta` 变换键；`BT_DATA_CACHE_ENABLED=false` 走旧路径。
+- 黄金：同一回测的 `metrics`/`meta.data_digest`/交易明细逐键相等；PIT 用例全绿；用户策略路径不变。
+- 真机：warmup 1 次 → 20 回测 ×3；bars `ab -n 3000 -c 300` ×3；混合标的（次要）观察收益边界；内存/swap。
+- 回滚：`BT_DATA_CACHE_ENABLED=false`；不改数据/表；S9 的代码与 S7 的 `TASK_WORKER_POOL_ENABLED` 独立。
+
+### 10.7 风险与文档同步
+
+| 风险 | 应对 |
+|---|---|
+| 同窗口才共享 benchmark、同标/同字典戳才共享 ST | 20 回测验收成立；混合负载收益更小，**如实写**，不外推 |
+| 用户策略走子进程 | 父进程缓存不共享；S9 只覆盖内置策略 |
+| 首任务冷 1.8s | warmup 后 3×median；冷/热分开记录 |
+| engine 32.4ms 的 GIL 地板 | 20×32.4=0.65s <1s；换 event_driven/更大窗口后重测 |
+| 执行体 87ms 若为串行 DB | `progress+finish` 合并后复测；若仍不够，另开 DB 小优化，不在 S9 硬塞 |
+| 缓存载荷 JSON 化 | 优先复用 `cached_primary_names` 的 dict；band 结果缓存才需 ISO/float |
+| bars 口径 | 必须 `ab`，harness `http` 是 httpx（4.8s 是假象） |
+| `test_optimize_api.py` 14 失败 | HEAD 就有，不是 S9；用定向用例/CI |
+| PIT 护城河 | 缓存只认代际/文件戳，不碰 `as_of`；PIT 全绿 |
+
+**文档同步（S9 执行时）**：本 SPEC 头/目录/§1.3/§8.3.4/§8.4/§11/§12/§13；ROADMAP 加 S9 行、角色拆分改 P4-S10+；PRD v0.18 加 S9 段；CLAUDE.md 路线图表加 P4-S9、后续改 P4-S10+；`.env.example` 加 `BT_DATA_CACHE_ENABLED`（编辑被权限挡，贴给用户）；CHANGELOG 到里程碑。
+
+### 10.8 排期
+
+| 步骤 | 内容 | 估时（天） |
+|---|---|---:|
+| 1 | 门禁（已完成） | 0.25–0.5 |
+| 2 | `cached_st_symbols` + 单测 | 0.25–0.5 |
+| 3 | market_benchmark 缓存 | 0.5 |
+| 4 | window_digest 缓存 | 0.25–0.5 |
+| 5 | 执行体 progress+finish 合并 | 0.25–0.5 |
+| 6 | band 结果缓存（可选） | 0.25 |
+| 7 | 20 回测 + bars + 黄金 + 文档 | 0.5–1 |
+| | **合计** | **2–3.5** |
+
+---
+
+## 11. 测试策略
 
 | 层 | 落点 |
 |---|---|
-| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S4 DuckDB 上限/闸门/超时/停机释放、S5 限流/进度、S6 只读 `DATA_DIR` → 503、S7 合批/worker 池、S8 指标/告警 |
+| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S4 DuckDB 上限/闸门/超时/停机释放、S5 限流/进度、S6 只读 `DATA_DIR` → 503、S7 合批/worker 池、S8 指标/告警、S9 缓存/开关 |
 | 集成 | `pytest -m integration`：真 PG/Redis/Qdrant；迁移/备份可选 |
 | 前端 | `pnpm test && pnpm typecheck && pnpm lint`；events 截断/窗口类型 |
-| 压测 | `docs/private/Pn-n/P4-Sn/harness/`（甲案已有；S6 扩到 events 窗口/SSE 50–80/混合/2w；S7 再加 20/50/100 任务、SSE 80/100/150、RAG c5/c10；S8 复用） |
+| 压测 | `docs/private/Pn-n/P4-Sn/harness/`（甲案已有；S6 扩到 events 窗口/SSE 50–80/混合/2w；S7 再加 20/50/100 任务、SSE 80/100/150、RAG c5/c10；S8/S9 复用） |
 | S7 承压 | 合批（fake 精排：调用次数/批大小/分数切分/超时/取消）、worker 池（kinds 过滤/0 重复/kill -9/停机释放） |
 | S8 可观测性 | 指标（queue/PG/host/backup 一次一值）、告警（`promtool` 或 `alert_hook` 单测）、缓存命中率/冷查询 |
+| S9 数据层 | `cached_st_symbols`（文件戳/代际）、benchmark daily rows / digest round-trip、开关 off、20 回测与 bars 黄金对照 |
 | 故障 | `backend/scripts/drill_s6.py`；S2/S5 进程级探针复用；每次演练留 `logs/s6-drill/<ts>/`；S7 留 `logs/s7-drill/<ts>/`；S8 留 `logs/s8-drill/<ts>/` |
 | 备份脚本 | `bash -n` + 演练为准；可选 integration `pg_dump` + scratch `pg_restore` |
 | 覆盖率 | 继续按 CI `--cov-fail-under=88`；不因新代码降低门槛 |
 
-**闸门**：`.githooks/pre-commit` ruff；CI 三 job；PIT 用例（`as_of` 过滤）必须全绿；沙箱隔离不得静默降级；S7 的 SLO 与回滚开关见 §8.4/§8.5，S8 见 §9.4。
+**闸门**：`.githooks/pre-commit` ruff；CI 三 job；PIT 用例（`as_of` 过滤）必须全绿；沙箱隔离不得静默降级；S7 的 SLO 与回滚开关见 §8.4/§8.5，S8 见 §9.4，S9 见 §10.5。
 
 ---
 
-## 11. 已知边界与不做
+## 12. 已知边界与不做
 
 - **单机、无 HA**：没有第二台机器；不承诺多 AZ/故障转移/SLA。
 - **macOS 资源隔离弱于 Linux**：Docker 有硬上限；原生 API/RAG 进程只有并发闸门/监控，没有 cgroup RSS 硬限。
 - **RAG 精排是设备串行**：单 MPS 进程，吞吐有上限；高并发靠降级/排队，不靠加进程。
 - **S5 是条件项**：单 worker 达标或双 worker 不划算时不启用；文档如实写。
 - **依赖审计例外（2026-10-27，2026-10-29 扩列）**：LiteLLM 1.106.6 仍硬约束 `filelock<4.0`，而审计要求的修复版是 4.2.1，装不上。CI **仅**对 filelock 的 `CVE-2026-112940` / `112913` / `112907` / `112908` / `112909` / `112910` / `112911` / `112912` / `112915` / `112935` / `112936` / `112938` / `112939` 加 `--ignore-vuln`，其余审计照常；`langgraph-sdk` 已升到 **0.4.10**（`CVE-2026-118667` 修复）。LiteLLM 放开 `filelock<4.0` 后删除例外并升级 `filelock>=4.2.1`。
-- **不做**：Redis Streams 全量、**多进程** Worker 池、K8s、Qdrant 集群、多机 HA、Vault、Kafka/Celery、把 agent/backtest/report 拆服务。P4-S7 的「单进程内按 kind 的多协程消费」见 §8——它不是多进程 worker 池，也不是 HA。
+- **不做**：Redis Streams 全量、**多进程** Worker 池、K8s、Qdrant 集群、多机 HA、Vault、Kafka/Celery、把 agent/backtest/report 拆服务。P4-S7 的「单进程内按 kind 的多协程消费」见 §8——它不是多进程 worker 池，也不是 HA；P4-S9 的数据层缓存见 §10，不是引擎/子进程优化。
 - **P4-S7 的边界**：RAG 合批只提高吞吐/降级覆盖率，不改变「精排是单 MPS 设备串行」；worker 池是单进程内协程。SLO 以 §8.2 为准，不把降级后的数字写成达标。
 - **P4-S8 的边界**：监控是单机 Prometheus/Alertmanager，不是生产 SLA；缓存命中率看板不改数据层语义（键带代际）。
+- **P4-S9 的边界**：数据缓存只覆盖内置策略路径；同窗口才共享 benchmark、同标/同字典戳才共享 ST；用户策略子进程不共享父进程 L1；不改 engine/PIT/数据源。S9 达标与否见 §10.5。
 - **P4-Sn 后续愿景**（多租户/分布式/商业化）仍按 PRD 触发条件评估，不在本轮。
 
 ---
 
-## 12. 变更记录
+## 13. 变更记录
 
-> 本节是历史变更记录。P4-S7 紧接 §7 落在 **§8**；P4-S8 落在 **§9**；测试策略、边界与本节顺延为 §10/§11/§12。P4-S9 及以后按纯数字续在 §9 之后（届时顺延后续节号）或独立计划。
+> 本节是历史变更记录。P4-S7 紧接 §7 落在 **§8**；P4-S8 落在 **§9**；P4-S9 落在 **§10**；测试策略、边界与本节顺延为 §11/§12/§13。P4-S10 及以后按纯数字续在 §10 之后（届时顺延后续节号）或独立计划。
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-30 | v3.10 | 写入 P4-S9 数据层热点优化规格（§10）：门禁实测 `_limit_bands` 28.7ms（**字典 21.5** + st 1.4 + raw 3.3 + band 循环 2.2）、engine 32.4、`market_benchmark` 35.2、`window_digest` 22.4；GIL 地板 1.22s → 字典缓存后 **0.79s**。范围：`cached_st_symbols`（复用 `cached_primary_names` 的文件戳+代际缓存）、benchmark daily rows、window_digest 三个缓存 + `BT_DATA_CACHE_ENABLED` 开关 + 执行体 `progress+finish` 合并。S7 worker 池实测 queue p95 **1,312ms**（3 道中位；4 道 1,401ms 无改善）、bars **1,583/236ms**；S7 的 ≤1s 由 S9 复验，S7 收口口径待拍板（2026-10-30「之后再商榷」）。角色拆分顺延 **P4-S10 及以后**；测试策略/边界/变更记录顺延 §11/§12/§13。 |
+| 2026-10-29 | v3.9 | S7 执行：RAG 合批原型门禁实测（真 MPS / 50 篇，N=2/4/5/8 speedup **1.13–1.26×**、`5×50` **4.65s**）全部未过；拍板 **A：不合批**，RAG 项只交付 SLO 测量，不宣称降级率 ≤50%；S7 范围收窄为 worker 池 + SLO 记录，估 **4–5 天**。worker 池实现结果待回填。 |
 | 2026-10-29 | v3.8 | 拆分迭代：缓存命中率/冷查询与监控告警/备份定时从 S7 整块移到 **P4-S8（§9）**；S7（§8）只留 RAG 合批/SLO + task worker 池化，估 **5–7 天**；测试策略/边界/变更记录顺延为 §10/§11/§12。角色拆分等愿景顺延到 P4-S9 及以后。S7/S8 均待执行，S1–S6 行为不变。 |
 | 2026-10-29 | v3.7 | 写入 P4-S7 单机承压升级规格（§8）：RAG 跨请求合批 + 分级 SLO（先原型门禁；interactive c10 非降级 p95 ≤3.5s、降级率 ≤50%）、task worker 单进程内按 kind 多协程池化（3+1+1，20 回测 queue p95 ≤1s；配额/租约/幂等不变）、缓存命中率与冷查询（L2 验收时临时开，默认仍 false）、监控告警（scrape 时 collector、METRICS_TOKEN/RAG_SERVICE_TOKEN + Bearer、compose monitoring profile、6 条规则、本地 alert_hook、备份 launchd）；同步 §1.3/§1.4/§9/§10 的边界。S7 待执行，S1–S6 行为不变。 |
 | 2026-10-29 | v3.6 | S6 口径细化：§7.1 固定 A/B 双栈与 1w/2w 3 次中位，events 6/12/24 仅验契约（语料约 3 个月，不可区分）；§7.2 补 5 行新故障的方法与期望（cache 需 `CACHE_ENABLED=true`、PG 重启“>1 次/池槽”才修、Qdrant 明确不可用、fake 429/超时、磁盘只读 503 + 不造 ENOSPC），明确 `backend/scripts/drill_s6.py` 与 `logs/s6-drill/`；§7.3 定 `scripts/backup.sh` / `restore.sh` / launchd 安装器、`--target` 默认 `~/QuantSageBackups`、PG 两库、Qdrant 未变复用、data 硬链接快照、恢复默认 scratch；§7.4/§7.5 定报告落点与 `m-p4`。不改 S1–S5 行为。 |

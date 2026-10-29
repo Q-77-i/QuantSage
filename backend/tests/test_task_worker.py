@@ -555,3 +555,60 @@ def test_user_strategy_task_uses_frozen_source(
     assert record["strategy_id"] == request["strategy_id"]
     assert record["report"]["meta"]["strategy_kind"] == "user"
     assert record["report"]["meta"]["strategy_name"] == "我的双均线"
+
+
+# ── S7 worker 池 ────────────────────────────────────────────────────────────
+
+
+def test_worker_slots_default_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", True)
+    monkeypatch.setattr(settings, "task_workers_backtest", 3)
+    monkeypatch.setattr(settings, "task_workers_grid", 1)
+    monkeypatch.setattr(settings, "task_workers_batch", 1)
+    assert worker.worker_slots() == [("backtest", 3), ("grid", 1), ("batch", 1)]
+
+
+def test_worker_slots_disabled_is_single_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", False)
+    assert worker.worker_slots() == [(None, 1)]
+
+
+def test_worker_slots_zero_falls_back_to_single_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", True)
+    monkeypatch.setattr(settings, "task_workers_backtest", 0)
+    monkeypatch.setattr(settings, "task_workers_grid", 0)
+    monkeypatch.setattr(settings, "task_workers_batch", 0)
+    assert worker.worker_slots() == [(None, 1)]
+
+
+def test_worker_slots_unknown_kind_gets_one_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", True)
+    monkeypatch.setattr(worker, "EXECUTORS", {**worker.EXECUTORS, "future": object()})
+    assert ("future", 1) in worker.worker_slots()
+
+
+def test_claim_next_task_filters_kinds(signed_in: FakeDatabase) -> None:
+    """S7：按 kind 取件；`None` 仍取任何 kind。"""
+    grid_id = queue(signed_in, {}, kind="grid")
+    backtest_id = queue(signed_in, frozen_request())
+
+    grid = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60, kinds=("grid",)))
+    assert grid is not None and str(grid["id"]) == grid_id
+
+    backtest = asyncio.run(
+        signed_in.claim_next_task(WID, lease_seconds=60, kinds=("backtest",))
+    )
+    assert backtest is not None and str(backtest["id"]) == backtest_id
+
+    assert (
+        asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60, kinds=("grid",)))
+        is None
+    )
