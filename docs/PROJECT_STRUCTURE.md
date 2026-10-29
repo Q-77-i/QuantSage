@@ -35,6 +35,7 @@ QuantSage/
 │   │                             #   + 鉴权/会话/配额/安全头/注入边界、metrics/observability（E7e）
 │   │                             #   + S5：共享限流 coord（redis-coord + Lua）、Prometheus 多进程聚合
 │   ├── scripts/                  # 下载、建库、回测与走查取证脚本（含 check_docs.py、build_deep_eval.py）
+│   │                             #   + S6：drill_s6.py（cache/PG/Qdrant/LLM/磁盘只读演练）
 │   └── tests/                    # 离线 + tests/integration
 ├── frontend/                     # Next.js 15（App Router）
 │   ├── app/                      # 18 条路由：
@@ -52,10 +53,11 @@ QuantSage/
 │                                 #   （纯函数 + 单测；组件本身不做单测，靠走查脚本）
 ├── scripts/                      # 跨端运维脚本：dev.sh 一键起停；prod.sh 生产形态（S4：
 │                                 #   前端 build+start、15s drain、日志轮转；委派 dev.sh）
+│                                 #   + S6：backup.sh / restore.sh（Python 实现）、install_backup_job.sh
 ├── docs/
 │   ├── PRD.md                    # 需求与验收
 │   ├── PROJECT_STRUCTURE.md      # 本文（结构导航）
-│   ├── specs/                    # 技术规格（逐阶段滚动：P1-Tn.md · P2-Mn.md · P3-En.md）
+│   ├── specs/                    # 技术规格（逐阶段滚动：P1-Tn.md · P2-Mn.md · P3-En.md · P4-Sn.md）
 │   ├── tutorials/                # 使用教程与示例策略教程
 │   └── images/                   # README 用截图（由 frontend/scripts/capture-*.mjs 生成）
 ├── .mcp.json.example             # MCP 客户端配置模板（本地 .mcp.json 是绝对路径，不入库）

@@ -128,7 +128,7 @@ async def do_rollback(
 ) -> dict[str, Any]:
     """按快照把 `data/` 换回历史状态（SPEC §4.5 的六步，**破坏性、不可撤销**）。
 
-    四种拒绝各有各的码，前端据此给不同的话：
+    五种拒绝各有各的码，前端据此给不同的话：
 
     ==================== ===== ==============================================
     快照 ts 不认识        404   索引里没有这一份
@@ -136,6 +136,7 @@ async def do_rollback(
     已有同步在跑          409   与 ETL / 行情刷新串行，撞上就拒
     非主实例              409   后台全局数据操作只由持锁实例执行
     `confirm` 不相等      422   防手滑——**界面上那个确认框不是门**
+    数据目录不可写        503   磁盘满/只读；staging 保证未写成半截
     ==================== ===== ==============================================
 
     **同步返回完整结论**（不像 `POST /etl/run` 那样回 202）：回滚是分钟以内的事，而调用方
@@ -175,3 +176,8 @@ async def do_rollback(
         ) from exc
     except Busy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"数据目录不可写（{type(exc).__name__}）：回滚未执行，原数据未动",
+        ) from exc

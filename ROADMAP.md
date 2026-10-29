@@ -6,11 +6,11 @@
 
 ## 当前焦点
 
-**阶段**：P1-Tn / P2-Mn / P3-En 全部交付（`m-p1` / `m-p2` / `m-p3`，P3 收口于 2026-10-20）；**P4-Sn 单机工程化（S1–S5 已交付；S6 待审）**；后续愿景仍不排期。
+**阶段**：P1-Tn / P2-Mn / P3-En / P4-Sn 全部交付（`m-p1` / `m-p2` / `m-p3` / `m-p4`；P4-Sn S1–S6 于 2026-10-29 收口）；后续愿景仍不排期。
 
-**进行中**：P4-Sn 单机工程化（S1–S5 已交付；S6 待审）。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）；按 S6 收口。
+**进行中**：无（P4-Sn 已收口）。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）。
 
-**下一个动作**：审 S6（压测复验、故障演练、备份恢复、文档收口）；S5 已于 2026-10-28 实现并验收（2w bars 1,699 req/s / p95 231ms，health 11,810；限流 5/15、coord 降级 4/16；81 格进度 10 条订阅 0 重复；停机任务重排后仅 1 条结果）。
+**下一个动作**：P4-Sn 已收口；后续按愿景触发条件评估（多租户/分布式/商业化）。S6 最终复测见下（2w bars 1,710 req/s / p95 280ms、health 11,599；8 行故障演练通过；备份 4.6GB / 恢复 36.3s）。
 
 **待决事项**
 
@@ -60,7 +60,7 @@
 | E9 企业级文档 | ✅ `docs/enterprise/` 四篇 + 索引 |
 | P3 收尾项 5 | ✅ Agent 提案 · RAG 一轮纠错 + 静态能力卡 · 策略版本 · 深研报评测 |
 
-## P4-Sn · 单机工程化（S1–S5 已交付；S6 待审）
+## P4-Sn · 单机工程化（S1–S6 已交付）
 
 > 定位：**能力演练/工程化加固**，不是“真实流量触发”的后续愿景。完成后是“经过压测与故障演练验证的单机工程化方案”，不是生产级高可用。
 > 规格：[`docs/specs/P4-Sn.md`](docs/specs/P4-Sn.md)；基线读数见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`（私有，不入库）。
@@ -72,7 +72,7 @@
 | S3 RAG 过载治理 | ✅ | 单 RAG 进程；交互 10 并发 p95 ≤2s、研究 5 并发 p95 ≤5s 或明确降级；0 MPS 崩溃；降级可见 | 1.5–2 天 |
 | S4 资源上限与底座 | ✅ | Docker/DuckDB/Redis/PG 上限生效；soak 无 OOM；swap 不增长 | 0.5–1 天 |
 | S5 双 API Worker（条件） | ✅ | health ≥1.8×、bars c300 p95 ≤300ms、限额 5 仍只放行 5；coord 降级、多进程指标、跨进程进度、停机 | 1.5–2 天 |
-| S6 验证与收口 | ⬜ | 压测/故障/备份恢复/文档；每项 before/after | 1–1.5 天 |
+| S6 验证与收口 | ✅ | 压测/故障/备份恢复/文档；每项 before/after；8 行故障通过、恢复 36.3s | 1–1.5 天 |
 
 **S1 复验（2026-10-27，同机 `ab`，单进程）**：旧代码 c=50 63 req/s / p95 1,045ms；新代码 c=50 **1,098 req/s / p95 69ms**、c=10 1,186 req/s / p95 12ms（缓存预热）。冷缓存单次 73ms；50 个不同标的顺序跑 38 req/s（如实记录，**不列入 SLO**——S1 的达标读数是同一 URL 的缓存命中）。规格 v3.1：`dc.events_page` 有界结果缓存 + 默认窗口/limit/truncated。
 
@@ -85,6 +85,8 @@
 **S5 复验（2026-10-28，2 workers + redis-coord，harness 8100）**：实现后 bars c=300 **1,699 req/s / p95 231ms**（3 次中位）、health **11,810 / p95 9ms**，与预测量同量级无回归；共享限流 `RATE_LIMIT_CHAT=5` 20 并发 **5 放行 / 15 个 429**，停 coord **4 / 16**（floor(5/2)×2），恢复后 5；`/metrics` 2,000 请求 delta **2,001**、任务五状态各一行（自定义 collector）、死 pid 文件被清；81 格网格 10 条订阅**各 81 格、0 重复**、DB 轮询补 **509** 格；在飞网格 SIGTERM 后回 `queued`、attempts 0，重启跑完 attempts 1、81 格、`optimization_runs` **仅 1 条**；20 条 SSE 在飞 SIGTERM → 20/20 打开 200、drain 内跑完、0 个 500/Traceback。Redis coord 6380 / 128MB noeviction / 192m。kill -9 非 master / master 两种情形均通过（master 被杀后新进程接管后台主实例）。
 
 **S2 复验（2026-10-27，同机测试栈）**：4 路并发 ×100 件取件 **0 重复 / 0 遗漏**；任务执行中 `kill -9` 后端 → 重启后 **8.3s** 回 `queued`，第二次执行 `attempts=2` 跑完、`optimization_runs` **仅 1 条**；第二次再杀 → `failed/lease_expired`（不无限重排）；20 任务 queue p95 **2,365ms**（基线 2.2s）。规格 v3.2：`SKIP LOCKED` + 租约/心跳 + `worker_id` 栅栏 + 启动全量扫尾 + `task_id` 结果幂等。
+
+**S6 复验（2026-10-29，最终 HEAD，harness 8100）**：1w/2w 全矩阵。2w bars c=300 **1,710 req/s / p95 280ms**（3 次中位；S5 1,699/231ms）、health **11,599 / p95 9ms**（S5 11,810）；1w bars 864 / p95 361ms、health 5,784（S5 预测量 904/390、5,813）；SSE 5/10/20/50/80 并发 **0 错误**，2w 20/50/80 首 token p95 **312/557/635ms**；events 6/12/24 窗口 2,401–2,993 req/s、p95 22–38ms（语料约 3 个月，不可区分）；20 回测 queue p95 **2,423ms**、run p95 247ms；RAG hybrid 交互 c5 p95 **794ms**（0 降级）、rerank 交互 c10 **2,973ms**（8/10 timeout 降级）、研究 c5 **4,851ms**（2/5 降级）；2w 5min soak **89,113 读 / 1 个 ReadError**、p95 296ms、API 树峰值 **2.64GB**、PG 连接 30、swap **9.24→9.23GB**；混合 bars c=100 + SSE 20 3min：bars **1,637/s / p95 86ms**、SSE 首 token p95 888ms，0 错误。8 行故障演练通过：kill -9 worker **5.68s 重排**、kill -9 API worker 补进程/接手 master、coord **4/16**、cache 挂请求不失败、PG 重启任务 0 重复、Qdrant 挂明确“本地事件检索不可用”、LLM 429 **1.5s** / 超时 **120.6s**、磁盘只读 **503** 无半截。备份 `~/QuantSageBackups` **4.6GB**，PG+Qdrant+data 恢复 **36.3s**。代码修复：`OSError→503`、PG 池 `check_connection`。规格 v3.6。
 
 **不做**：Redis Streams 全量改造、Worker 池扩容、K8s、Qdrant 集群、多机 HA、Vault、Kafka/Celery、把 agent/backtest/report 拆成独立 HTTP 服务。
 

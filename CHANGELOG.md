@@ -2,7 +2,31 @@
 
 > 按里程碑记录交付内容，版本号 = git tag（`m-p1`、`m-p2`…）。格式：新增 / 调整 / 修复。
 >
-> **本文只回答「每个里程碑交付了什么」。** 逐次交付的决策、实测读数与验收证据见各 SPEC 的变更记录（P1 §10、P2 §13、P3 §11）；当前状态见 [ROADMAP](ROADMAP.md)。
+> **本文只回答「每个里程碑交付了什么」。** 逐次交付的决策、实测读数与验收证据见各 SPEC 的变更记录（P1 §10、P2 §13、P3 §11、P4 §10）；当前状态见 [ROADMAP](ROADMAP.md)。
+
+## [m-p4] — 2026-10-29
+
+> P4-Sn 单机工程化交付：S1–S6。逐次明细见 [P4-Sn SPEC §10](docs/specs/P4-Sn.md#10-变更记录)。
+
+### 新增
+
+- **S1 `/events` 读路径**：默认窗口 + `limit` + `truncated`，L1 结果缓存；c=50 1,098 req/s / p95 69ms（旧 63 / 1,045ms）。
+- **S2 队列 v2**：`SKIP LOCKED` + 租约/心跳 + 有限次重排（`max_attempts=2`）+ `task_id` 结果幂等；kill -9 后 8.3s 重排、0 重复。
+- **S3 RAG 过载治理**：独立 RAG 推理服务（单进程/BGE-M3 + reranker）、有界队列/超时/降级；API 52MB / RAG 2.3GB；交互 10c p95 1.91s、研究 5c 4.20s。
+- **S4 资源上限与底座**：Docker 四件 mem/cpus、PG 1.25g/120、Redis 512MB volatile-lru、Qdrant 2.5g；DuckDB 每连接 threads=2/1GB/闸门 4；prod.sh + 15s drain + 日志轮转。
+- **S5 双 API Worker（条件）**：`API_WORKERS=2` + redis-coord 共享限流 + Prometheus 多进程 + `tasks.progress.cells` 跨进程进度；bars 1,699 req/s / p95 231ms、health 11,810；限流 5/15、coord 降级 4/16。
+- **S6 验证、备份与文档收口**：1w/2w 压测矩阵、8 行故障演练、PG+Qdrant+data 备份/恢复（`scripts/backup.sh` / `restore.sh` / `install_backup_job.sh`）、`drill_s6.py`；2w bars 1,710 req/s / p95 280ms、health 11,599；备份 4.6GB、恢复 36.3s。
+
+### 调整
+
+- **S6 口径**：回测矩阵加一条确定性失败（断言 `failed` 且 `attempts=1`）；events 6/12/24 窗口只验契约（语料约 3 个月不可区分）；备份默认 `~/QuantSageBackups`、保留 7 日 + 4 周、Qdrant 未变复用；恢复默认 scratch。
+- **文档**：PRD/ROADMAP/README/architecture/PROJECT_STRUCTURE/SPEC 同步到 P4-Sn 交付状态；对外口径固定为“经过压测与故障演练验证的单机工程化方案，不是生产级高可用/SLA”。
+
+### 修复
+
+- **S6 磁盘只读**：`POST /api/v1/data/rollback` 把 `OSError` 映射为 503，回滚 staging 保证不写半截。
+- **S6 PG 重启**：业务池与 checkpointer 池取件 `check_connection`，池内空闲旧连接被替换，重启后首个 `/auth/me` 不再 500。
+- **S6 发现边界**：`/health/ready` 是启动态探针；LLM 超时因策略重试约 120s；RAG rerank c10 2.97s（8/10 降级）——均如实记录，不写成达标。
 
 ## [m-p3] — 2026-10-20
 

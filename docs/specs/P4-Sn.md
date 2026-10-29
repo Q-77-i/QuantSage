@@ -489,49 +489,66 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 ### 7.1 压测矩阵
 
-- 读：`/health`、`/auth/me`、bars、events（6/12/24 个月窗口）；1w vs 2w。
-- SSE：5/10/20/50/80 并发；混合 ab 读 + SSE。
-- 回测：20 任务；kill -9 中途；确定性失败。
-- RAG：hybrid/rerank，interactive/research，过载/超时/降级。
-- Soak：5–10min 混合；记录 RSS/swap/PG 连接/队列深度。
+- **两套栈、两张表，不混读**：
+  - **A 栈（对照）**：harness `:8100` + 假 LLM + 测试库 + `CACHE_ENABLED=false`（L1 开），与 S0/S5 同口径，用于 before/after。
+  - **B 栈（生产形态抽测）**：dev/prod 栈（L1+L2、真 RAG 服务、真数据），只做抽测，不与 A 栈同表比较。
+- 读：`/health` c=100、`/auth/me` c=50、bars c=100/300、events 默认窗口 c=10/50；1w/2w 各 3 次取中位。
+- events 6/12/24 个月窗口：当前语料仅约 3 个月，三者不可区分；照跑以验 `window` / `truncated` 契约，**不据此下性能结论**。
+- SSE：5/10/20/50/80 并发，各 3 轮；80 并发只记录、不设 SLO。混合：bars c=100 + SSE 20 同时 3min。
+- 回测：20 任务；kill -9 中途；一条确定性失败（未知策略/空数据标的），断言 `failed` 且 `attempts=1`。
+- RAG：hybrid/rerank × interactive/research；过载 c=10；记录服务 503/降级与 API `degraded_reason`。
+- Soak：5min（与 S4/S5 同口径）+ 10min（最终）；记录 RSS/swap/PG 连接/队列深度/错误数；测前记录 swap 基线，避开 21:10–22:00。
+- 产物：`docs/private/Pn-n/P4-Sn/baseline/s6-<YYYYmmdd>/`。
 
 ### 7.2 故障演练
 
-| 故障 | 期望 |
-|---|---|
-| kill -9 worker 中途 | 60s 内重排；max_attempts 后终态；0 重复结果 |
-| kill -9 API worker | 另一 worker 继续；SSE 可重连；任务不受影响 |
-| Redis coord 挂 | 限流降级 `floor(capacity/N)`；进度回退 DB；任务继续 |
-| Redis cache 挂 | 熔断直读；请求不失败 |
-| PG 重启 | 池重连；任务不丢；Chat 明确 503/重试 |
-| Qdrant 挂 | RAG 明确错误/降级；不假装有结果 |
-| LLM 429/超时 | Retry-After/熔断；不雪崩 |
-| 磁盘满/只读 | 明确 503；不写半条记录 |
+| 故障 | 方法 | 期望 |
+|---|---|---|
+| kill -9 worker 中途 | 复用 S2 探针（私有 harness）；最终 HEAD 复跑 | 60s 内重排；max_attempts 后终态；0 重复结果 |
+| kill -9 API worker | 复用 S5 探针（2 workers） | 另一 worker 继续；SSE 可重连；任务不受影响 |
+| Redis coord 挂 | 停 `redis-coord`；复跑 S5 限流探针 | 限流降级 `floor(capacity/N)`；进度回退 DB；任务继续 |
+| Redis cache 挂 | 带 `CACHE_ENABLED=true` 的实例预热 L2 后停 `redis` | 熔断直读；请求全 200；`redis-cache` 开路；恢复后 L2 命中回升 |
+| PG 重启 | `docker compose restart postgres`；重启前后各提交长任务 | 重启窗口可能出现 503/连接错误（**`/health/ready` 只反映启动态，可能仍 200**，以 `/auth/me`、任务、chat 验证恢复）；恢复后新请求成功；任务不丢、0 重复；若池内陈旧连接导致**多于 1 次/池槽**的用户可见失败，修（`check` 或一次幂等重试） |
+| Qdrant 挂 | 停 `qdrant`；chat 问事件检索；深研报一次 | 明确“本地事件检索不可用”，不假装“查不到”；深研报明确失败；恢复后正常 |
+| LLM 429/超时 | fake LLM `FAKE_LLM_429_RATE=1` / `FAKE_LLM_TIMEOUT_RATE=1`；chat 各一次 | `error` 帧 `rate_limited` / `upstream_timeout`；429 带 `Retry-After`；墙钟有界（≤ 2×`CHAT_TIMEOUT` + 余量；LLM 策略默认重试 1 次）；E4 真实四幕引用既有证据，不重跑 |
+| 磁盘只读 | 临时 `DATA_DIR` 复制后 `chmod -R a-w`；调 `POST /data/rollback` | **503**；无 `.partial`/半截文件；原数据未动。**只演练 EACCES**；ENOSPC 未单独造盘，按同一 `OSError` 分支处理 |
+
+- 新增 `backend/scripts/drill_s6.py`（`cache-down` / `pg-restart` / `qdrant-down` / `llm-429` / `llm-timeout` / `disk-readonly` / `all`）；S2/S5 进程级探针继续留在私有 harness。
+- 产物：`logs/s6-drill/<ts>/report.md` + `journal.log`；脚本默认只动 dev/测试栈，`QS_MODE=prod` 或非回环 base URL 需 `--yes`。
 
 ### 7.3 备份与恢复
 
-- PG：`pg_dump -Fc` 每日；保留 7 日 + 4 周；恢复脚本 + 空环境演练。
-- Qdrant：collection snapshot（`POST /collections/{name}/snapshots`）每日/变更后；恢复演练。
-- 数据：`data/_meta` 清单 + `data/_snapshots` 已有；另备份 `data/` 到外置盘（落点待用户定）。
-- RPO/RTO：本地演练口径 RPO 24h / RTO 1h；**不是 SLA**。
+- **脚本**：`scripts/backup.sh` / `scripts/restore.sh` / `scripts/install_backup_job.sh`（launchd 03:30，**安装器提供但不自动安装**，由用户执行）。
+- **落点**：参数化 `--target DIR`，默认 `~/QuantSageBackups`；外置盘用 `--target /Volumes/...`。目标不可写/未挂载 → 非零退出并明确报错，不静默跳过。
+- **PG**：`quantsage` + `langfuse`，`pg_dump -Fc --no-owner`；排除 `quantsage_loadtest_*` 等测试库。每日；保留 7 日 + 4 周。
+- **Qdrant**：`POST /collections/cn_events_v1/snapshots`；`data/_meta/embeddings.json` 未变则复用上一份（`reused: true`），变更后必做；快照用 `docker compose cp` 从容器 `/qdrant/snapshots/` 拷到宿主。
+- **data**：`rsync -a --link-dest=<上一份>/ --exclude='_tmp/' data/ <target>/data/<date>/`；生成 `<date>.data.sha256`；目标 FS 不支持硬链接时回退普通复制并 warning（空间预检）。
+- **恢复**：默认恢复到 scratch 目标（新库/新集合/临时目录），不覆盖 `quantsage` / `cn_events_v1` / `data/`；覆盖需 `--force` + 二次确认。
+- **空环境演练**：scratch PG DB + 临时 Qdrant 容器/集合 + 临时 `data` 目录；校验表数/关键行数、`points_count`、全量 sha256；E2E（scratch API 接恢复目标）可延。
+- **RPO/RTO**：本地演练口径 RPO 24h / RTO ≤1h（以实测墙钟为准）；**不是 SLA**。
+- **不在范围**：`.env`/密钥、`logs/`、Redis（cache/coord 可丢）、测试库；manifest 只记非敏感配置指纹。
 
 ### 7.4 文档同步
 
 | 文档 | 改什么 | 时点 |
 |---|---|---|
-| `docs/PRD.md` | S1–S6 定位/范围/NFR/里程碑/变更记录 | 编码前 |
-| `ROADMAP.md` | P4-Sn 单机工程化状态/DoD/排期；后续愿景仍不排期 | 编码前 |
-| `docs/specs/P4-Sn.md` | 本文 | 编码前 |
-| `README.md` | 多 worker/指标/队列语义的**当前事实**；S1–S6 成果 | 各 S 完成后 |
-| `docs/enterprise/architecture.md` | §2.1 进程模型、§9.1 队列语义、§9.3 多 worker 边界 | 各 S 完成后 |
-| `docs/PROJECT_STRUCTURE.md` | RAG 进程/共享限流/双 worker 角色 | S5 后 |
-| `CHANGELOG.md` | S1–S6 里程碑 | 收口后 |
+| `docs/PRD.md` | P4-Sn 状态（已交付）/NFR 读数/变更记录 | 收口 |
+| `ROADMAP.md` | S6 状态/P4-Sn DoD/下一个动作 | 收口 |
+| `docs/specs/P4-Sn.md` | 本文 §7 + §10 v3.6 | S6 开工前 |
+| `README.md` | P4-Sn 验证结果摘要 + 备份/恢复命令 + 当前事实 | 收口 |
+| `docs/enterprise/architecture.md` | §2.1/§9.3 最终读数与故障语义；§7.3 备份边界 | 收口 |
+| `docs/PROJECT_STRUCTURE.md` | 新增脚本/drill 落点 | 收口 |
+| `CHANGELOG.md` | `[m-p4]` 里程碑 | 收口 |
+| `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md` | before/after/演练/备份恢复/边界 | 收口（私有） |
 
 ### 7.5 最终报告
 
+- 落点：详细版 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`（私有，含原始读数与演练日志索引）；公开面只放 README/CHANGELOG 摘要。
 - 每项 before/after 表（用基线报告的格式）；未达标项如实写原因。
+- 故障 8 行逐项表、备份/恢复演练表（含 RPO/RTO 实测）、S1–S6 回退口径。
 - 明确写出：**“单机工程化、经过压测/演练验证；不是生产级高可用/SLA。”**
 - 不把“压力档一次通过”写成“已具备生产级高可用”。
+- 里程碑：`m-p4` tag（CHANGELOG 更新、提交/推送获同意后）。
 
 ---
 
@@ -539,11 +556,12 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 层 | 落点 |
 |---|---|
-| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S4 DuckDB 上限/闸门/超时/停机释放、S5 限流/进度 |
+| 后端离线 | `pytest`（1,842 例基线）；新增 S1 契约/缓存、S2 租约/reaper/幂等、S3 服务队列/远程客户端/降级、S4 DuckDB 上限/闸门/超时/停机释放、S5 限流/进度、S6 只读 `DATA_DIR` → 503 |
 | 集成 | `pytest -m integration`：真 PG/Redis/Qdrant；迁移/备份可选 |
 | 前端 | `pnpm test && pnpm typecheck && pnpm lint`；events 截断/窗口类型 |
-| 压测 | `docs/private/Pn-n/P4-Sn/harness/`（甲案已有；扩展到 events/RAG/2w） |
-| 故障 | `scripts/drill_*` 扩展；每次演练留日志 |
+| 压测 | `docs/private/Pn-n/P4-Sn/harness/`（甲案已有；扩展到 events 窗口/SSE 50–80/混合/2w） |
+| 故障 | `backend/scripts/drill_s6.py`；S2/S5 进程级探针复用；每次演练留 `logs/s6-drill/<ts>/` |
+| 备份脚本 | `bash -n` + 演练为准；可选 integration `pg_dump` + scratch `pg_restore` |
 | 覆盖率 | 继续按 CI `--cov-fail-under=88`；不因新代码降低门槛 |
 
 **闸门**：`.githooks/pre-commit` ruff；CI 三 job；PIT 用例（`as_of` 过滤）必须全绿；沙箱隔离不得静默降级。
@@ -566,6 +584,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-29 | v3.6 | S6 口径细化：§7.1 固定 A/B 双栈与 1w/2w 3 次中位，events 6/12/24 仅验契约（语料约 3 个月，不可区分）；§7.2 补 5 行新故障的方法与期望（cache 需 `CACHE_ENABLED=true`、PG 重启“>1 次/池槽”才修、Qdrant 明确不可用、fake 429/超时、磁盘只读 503 + 不造 ENOSPC），明确 `backend/scripts/drill_s6.py` 与 `logs/s6-drill/`；§7.3 定 `scripts/backup.sh` / `restore.sh` / launchd 安装器、`--target` 默认 `~/QuantSageBackups`、PG 两库、Qdrant 未变复用、data 硬链接快照、恢复默认 scratch；§7.4/§7.5 定报告落点与 `m-p4`。不改 S1–S5 行为。 |
 | 2026-10-28 | v3.5 | S5 按预测量与拍板修订：Go/No-Go 拆成「预测量（1–3 条）+ 实现后验收（第 4 条）」；内存口径写死为「2 API 进程树 + RAG + docker stats ≤18GB」，另判 available/swap；明确用 `uvicorn --workers`（0.54 的 worker 重启）与主实例锁重试；订正 MCP 为每次调用新建会话；`init_schema` 加跨进程串行；coord 定 6380/128MB/192m，降级 `floor(capacity/N)` 不全量 fail-closed；指标改自定义 TASKS collector + 死 pid 清理；进度选 `tasks.progress.cells` JSONB + 1s 轮询，不新增 `task_events` 表。实现并验收通过：限流 5/15、bars 1,699 req/s / p95 231ms、10×81 格 0 重复、停机重排仅 1 条结果。 |
 | 2026-10-27 | v3.4 | S4 按拍板修订：DuckDB `memory_limit` 明确为**每连接**上限，查询闸门改为无条件开启（初始 4），temp 目录逐连接唯一并清扫死 pid 残留；Docker 预算改为 PG 1.25g + `max_connections=120` + `shm_size`，Redis cache 640m / `maxmemory 512MB` / 关闭 RDB，**coord 移到 S5**；PG 业务池 5s、checkpointer 30s，worker 共用业务池（不为 worker 单开池）；worker 正常停机补 `release_task`（queued、attempts−1、取消收 cancelled），S2 的「stop() 不变」由本条取代；`prod.sh` 用 `QS_MODE=prod` 委派 `dev.sh`，补 15s drain 与 copytruncate 轮转；swap 验收改为按本次基线判增量。 |
 | 2026-10-27 | v3.3 | S3 按拍板修订：`/v1/embed` 出参补稀疏权重（hybrid/索引依赖）；过载改用 503 + `reason`（删除含义模糊的 `degraded?`）；补 `batch` 类与索引任务走服务；精排用单 worker + 信号量、排队计数只算等待中、不做抢占；降级原因落到 `RetrievedEvent.degraded_reason`，指标按服务/API 分工；鉴权在 token 为空时回环放行；嵌入用独立的 `RAG_EMBED_WAIT_SECONDS`（初始 5s），不套用精排短超时；交互/研究等待按 2026-10-27 实测调为 0.5s / 2.5s。 |

@@ -16,7 +16,7 @@
 
 把「平台首次可用时刻」（`available_at`）作为信息可见性的唯一闸门——回测时，Agent 与策略只能看到那个时点之前真正拿得到的信息。绝大多数「LLM + 量化」项目用抓取时间戳或无过滤地检索全量语料，回测结果在无意识地穿越未来；本项目把这条约束压进数据模型、检索与回测引擎，并把它做成可量化的对比。
 
-> **进度**：P1-Tn / P2-Mn / P3-En 全部交付并验收（`m-p1` / `m-p2` / `m-p3`）。浏览器内可走完一条完整链路——对话取证 → 写策略 → 回测 → 网格与过拟合检验 → 模拟盘 → 绩效研报 → 多 Agent 深度研究；企业级部分补齐了任务队列、多用户治理、数据工程、可靠性、风控、安全与可观测。逐段状态见 [ROADMAP.md](ROADMAP.md)，里程碑交付见 [CHANGELOG.md](CHANGELOG.md)。
+> **进度**：P1-Tn / P2-Mn / P3-En / P4-Sn 全部交付并验收（`m-p1` / `m-p2` / `m-p3` / `m-p4`；P4-Sn S1–S6 于 2026-10-29 收口）。浏览器内可走完一条完整链路——对话取证 → 写策略 → 回测 → 网格与过拟合检验 → 模拟盘 → 绩效研报 → 多 Agent 深度研究；企业级部分补齐了任务队列、多用户治理、数据工程、可靠性、风控、安全与可观测；P4-Sn 补了单机压测/故障演练/备份恢复。逐段状态见 [ROADMAP.md](ROADMAP.md)，里程碑交付见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -109,6 +109,20 @@ memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_M
 落 `tasks.progress.cells`，任意 worker 的 SSE 都能回放。回退：`API_WORKERS=1` +
 `RATE_LIMIT_SHARED=false`。
 
+**P4-Sn 收口（S6，2026-10-29）**：最终 HEAD 复测 2w bars c=300 **1,710 req/s / p95 280ms**、`/health` **11,599 req/s**（1w 864 / 5,784）；SSE 5–80 并发 0 错误；20 回测 queue p95 **2.4s**；RAG hybrid 交互 p95 **0.79s**、rerank c10 **2.97s**（8/10 按超时降级）；8 行故障演练通过（kill -9 worker/API、coord/cache、PG 重启、Qdrant 挂、LLM 429/超时、磁盘只读）；备份 4.6GB、恢复 **36.3s**。**结论：经过压测与故障演练验证的单机工程化方案，不是生产级高可用/SLA。**（原始读数与演练日志在私有 `docs/private/`，不入库。）
+
+**备份与恢复（S6，本地演练口径，不是 SLA）**：
+
+```bash
+bash scripts/backup.sh                         # PG 两库 + Qdrant snapshot + data/，默认 ~/QuantSageBackups
+bash scripts/backup.sh --target /Volumes/<盘>/QuantSageBackups   # 外置盘；未挂载会明确失败
+bash scripts/restore.sh --source 20261029 --pg-db quantsage_restore_20261029 \
+  --qdrant-collection cn_events_v1_restore_20261029 --data-target /tmp/qs-restore
+bash scripts/install_backup_job.sh             # 可选：launchd 每日 03:30（不会自动安装）
+```
+
+PG 用 `pg_dump -Fc`（`quantsage` + `langfuse`，排除测试库），Qdrant 用 collection snapshot（`embeddings.json` 未变则复用上一份），`data/` 用 `rsync --link-dest` 硬链接快照；保留 **7 日 + 4 周**。恢复默认进 scratch 目标（新库/新集合/临时目录），覆盖线上需 `--force`。RPO 24h / RTO ≤1h 是**本地演练口径**，不是 SLA；`.env`、`logs/`、Redis 不在备份范围。**备份含用户表（密码哈希）与业务数据：只放本机/受控外置盘，不进仓库、不上传公共云盘。**
+
 提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
 
 没有小石密钥也能跑通回测与前端——行情与事件已在本地落盘；只有「对话页调小石实时工具」这一步需要授权密钥。
@@ -124,9 +138,11 @@ cd frontend && pnpm test && pnpm typecheck && pnpm lint
 cd backend && uv run python scripts/build_deep_eval.py --limit 3   # 深研报 rubric（手动轨，真模型/真数据）
 ```
 
+> 本机 `.env` 若处于 S5 压力形态（`API_WORKERS=2` + `RATE_LIMIT_SHARED=true`），离线全量会因共享限流跨用例 429；先覆盖：`API_WORKERS=1 RATE_LIMIT_SHARED=false CACHE_ENABLED=false RAG_SERVICE_URL= uv run pytest`。CI 没有 `.env`，按默认值跑。
+
 CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + 两端的依赖审计**。集成那一行不在 CI 里——
 它要真容器、真密钥与真实行情语料（`data/` 不入库），所以**徽章变绿不等于全部测试通过**。
-覆盖率门槛是 **88%**（E7b 按当时 CI 基线 89.36% 定标；E9 收口时离线 **1797 passed**，2026-10-20；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
+覆盖率门槛是 **88%**（E7b 按当时 CI 基线 89.36% 定标；E9 收口时离线 **1797 passed**，2026-10-20；S6 收口时 **1,867 passed**，2026-10-29；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
 
 命令行跑一次回测、复现教程里的数字，命令见[示例策略教程](docs/tutorials/ma_cross.md#3-复现)。
 
