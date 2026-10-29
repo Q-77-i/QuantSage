@@ -574,7 +574,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - **macOS 资源隔离弱于 Linux**：Docker 有硬上限；原生 API/RAG 进程只有并发闸门/监控，没有 cgroup RSS 硬限。
 - **RAG 精排是设备串行**：单 MPS 进程，吞吐有上限；高并发靠降级/排队，不靠加进程。
 - **S5 是条件项**：单 worker 达标或双 worker 不划算时不启用；文档如实写。
-- **依赖审计例外（2026-10-27）**：LiteLLM 直到 1.106.4 都硬约束 `filelock<4.0`，而审计要求的修复版是 4.2.1，装不上。CI **仅**对 `CVE-2026-112940` / `CVE-2026-112913` / `CVE-2026-112907` 加 `--ignore-vuln`，其余审计照常；LiteLLM 放开 `filelock<4.0` 后删除例外并升级 `filelock>=4.2.1`。
+- **依赖审计例外（2026-10-27，2026-10-29 扩列）**：LiteLLM 1.106.6 仍硬约束 `filelock<4.0`，而审计要求的修复版是 4.2.1，装不上。CI **仅**对 filelock 的 `CVE-2026-112940` / `112913` / `112907` / `112908` / `112909` / `112910` / `112911` / `112912` / `112915` / `112935` / `112936` / `112938` / `112939` 加 `--ignore-vuln`，其余审计照常；`langgraph-sdk` 已升到 **0.4.10**（`CVE-2026-118667` 修复）。LiteLLM 放开 `filelock<4.0` 后删除例外并升级 `filelock>=4.2.1`。
 - **不做**：Redis Streams 全量、Worker 池、K8s、Qdrant 集群、多机 HA、Vault、Kafka/Celery、把 agent/backtest/report 拆服务。
 - **P4-Sn 后续愿景**（多租户/分布式/商业化）仍按 PRD 触发条件评估，不在本轮。
 
