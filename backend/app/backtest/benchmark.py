@@ -22,6 +22,8 @@ from datetime import date
 from pathlib import Path
 
 from app.backtest.metrics import EXCLUDE_ABS_CHANGE_PCT
+from app.core.config import get_settings
+from app.data import cache
 from app.data import duckdb_client as dc
 
 #: 基准类型标识。UI 与报告据此显示口径文案，**不显示成指数名**。
@@ -59,6 +61,26 @@ class MarketBenchmark:
 
 
 def _daily_rows(
+    start: date, end: date, adjust: str, data_dir: Path | None
+) -> list[dict[str, object]]:
+    """全市场等权日表：按 `(start, end, adjust, 数据代际)` 缓存（P4-S9）。
+
+    20 个同窗回测实测 19 次命中，省掉每任务 35.2ms 的分组全扫；不同窗口各存一份。
+    `initial_cash` 不进键（它只缩放 levels，不改日表）。键里的代际由 `cache.through`
+    统一加——失效只认清单换代，不靠「ETL 后记得清」。`BT_DATA_CACHE_ENABLED=false`
+    时直查，作为一键回滚。
+    """
+    if not get_settings().bt_data_cache_enabled:
+        return _query_daily_rows(start, end, adjust, data_dir)
+    return cache.through(
+        "bt.market_daily",
+        (start, end, adjust),
+        lambda: _query_daily_rows(start, end, adjust, data_dir),
+        data_dir=data_dir,
+    )
+
+
+def _query_daily_rows(
     start: date, end: date, adjust: str, data_dir: Path | None
 ) -> list[dict[str, object]]:
     con = dc.connect(data_dir)

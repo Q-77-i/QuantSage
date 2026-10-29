@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 900
     cache_key_prefix: str = "qs:cache:v1"
 
+    # ── 回测数据层热点缓存（P4-S9）──
+    # ST 名单 / 全市场等权日表 / 窗口指纹三处派生结果的开关（默认开）。与 `cache_enabled`
+    # 分开：后者只管 L2 Redis；这一个决定回测热路径要不要记派生结果（L1 仍照用）。
+    # 失效只认数据代际 + 字典/分片文件戳，不靠「ETL 之后记得清」；false = 三处全绕过。
+    bt_data_cache_enabled: bool = True
+
     # ── 资源上限（S4）──
     # PG：API 业务池 5s、checkpointer 30s。worker 与 API 同进程、共用业务池，
     # 它的 PG 语句都是取件/心跳/进度/终态（亚秒级），所以不单开 worker 池。
@@ -268,6 +274,14 @@ class Settings(BaseSettings):
     # false = 只保留 `SKIP LOCKED`（仍修重复取件）：不设租约、不心跳、不跑周期 reaper，
     # 启动扫尾退回旧的 `failed/interrupted` 语义。
     task_lease_enabled: bool = True
+    # ── 任务 worker 池（P4-S7）：单进程内按 kind 分道，不是多进程 ──
+    # 总开关 false = 回到今天的一个 `serve(db)`（无 kinds 过滤），作为一键回滚。
+    # 默认 3+1+1：回测排队 p95 从 S6 的 2.4s 往 1s 压；grid/batch 各 1 道，
+    # 避免长网格占满所有道。未注册/未配置的 kind 在 worker_slots() 里默认 1 道。
+    task_worker_pool_enabled: bool = True
+    task_workers_backtest: int = 3
+    task_workers_grid: int = 1
+    task_workers_batch: int = 1
     # 模拟盘推进/创建会跑整段 replay（用户策略还要 spawn 子进程），单独一桶
     rate_limit_paper: int = 60
     rate_limit_paper_window: float = 60.0

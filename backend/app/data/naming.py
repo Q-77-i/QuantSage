@@ -307,6 +307,21 @@ def st_symbols(rows: Iterable[NameRow]) -> set[str]:
     return {symbol for symbol, name in primary_names(rows).items() if is_st_name(name)}
 
 
+def cached_st_symbols(data_dir: Path | None = None) -> set[str]:
+    """ST 名单，复用 `cached_primary_names` 的**字典文件戳 + 数据代际**缓存。
+
+    `_limit_bands` 每个任务都要判一次 ST，直接 `load_dictionary` 实测 21.5ms/任务
+    （P4-S9 门禁）。字典是派生物、按文件戳失效，缓存它不改变 ST 判定与 PIT 语义。
+    `BT_DATA_CACHE_ENABLED=false` 时直读字典，作为一键回滚。
+    """
+    from app.backtest.a_share_rules import is_st_name
+    from app.core.config import get_settings
+
+    if not get_settings().bt_data_cache_enabled:
+        return st_symbols(load_dictionary(data_dir))
+    return {symbol for symbol, name in cached_primary_names(data_dir).items() if is_st_name(name)}
+
+
 __all__ = [
     "DICT_FILE",
     "DICT_SUBDIR",
@@ -314,6 +329,7 @@ __all__ = [
     "build_from_events",
     "build_rows",
     "cached_primary_names",
+    "cached_st_symbols",
     "dictionary_path",
     "load_dictionary",
     "name_as_of",

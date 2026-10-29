@@ -114,6 +114,30 @@ def test_successful_task_saves_run_and_marks_done(
     assert record["request"]["pit_mode"] == "pit"
 
 
+def test_finish_task_merges_full_progress_in_one_write(signed_in: FakeDatabase) -> None:
+    """S9：成功路径把 done=total 并进 finish 的那次 UPDATE，`cells` 原样保留。"""
+    task_id = queue(signed_in, frozen_request())
+
+    async def scenario() -> None:
+        claimed = await signed_in.claim_next_task(WID, lease_seconds=60)
+        assert claimed is not None
+        signed_in.tasks[task_id]["progress"] = {"done": 1, "total": 3, "cells": [{"i": 0}]}
+        await signed_in.finish_task(
+            task_id,
+            worker_id=WID,
+            result={"run_id": "r"},
+            progress_done=3,
+            progress_total=3,
+        )
+
+    asyncio.run(scenario())
+    assert signed_in.tasks[task_id]["progress"] == {
+        "done": 3,
+        "total": 3,
+        "cells": [{"i": 0}],
+    }
+
+
 def test_run_carries_data_digest(signed_in: FakeDatabase, data_dir: Path) -> None:
     """E7d：执行体把**窗口数据指纹**同时落进记录列与报告 meta——两处必须同一个值。
 
@@ -555,3 +579,60 @@ def test_user_strategy_task_uses_frozen_source(
     assert record["strategy_id"] == request["strategy_id"]
     assert record["report"]["meta"]["strategy_kind"] == "user"
     assert record["report"]["meta"]["strategy_name"] == "我的双均线"
+
+
+# ── S7 worker 池 ────────────────────────────────────────────────────────────
+
+
+def test_worker_slots_default_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", True)
+    monkeypatch.setattr(settings, "task_workers_backtest", 3)
+    monkeypatch.setattr(settings, "task_workers_grid", 1)
+    monkeypatch.setattr(settings, "task_workers_batch", 1)
+    assert worker.worker_slots() == [("backtest", 3), ("grid", 1), ("batch", 1)]
+
+
+def test_worker_slots_disabled_is_single_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", False)
+    assert worker.worker_slots() == [(None, 1)]
+
+
+def test_worker_slots_zero_falls_back_to_single_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", True)
+    monkeypatch.setattr(settings, "task_workers_backtest", 0)
+    monkeypatch.setattr(settings, "task_workers_grid", 0)
+    monkeypatch.setattr(settings, "task_workers_batch", 0)
+    assert worker.worker_slots() == [(None, 1)]
+
+
+def test_worker_slots_unknown_kind_gets_one_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "task_worker_pool_enabled", True)
+    monkeypatch.setattr(worker, "EXECUTORS", {**worker.EXECUTORS, "future": object()})
+    assert ("future", 1) in worker.worker_slots()
+
+
+def test_claim_next_task_filters_kinds(signed_in: FakeDatabase) -> None:
+    """S7：按 kind 取件；`None` 仍取任何 kind。"""
+    grid_id = queue(signed_in, {}, kind="grid")
+    backtest_id = queue(signed_in, frozen_request())
+
+    grid = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60, kinds=("grid",)))
+    assert grid is not None and str(grid["id"]) == grid_id
+
+    backtest = asyncio.run(
+        signed_in.claim_next_task(WID, lease_seconds=60, kinds=("backtest",))
+    )
+    assert backtest is not None and str(backtest["id"]) == backtest_id
+
+    assert (
+        asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60, kinds=("grid",)))
+        is None
+    )

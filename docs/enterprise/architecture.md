@@ -364,6 +364,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - 任务 worker / 调度器仍单实例（advisory lock）；限流走 redis-coord 共享令牌桶（coord 挂了降级进程内 `floor(capacity/N)`）；指标用 Prometheus 多进程聚合；跨进程进度以 `tasks.progress.cells` + DB 轮询为准
 - 熔断与 DuckDB / 模拟盘并发闸门仍按进程计算；主实例退出后不做运行中晋升，uvicorn 补进程后重新竞选
 - **S6 最终复测（2026-10-29）**：2w bars c=300 **1,710 req/s / p95 280ms**、`/health` **11,599 req/s**；1w 864 / 5,784；SSE 5–80 并发 0 错误；20 回测 queue p95 2.4s；8 行故障演练通过。p95 比 S5 的 231ms 高、仍在 300ms 门槛内，差异按系统负载噪声如实记录
+- **S7 / S9（2026-10-30）**：task worker 单进程内按 kind 池化（backtest×3 + grid/batch 各 1）；数据层热点缓存（ST 名单 / 等权基准日表 / 窗口指纹，可由环境开关一键回退）后 20 回测 queue p95 **503ms**、run p50 86ms；2w bars 1,660/240ms 不回归
 - 真要多副本/HA，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/后台角色拆分仍不排期
 
 ### 9.4 其它边界

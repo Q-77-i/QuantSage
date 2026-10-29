@@ -160,7 +160,7 @@ def _limit_bands(
     raw 取数**不带 start**：窗口第一根 bar 的前收在窗口之外，带了 start 就算不出来。
     反正单标的整段历史只有千余行，多取一点的代价远小于「第一根永远没有涨跌停价」。
     """
-    is_st = config.symbol in naming.st_symbols(naming.load_dictionary(config.data_dir))
+    is_st = config.symbol in naming.cached_st_symbols(config.data_dir)
     pct = limit_pct(config.symbol, is_st=is_st)
     if pct is None:
         return {}, RuleStatus("skipped", "unknown_board", is_st, None)

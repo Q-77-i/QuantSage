@@ -418,3 +418,59 @@ def test_cached_primary_names_is_empty_without_a_dictionary(tmp_path) -> None:
     cache.clear_local()
     assert naming.cached_primary_names(tmp_path) == {}
     cache.clear_local()
+
+
+def test_cached_st_symbols_reads_disk_once_and_invalidates(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S9：ST 名单复用 `cached_primary_names` 的字典戳缓存；重写字典 → 换键重读。"""
+    from app.data import cache, naming
+
+    cache.clear_local()
+    rows = [
+        NameRow("000004", "ST国华", 9, ts("2026-07-10 08:00:00"), ts("2026-09-30 08:00:00")),
+        NameRow("600519", "贵州茅台", 9, ts("2026-07-10 08:00:00"), ts("2026-09-30 08:00:00")),
+    ]
+    loads: list[int] = []
+
+    def fake_load(_data_dir=None):
+        loads.append(1)
+        # 第二次读盘时字典里已没有 ST——用来证明失效后真的重读了文件
+        return rows if len(loads) == 1 else rows[1:]
+
+    monkeypatch.setattr(naming, "load_dictionary", fake_load)
+
+    assert naming.cached_st_symbols(tmp_path) == {"000004"}
+    assert naming.cached_st_symbols(tmp_path) == {"000004"}
+    assert len(loads) == 1
+
+    naming.write_dictionary(rows[:1], tmp_path)  # 文件戳变 ⇒ 换键
+    assert naming.cached_st_symbols(tmp_path) == set()
+    assert len(loads) == 2
+    cache.clear_local()
+
+
+def test_cached_st_symbols_bypasses_the_cache_when_disabled(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`BT_DATA_CACHE_ENABLED=false` ⇒ 每次直读字典，不经过缓存层。"""
+    from app.core.config import get_settings
+    from app.data import cache, naming
+
+    cache.clear_local()
+    rows = [
+        NameRow("000004", "ST国华", 9, ts("2026-07-10 08:00:00"), ts("2026-09-30 08:00:00"))
+    ]
+    loads: list[int] = []
+
+    def fake_load(_data_dir=None):
+        loads.append(1)
+        return rows
+
+    monkeypatch.setattr(naming, "load_dictionary", fake_load)
+    monkeypatch.setattr(get_settings(), "bt_data_cache_enabled", False)
+
+    assert naming.cached_st_symbols(tmp_path) == {"000004"}
+    assert naming.cached_st_symbols(tmp_path) == {"000004"}
+    assert len(loads) == 2
+    cache.clear_local()

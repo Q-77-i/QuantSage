@@ -1,11 +1,12 @@
-"""任务 worker（P3-E1a）：单协程、轮询任务表、按 `kind` 派发。
+"""任务 worker（P3-E1a）：轮询任务表、按 `kind` 派发；P4-S7 起单进程内按 kind 多协程。
 
 **队列实体就是 `tasks` 表**（SPEC §2.2）：不引 `asyncio.Queue`——它绑事件循环，而本仓
 离线用例是模块级 `TestClient`（每请求一个 loop），跨 loop 的队列在那种用法下直接坏掉。
 表即队列还顺带把「重启续跑」变成零代码：worker 起来接着取 `queued` 行即可。
 
-单 worker 串行（PRD 定）。E1a 只有亚秒级的单次回测，排队延迟可忽略；E1b 迁入网格后
-才有「满格网格挡住单次回测」的代价，届时再评估 worker 数可配。
+S1–S6 是单 worker 串行（PRD 定）；E1b 迁入网格后「满格网格挡住单次回测」的代价在 S6
+实测为 20 回测 queue p95 2.4s。P4-S7 在**同一个持锁进程**里按 kind 起多条 `serve()`，
+不是多进程 worker 池；`TASK_WORKER_POOL_ENABLED=false` 一键回单循环。
 
 测试形态：离线用例**不起常驻循环**，直接 `asyncio.run(run_once(db))` 驱动（见 §10 E1）。
 """
@@ -170,14 +171,22 @@ async def _reaper_loop(db: Any) -> None:
             log.warning("reaper 回收 running 任务：%s", counts)
 
 
-async def run_once(db: Any, *, worker_id: str = WORKER_ID) -> bool:
+async def run_once(
+    db: Any,
+    *,
+    worker_id: str = WORKER_ID,
+    kinds: tuple[str, ...] | None = None,
+) -> bool:
     """取一件、跑一件；没有可取的返 `False`。
 
     取件是原子的（`FOR UPDATE SKIP LOCKED`）；执行期间心跳协程续租；可重排的瞬时错误
-    按 `attempts < max_attempts` 回队列（SPEC §3.3/§3.4）。
+    按 `attempts < max_attempts` 回队列（SPEC §3.3/§3.4）。`kinds` 透传给
+    `claim_next_task`（P4-S7 的按 kind 池化；`None` = 任何 kind）。
     """
     lease_seconds = _lease_seconds()
-    task = await db.claim_next_task(worker_id, lease_seconds=lease_seconds)
+    task = await db.claim_next_task(
+        worker_id, lease_seconds=lease_seconds, kinds=kinds
+    )
     if task is None:
         return False
 
@@ -287,9 +296,14 @@ async def run_once(db: Any, *, worker_id: str = WORKER_ID) -> bool:
             ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
             return True
 
-        # 成功 ⇒ 进度满格。网格逐格推进，这里是收尾那一下（invariant：done 的必满格）
-        await progress(total)
-        await db.finish_task(task_id, worker_id=worker_id, result=result)
+        # 成功 ⇒ 进度满格 + 终态一次写完（P4-S9；invariant：done 的必满格）
+        await db.finish_task(
+            task_id,
+            worker_id=worker_id,
+            result=result,
+            progress_done=total,
+            progress_total=total,
+        )
         # **收尾帧必须广播**：在线订阅者靠它收流（没有它，页面会一直停在「运行中」——
         # 重连那条路是 `stream._replay` 从库里拼的，所以只有「在线跑完」才暴露这个缺口）
         ctx.publish("done", result)
@@ -307,12 +321,21 @@ async def run_once(db: Any, *, worker_id: str = WORKER_ID) -> bool:
         bus.release(task_id)
 
 
-async def serve(db: Any, *, interval: float = POLL_SECONDS) -> None:
+async def serve(
+    db: Any,
+    *,
+    interval: float = POLL_SECONDS,
+    kinds: tuple[str, ...] | None = None,
+) -> None:
     """常驻取件循环。取件出错**不退出**——一次数据库抖动不该让队列停摆到重启。"""
-    log.info("任务 worker 就绪（取件间隔 %.2fs）", interval)
+    log.info(
+        "任务 worker 就绪（取件间隔 %.2fs，kinds=%s）",
+        interval,
+        "any" if kinds is None else ",".join(kinds),
+    )
     while True:
         try:
-            worked = await run_once(db)
+            worked = await run_once(db, kinds=kinds)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -320,6 +343,48 @@ async def serve(db: Any, *, interval: float = POLL_SECONDS) -> None:
             worked = False
         if not worked:
             await asyncio.sleep(interval)
+
+
+def worker_slots() -> list[tuple[str | None, int]]:
+    """S7 池化的道数：`(kind, 道数)`；`(None, 1)` = 单循环所有 kind。
+
+    纯函数（只读 settings / EXECUTORS），便于离线用例直接断言，不用起常驻循环。
+    未注册的 kind 不配；`EXECUTORS` 里新增但配置没写的 kind 默认 1 道；全 0 回退单循环。
+    """
+    settings = get_settings()
+    if not settings.task_worker_pool_enabled:
+        return [(None, 1)]
+    counts: dict[str, int] = {
+        "backtest": settings.task_workers_backtest,
+        "grid": settings.task_workers_grid,
+        "batch": settings.task_workers_batch,
+    }
+    known = set(EXECUTORS)
+    for kind in sorted(known - set(counts)):
+        counts[kind] = 1
+        log.warning("任务 kind %r 未配置道数，默认 1 道", kind)
+    for kind in list(counts):
+        if kind not in known:
+            log.warning("配置了未注册的任务 kind %r，忽略", kind)
+            counts.pop(kind)
+    slots = [(kind, count) for kind, count in counts.items() if count > 0]
+    if not slots:
+        log.warning("TASK_WORKERS_* 全为 0，回退单循环（所有 kind）")
+        return [(None, 1)]
+    return slots
+
+
+def _serve_coros(db: Any) -> list[Any]:
+    slots = worker_slots()
+    log.info(
+        "任务 worker 道数：%s（单进程内多协程）",
+        "、".join(f"{kind or 'all'}×{count}" for kind, count in slots),
+    )
+    return [
+        serve(db, kinds=None if kind is None else (kind,))
+        for kind, count in slots
+        for _ in range(count)
+    ]
 
 
 async def _acquire_instance_lock(db: Any) -> Any:
@@ -402,7 +467,7 @@ async def start(db: Any) -> WorkerHandle | None:
             log.warning("任务扫尾：%d 条因服务重启被标为 failed/interrupted", interrupted)
 
     async def run_worker() -> None:
-        coros: list[Any] = [serve(db)]
+        coros: list[Any] = _serve_coros(db)
         if lease_seconds > 0:
             coros.append(_reaper_loop(db))
         await asyncio.gather(*coros)

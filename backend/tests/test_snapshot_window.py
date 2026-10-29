@@ -140,3 +140,62 @@ def test_empty_window_is_stable_not_error(tmp_path: Path) -> None:
     kwargs = {"start": date(2026, 1, 1), "end": date(2026, 3, 1), "adjust": "qfq"}
 
     assert window_digest(base, **kwargs) == window_digest(base, **kwargs)
+
+
+# ── P4-S9：窗口指纹的缓存 ───────────────────────────────────────────────────
+
+
+def test_digest_is_cached_and_invalidated_by_window_shards(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """S9：同窗口同分片戳命中；窗口内分片重写（文件戳变）⇒ 换键重算。"""
+    from app.data import cache
+    from app.report import snapshot
+
+    cache.clear_local()
+    base = make_data_dir(tmp_path, years=(2026,), event_days=("2026-02-01",))
+    kwargs = {"start": date(2026, 1, 1), "end": date(2026, 3, 1), "adjust": "qfq"}
+    calls: list[int] = []
+    real = snapshot.window_snapshot
+
+    def counting(*args, **kw):
+        calls.append(1)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(snapshot, "window_snapshot", counting)
+
+    first = window_digest(base, **kwargs)
+    assert window_digest(base, **kwargs) == first
+    assert len(calls) == 1
+
+    table = pa.table({"event_id": ["x"], "title": ["改过了"]}, schema=EVENTS_SCHEMA)
+    pq.write_table(table, base / "events" / "cn-events_2026-02-01.parquet")
+    assert window_digest(base, **kwargs) != first
+    assert len(calls) == 2
+    cache.clear_local()
+
+
+def test_digest_bypasses_the_cache_when_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`BT_DATA_CACHE_ENABLED=false` ⇒ 每次都重算指纹。"""
+    from app.core.config import get_settings
+    from app.data import cache
+    from app.report import snapshot
+
+    cache.clear_local()
+    base = make_data_dir(tmp_path, years=(2026,), event_days=())
+    kwargs = {"start": date(2026, 1, 1), "end": date(2026, 3, 1), "adjust": "qfq"}
+    calls: list[int] = []
+    real = snapshot.window_snapshot
+
+    def counting(*args, **kw):
+        calls.append(1)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(snapshot, "window_snapshot", counting)
+    monkeypatch.setattr(get_settings(), "bt_data_cache_enabled", False)
+
+    assert window_digest(base, **kwargs) == window_digest(base, **kwargs)
+    assert len(calls) == 2
+    cache.clear_local()
