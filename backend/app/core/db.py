@@ -74,6 +74,8 @@ async def open_pool(
         min_size=min_size,
         max_size=max_size,
         open=False,
+        # S6：PG 重启后池里的空闲连接已被掐断；取件时校验并重连，避免第一个请求 500。
+        check=AsyncConnectionPool.check_connection,
         kwargs=kwargs,
     )
     await pool.open(wait=True, timeout=10)

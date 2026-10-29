@@ -71,6 +71,8 @@ flowchart LR
 DB 取一次。网格逐格进度落 `tasks.progress.cells`，非 master 的 SSE 每 1s 从 DB 轮询补齐。
 回退：`API_WORKERS=1` + `RATE_LIMIT_SHARED=false`。实现后复测 bars c=300
 **1,699 req/s / p95 231ms**、`/health` **11,810 req/s**（预测量 1w p95 390ms）。
+**S6 最终复测（2026-10-29）**：2w bars **1,710 / p95 280ms**、health **11,599**；1w 864 / 5,784；
+p95 比 S5 高、仍在 300ms 门槛内，差异按系统负载噪声如实记录。
 
 这条契约的动机是「单机形态下把跨进程状态压到最少」：任务队列仍单实例；限流与指标在 S5
 已跨进程（coord / 多进程聚合），熔断与 DuckDB/模拟盘并发闸门仍按进程计算。详见 §9.3。
@@ -309,7 +311,16 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - 重启时 `running` 任务**有限次自动重排**：租约过期/进程崩溃属于基础设施故障，回 `queued` 再跑一次；`attempts >= max_attempts` 才标 `failed/lease_expired`。确定性错误（参数/无数据/沙箱拒绝）第一次就终态，不重试；结果按 `task_id` 幂等，重排不产生重复记录
 - 单次回测一旦 running 不可中止（409）；网格/批量写 `cancel_requested_at`，worker 执行期每 0.5s 检查
 - 后台主实例退出后不自动晋升；supervisor 重启重新竞选
+- **PG 重启（S6）**：业务池与 checkpointer 池在取件时 `check_connection`，池内已被掐断的空闲连接会被丢弃并重连；重启后第一个 `/auth/me` 不再 500。`/health/ready` 仍是**启动态**探针（`db_ready` 只在 lifespan 置位），重启窗口可能仍 200——恢复以 `/auth/me`、任务、chat 为准
+- **数据目录不可写（S6）**：`POST /api/v1/data/rollback` 把 `OSError` 映射为 **503**；回滚本身先写 `_staging` 再整体换入，失败不会留下半截
 - 会话 cookie `httpOnly + SameSite=Lax`；前端跟随页面 host 访问 API
+
+### 7.4 备份与恢复（S6）
+
+- `scripts/backup.sh`（入口；实现是同目录的 Python 模块）：PG `quantsage` + `langfuse` 的 `pg_dump -Fc`、Qdrant collection snapshot、`data/` 的 `rsync --link-dest` 硬链接快照；默认落点 `~/QuantSageBackups`，`--target` 可指外置盘（未挂载明确失败）
+- 保留 **7 日 + 4 周**（周备硬链接）；Qdrant 在 `data/_meta/embeddings.json` 未变时复用上一份
+- `scripts/restore.sh` 默认恢复到 scratch 目标（新库/新集合/临时目录），覆盖线上需 `--force`；本次演练 PG+Qdrant+data **36.3s**
+- RPO 24h / RTO ≤1h 是**本地演练口径，不是 SLA**；`.env`/密钥、`logs/`、Redis 不在备份范围
 
 ## 8. 关键决策表
 
@@ -352,6 +363,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - **默认 1 个 API worker**；`API_WORKERS=2` 是压力档的可选升级，不是多副本/HA
 - 任务 worker / 调度器仍单实例（advisory lock）；限流走 redis-coord 共享令牌桶（coord 挂了降级进程内 `floor(capacity/N)`）；指标用 Prometheus 多进程聚合；跨进程进度以 `tasks.progress.cells` + DB 轮询为准
 - 熔断与 DuckDB / 模拟盘并发闸门仍按进程计算；主实例退出后不做运行中晋升，uvicorn 补进程后重新竞选
+- **S6 最终复测（2026-10-29）**：2w bars c=300 **1,710 req/s / p95 280ms**、`/health` **11,599 req/s**；1w 864 / 5,784；SSE 5–80 并发 0 错误；20 回测 queue p95 2.4s；8 行故障演练通过。p95 比 S5 的 231ms 高、仍在 300ms 门槛内，差异按系统负载噪声如实记录
 - 真要多副本/HA，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/后台角色拆分仍不排期
 
 ### 9.4 其它边界

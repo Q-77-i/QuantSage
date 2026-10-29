@@ -40,6 +40,8 @@ async def open_checkpointer(
         min_size=min_size,
         max_size=max_size,
         open=False,
+        # S6：与业务池同口径——PG 重启后丢弃池内已断的空闲连接，不让首问 500。
+        check=AsyncConnectionPool.check_connection,
         kwargs=kwargs,
     )
     await pool.open(wait=True, timeout=10)

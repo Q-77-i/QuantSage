@@ -46,10 +46,12 @@ env:
   XIAOSHI_CLI_COMMAND: /bin/true
   DEEPSEEK_API_KEY: ci-dummy
 
+# runner 镜像钉 LTS：2026-10-29 `ubuntu-latest` 漂到 26.04（resolute），同一份代码在
+# 该镜像上 bwrap 执行 `.venv/bin/python` 报 ENOENT（24.04/noble 绿）；先钉 noble，升级另开。
 jobs:
   backend:
     name: 后端 · ruff + pytest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: backend
@@ -96,7 +98,7 @@ jobs:
 
   frontend:
     name: 前端 · lint + typecheck + test + build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -119,7 +121,7 @@ jobs:
 
   audit:
     name: 供应链审计
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -140,10 +142,22 @@ jobs:
           # 而审计要求的修复版是 4.2.1，装不上。只忽略这 3 条，其余照常；
           # LiteLLM 放开 filelock<4.0 后删除这三行并升级 filelock。
           uv export --no-hashes --no-emit-project --format requirements-txt > "$RUNNER_TEMP/req.txt"
+          # 2026-10-29 新增 10 条 filelock CVE（LiteLLM 1.106.6 仍 filelock<4.0）；
+          # 与上面三条同属一个窄口径例外，LiteLLM 放开后一起删。
           uvx pip-audit -r "$RUNNER_TEMP/req.txt" --strict \
             --ignore-vuln CVE-2026-112940 \
             --ignore-vuln CVE-2026-112913 \
-            --ignore-vuln CVE-2026-112907
+            --ignore-vuln CVE-2026-112907 \
+            --ignore-vuln CVE-2026-112908 \
+            --ignore-vuln CVE-2026-112909 \
+            --ignore-vuln CVE-2026-112910 \
+            --ignore-vuln CVE-2026-112911 \
+            --ignore-vuln CVE-2026-112912 \
+            --ignore-vuln CVE-2026-112915 \
+            --ignore-vuln CVE-2026-112935 \
+            --ignore-vuln CVE-2026-112936 \
+            --ignore-vuln CVE-2026-112938 \
+            --ignore-vuln CVE-2026-112939
       # 例外清单在 `frontend/pnpm-workspace.yaml` 的 `auditConfig.ignoreGhsas` 里（目前只有
       # `braces` 一条：**上游无补丁可升**，路径是 shadcn CLI 的构建期 glob 工具链、运行时不加载
       # ——SPEC §8.4 已如实记录，这里不假装已解决）。**例外入库而不是写在命令里**：跟着代码
