@@ -416,15 +416,35 @@ class TasksMixin:
         )
 
     async def finish_task(
-        self, task_id: str, *, worker_id: str, result: dict[str, Any]
+        self,
+        task_id: str,
+        *,
+        worker_id: str,
+        result: dict[str, Any],
+        progress_done: int | None = None,
+        progress_total: int | None = None,
     ) -> None:
         """标完成。`status='running' AND worker_id=%s` 是栅栏：被回收标成 `failed` 的行、
-        或被新 worker 重新取件的行，都不该被迟到的完成覆盖（SPEC §3.3）。"""
+        或被新 worker 重新取件的行，都不该被迟到的完成覆盖（SPEC §3.3）。
+
+        P4-S9：给出 `progress_done` 时把「进度满格」并进同一次 UPDATE（`progress || {...}`
+        保留 `cells`），成功路径因此少一次独立 UPDATE；不给则保持旧的纯终态写法。
+        """
+        if progress_done is None:
+            await self._exec(
+                "UPDATE tasks SET status = 'done', result = %s, finished_at = now(), "
+                "updated_at = now() WHERE id = %s::uuid AND status = 'running' "
+                "AND worker_id = %s",
+                (Jsonb(result), task_id, worker_id),
+            )
+            return
+        total = progress_done if progress_total is None else progress_total
         await self._exec(
             "UPDATE tasks SET status = 'done', result = %s, finished_at = now(), "
-            "updated_at = now() WHERE id = %s::uuid AND status = 'running' "
-            "AND worker_id = %s",
-            (Jsonb(result), task_id, worker_id),
+            "updated_at = now(), "
+            "progress = progress || jsonb_build_object('done', %s::int, 'total', %s::int) "
+            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
+            (Jsonb(result), progress_done, total, task_id, worker_id),
         )
 
     async def fail_task(

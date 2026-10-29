@@ -111,6 +111,8 @@ memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_M
 
 **P4-Sn 收口（S6，2026-10-29）**：最终 HEAD 复测 2w bars c=300 **1,710 req/s / p95 280ms**、`/health` **11,599 req/s**（1w 864 / 5,784）；SSE 5–80 并发 0 错误；20 回测 queue p95 **2.4s**；RAG hybrid 交互 p95 **0.79s**、rerank c10 **2.97s**（8/10 按超时降级）；8 行故障演练通过（kill -9 worker/API、coord/cache、PG 重启、Qdrant 挂、LLM 429/超时、磁盘只读）；备份 4.6GB、恢复 **36.3s**。**结论：经过压测与故障演练验证的单机工程化方案，不是生产级高可用/SLA。**（原始读数与演练日志在私有 `docs/private/`，不入库。）
 
+**P4-S7 / S9（2026-10-30）**：task worker 单进程内按 kind 池化（backtest×3 + grid/batch 各 1，`TASK_WORKER_POOL_ENABLED=false` 回退）；RAG 合批经原型门禁否决，按 A 不做。数据层热点缓存（ST 名单 / 全市场等权日表 / 窗口指纹，`BT_DATA_CACHE_ENABLED=false` 回退）：20 回测 queue p95 **2.4s → 1,312ms → 503ms**、run p50 **86ms**；2w bars c=300 **1,660 req/s / p95 240ms** 不回归；metrics / `data_digest` 逐键相等。
+
 **备份与恢复（S6，本地演练口径，不是 SLA）**：
 
 ```bash

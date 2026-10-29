@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 900
     cache_key_prefix: str = "qs:cache:v1"
 
+    # ── 回测数据层热点缓存（P4-S9）──
+    # ST 名单 / 全市场等权日表 / 窗口指纹三处派生结果的开关（默认开）。与 `cache_enabled`
+    # 分开：后者只管 L2 Redis；这一个决定回测热路径要不要记派生结果（L1 仍照用）。
+    # 失效只认数据代际 + 字典/分片文件戳，不靠「ETL 之后记得清」；false = 三处全绕过。
+    bt_data_cache_enabled: bool = True
+
     # ── 资源上限（S4）──
     # PG：API 业务池 5s、checkpointer 30s。worker 与 API 同进程、共用业务池，
     # 它的 PG 语句都是取件/心跳/进度/终态（亚秒级），所以不单开 worker 池。

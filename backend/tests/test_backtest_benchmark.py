@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -13,9 +14,17 @@ import pytest
 from app.backtest.benchmark import MARKET_KIND, market_benchmark
 from app.backtest.engine import BacktestConfig
 from app.backtest.report import build_report
+from app.report.snapshot import window_digest
 from tests.conftest import write_bars_parquet, write_events_parquet
 
 DAYS = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+
+
+def write_bars_meta(root, marker: str) -> None:  # noqa: ANN001
+    """换一份 `_meta/bars.json`（数据代际的原料）——S9 缓存只认代际/文件戳。"""
+    meta = root / "_meta"
+    meta.mkdir(exist_ok=True)
+    (meta / "bars.json").write_text(json.dumps({"marker": marker}), encoding="utf-8")
 
 
 def market_dir(tmp_path, rows_by_symbol: dict[str, list[float | None]]):  # noqa: ANN001, ANN201
@@ -126,3 +135,71 @@ def test_report_overlays_the_market_curve(tmp_path) -> None:  # noqa: ANN001
     assert bench["excluded"] == 0
     assert bench["avg_samples"] == 1
     assert "指数" in bench["note"]  # 口径自述必须点明「不是指数」
+
+
+# ── P4-S9：全市场等权日表的缓存 ─────────────────────────────────────────────
+
+
+def test_daily_rows_follow_the_data_generation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # noqa: ANN001
+    """S9：日表按 `(start, end, adjust, 代际)` 缓存；清单换代才重算。"""
+    from app.data import cache
+
+    cache.clear_local()
+    root = market_dir(tmp_path, {"600000": [1.0, 1.0, 1.0]})
+    write_bars_meta(root, "a")
+    before = market_benchmark(DAYS, 100.0, data_dir=root).total_return
+
+    # 改行情、不换清单 ⇒ 仍命中原代际的日表（失效只认代际/文件戳，不靠「记得清」）
+    market_dir(tmp_path, {"600000": [2.0, 2.0, 2.0]})
+    assert market_benchmark(DAYS, 100.0, data_dir=root).total_return == before
+
+    # 清单换代 ⇒ 换键重算
+    write_bars_meta(root, "b-generation")
+    assert market_benchmark(DAYS, 100.0, data_dir=root).total_return != before
+    cache.clear_local()
+
+
+def test_bt_data_cache_switch_bypasses_the_daily_rows_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # noqa: ANN001
+    """`BT_DATA_CACHE_ENABLED=false` ⇒ 直查，不读同代际的旧日表。"""
+    from app.core.config import get_settings
+    from app.data import cache
+
+    cache.clear_local()
+    root = market_dir(tmp_path, {"600000": [1.0, 1.0, 1.0]})
+    write_bars_meta(root, "a")
+    before = market_benchmark(DAYS, 100.0, data_dir=root).total_return
+
+    market_dir(tmp_path, {"600000": [2.0, 2.0, 2.0]})  # 不换清单
+    monkeypatch.setattr(get_settings(), "bt_data_cache_enabled", False)
+    assert market_benchmark(DAYS, 100.0, data_dir=root).total_return != before
+    cache.clear_local()
+
+
+def test_report_is_identical_with_and_without_the_data_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # noqa: ANN001
+    """S9 黄金对照：缓存开/关的同一份回测，metrics / digest / 净值逐键相等。"""
+    from app.core.config import get_settings
+    from app.data import cache
+
+    root = market_dir(tmp_path, {"600519": [1.0, 0.5, -0.5], "000001": [0.2, -0.2, 0.4]})
+    write_bars_meta(root, "a")
+    config = BacktestConfig(symbol="600519", strategy="ma_cross", data_dir=root)
+    window = {"start": DAYS[0], "end": DAYS[-1], "adjust": "qfq"}
+
+    cache.clear_local()
+    cached = build_report(config)
+    cached_digest = window_digest(root, **window)
+    cache.clear_local()
+    monkeypatch.setattr(get_settings(), "bt_data_cache_enabled", False)
+    direct = build_report(config)
+    direct_digest = window_digest(root, **window)
+
+    assert cached["metrics"] == direct["metrics"]
+    assert cached_digest == direct_digest
+    assert cached["equity_curve"] == direct["equity_curve"]
+    cache.clear_local()

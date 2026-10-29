@@ -296,9 +296,14 @@ async def run_once(
             ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
             return True
 
-        # 成功 ⇒ 进度满格。网格逐格推进，这里是收尾那一下（invariant：done 的必满格）
-        await progress(total)
-        await db.finish_task(task_id, worker_id=worker_id, result=result)
+        # 成功 ⇒ 进度满格 + 终态一次写完（P4-S9；invariant：done 的必满格）
+        await db.finish_task(
+            task_id,
+            worker_id=worker_id,
+            result=result,
+            progress_done=total,
+            progress_total=total,
+        )
         # **收尾帧必须广播**：在线订阅者靠它收流（没有它，页面会一直停在「运行中」——
         # 重连那条路是 `stream._replay` 从库里拼的，所以只有「在线跑完」才暴露这个缺口）
         ctx.publish("done", result)

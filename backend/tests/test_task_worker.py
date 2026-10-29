@@ -114,6 +114,30 @@ def test_successful_task_saves_run_and_marks_done(
     assert record["request"]["pit_mode"] == "pit"
 
 
+def test_finish_task_merges_full_progress_in_one_write(signed_in: FakeDatabase) -> None:
+    """S9：成功路径把 done=total 并进 finish 的那次 UPDATE，`cells` 原样保留。"""
+    task_id = queue(signed_in, frozen_request())
+
+    async def scenario() -> None:
+        claimed = await signed_in.claim_next_task(WID, lease_seconds=60)
+        assert claimed is not None
+        signed_in.tasks[task_id]["progress"] = {"done": 1, "total": 3, "cells": [{"i": 0}]}
+        await signed_in.finish_task(
+            task_id,
+            worker_id=WID,
+            result={"run_id": "r"},
+            progress_done=3,
+            progress_total=3,
+        )
+
+    asyncio.run(scenario())
+    assert signed_in.tasks[task_id]["progress"] == {
+        "done": 3,
+        "total": 3,
+        "cells": [{"i": 0}],
+    }
+
+
 def test_run_carries_data_digest(signed_in: FakeDatabase, data_dir: Path) -> None:
     """E7d：执行体把**窗口数据指纹**同时落进记录列与报告 meta——两处必须同一个值。
 
