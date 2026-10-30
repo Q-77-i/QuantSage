@@ -588,6 +588,28 @@ def restore_data(target: Path, manifest: dict[str, Any], dest: Path, force: bool
     return {"dir": str(dest), "files": checked}
 
 
+def restore_gate(
+    *, force: bool, yes: bool, allow_live: bool, is_tty: bool, live_target: bool
+) -> tuple[bool, str | None]:
+    """恢复的覆盖门槛。返回 `(needs_prompt, error)`。
+
+    `--force` **只解除存在性保护**，不等于确认：
+      * 线上库/集合/仓库 `data/`：除 `--force` + `--yes` 外还需 `--allow-live`；
+      * 非 TTY（脚本/CI/launchd）：必须显式 `--yes`；
+      * TTY：提示输入 `yes`。
+    未给 `--force` 时不做覆盖，交给后面的“目标已存在”检查拒绝。
+    """
+    if not force:
+        return False, None
+    if live_target and not allow_live:
+        return False, "目标命中线上库/集合/仓库 data/：除 --force + --yes 外还需 --allow-live"
+    if yes:
+        return False, None
+    if is_tty:
+        return True, None
+    return False, "非交互环境覆盖已存在目标必须显式 --yes（或先在 TTY 下确认）"
+
+
 def do_restore(args: argparse.Namespace) -> int:
     target = Path(args.target or os.environ.get("QS_BACKUP_DIR") or DEFAULT_TARGET).expanduser().resolve()
     manifest_path = target / "manifests" / f"{args.source}.json"
@@ -600,6 +622,47 @@ def do_restore(args: argparse.Namespace) -> int:
     if not (args.pg_db or args.qdrant_collection or args.data_target):
         warn("至少指定 --pg-db / --qdrant-collection / --data-target 之一")
         return 2
+    if args.dry_run:
+        log(
+            json.dumps(
+                {
+                    "source": args.source,
+                    "target": str(target),
+                    "dry_run": True,
+                    "would_restore": {
+                        "pg_db": args.pg_db,
+                        "qdrant_collection": args.qdrant_collection,
+                        "data_target": args.data_target,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    data_target = (
+        Path(args.data_target).expanduser().resolve() if args.data_target else None
+    )
+    live_target = (
+        args.pg_db == "quantsage"
+        or args.qdrant_collection == "cn_events_v1"
+        or (data_target is not None and data_target == (ROOT / "data").resolve())
+    )
+    needs_prompt, gate_error = restore_gate(
+        force=args.force,
+        yes=args.yes,
+        allow_live=args.allow_live,
+        is_tty=sys.stdin.isatty(),
+        live_target=live_target,
+    )
+    if gate_error is not None:
+        warn(gate_error)
+        return 2
+    if needs_prompt:
+        answer = input("覆盖已存在的目标需要确认；输入 yes 继续：")
+        if answer.strip().lower() != "yes":
+            warn("已取消；未删除任何目标")
+            return 2
     results: dict[str, Any] = {}
     failures: list[str] = []
     if args.pg_db:
@@ -647,6 +710,13 @@ def main(argv: list[str] | None = None) -> int:
     restore.add_argument("--qdrant-collection", help="恢复到的目标 collection")
     restore.add_argument("--data-target", help="恢复到的目标目录")
     restore.add_argument("--force", action="store_true", help="允许覆盖已存在的目标")
+    restore.add_argument("--yes", action="store_true", help="非交互环境下确认覆盖（不能替代 --force）")
+    restore.add_argument(
+        "--allow-live",
+        action="store_true",
+        help="允许覆盖线上库 quantsage / 集合 cn_events_v1 / 仓库 data/（还需 --force + --yes）",
+    )
+    restore.add_argument("--dry-run", action="store_true", help="只打印恢复计划，不做任何改动")
     restore.set_defaults(func=do_restore)
 
     args = parser.parse_args(argv)

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pytest
 from app.backtest.a_share_rules import RejectCode
 from app.backtest.costs import CostModel
 from app.backtest.engine import BacktestConfig, run_backtest
-from app.backtest.types import BarContext, Side, Signal
+from app.backtest.types import BarContext, Fill, Side, Signal
 from app.data import calendar as cal
 from app.paper.replay import replay
 from app.paper.types import Decision, DecisionStatus, PaperConfig, decision_id
@@ -310,3 +311,59 @@ def test_only_filled_decisions_carry_a_fill(data_dir: Path) -> None:
     # 账本与这条清理无关：两种「已驳回」写法算出来的账户状态必须一样
     assert rejected.state == dirty.state
     assert dirty.state.cash == pytest.approx(1_000_000.0)
+
+
+def test_replay_keeps_a_filled_decision_in_a_520_row_log(data_dir: Path) -> None:
+    """日志很大时，过去的 `filled` 仍按日志记回账本——不能被策略输出重生成覆盖。
+
+    API 层用 `paper_decisions_all` 保证 520 条都送进来；这里钉住 replay 侧：同 id 的
+    `filled` 行在结果里仍是 `filled`，成交明细原样保留。
+    """
+    days = sessions(2)
+    filled = Decision(
+        id=str(uuid.uuid4()),
+        account_id="acc",
+        symbol=SYMBOL,
+        trade_date=START,
+        side=Side.BUY,
+        est_qty=100,
+        est_price=100.0,
+        reason="旧的已成交决策",
+        status=DecisionStatus.FILLED,
+        fill=Fill(
+            trade_date=START,
+            side=Side.BUY,
+            qty=100,
+            price=100.0,
+            ref_price=100.0,
+            commission=5.0,
+            stamp_tax=0.0,
+            cash_delta=-10_005.0,
+        ),
+    )
+    pending = [
+        Decision(
+            id=str(uuid.uuid4()),
+            account_id="acc",
+            symbol=SYMBOL,
+            trade_date=START,
+            side=Side.BUY,
+            est_qty=100,
+            est_price=100.0,
+            reason=f"待审批 {index}",
+            status=DecisionStatus.PENDING,
+        )
+        for index in range(519)
+    ]
+
+    result = replay(
+        config(days[-1]),
+        decisions=(filled, *pending),
+        strategy=Scripted({}),
+        data_dir=data_dir,
+    )
+
+    by_id = {decision.id: decision for decision in result.decisions}
+    assert len(result.decisions) == 520
+    assert by_id[filled.id].status is DecisionStatus.FILLED
+    assert by_id[filled.id].fill == filled.fill

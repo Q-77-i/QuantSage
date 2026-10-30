@@ -1,8 +1,8 @@
 # QuantSage SPEC · P2-Mn（MVP）
 
-> 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.14）→ 本文（技术规格）→ 代码
+> 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.60 ｜ 2026-10-21 ｜ 状态：**M1–M10 全部交付并验收**；M4c-3（回测页可选「我的策略」）已交付，见 §5 M4c。逐段决策、实测读数与验收见 §13。
+> 版本 v1.61 ｜ 2026-10-31 ｜ 状态：**M1–M10 全部交付并验收**；M4c-3（回测页可选「我的策略」）已交付，见 §5 M4c。2026-10-31 追加 P0 修复：模拟盘重放读全量决策日志、`run` 批量裁决与推进同事务、深研报报告落库失败固定 `failed`（见 §13 v1.61）。逐段决策、实测读数与验收见 §13。
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -816,6 +816,7 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 - `paper_equity`（`account_id` + `trade_date` 主键 / `cash` / `market_value` / `equity`）
 - **推进是一个事务**：一次 `step` 要写成交、持仓、结算点、新决策与 `as_of`，全部落在一个 `conn.transaction()` 里
   （既有 `Database` 是 autocommit 单语句风格，本段为它加一个事务出口）。
+- **`run` 的批量裁决与推进同事务**：`approve=all/none` 对 pending 决策的状态变更**不单独落库**；它在内存中应用到决策日志，并与重放结果一起在 `paper_advance` 的事务里写回。重放失败或乐观锁 409 时，不得留下任何已批准的决策。`origin='agent'` 的提案仍排除在批量裁决之外。
 - **乐观并发**：`UPDATE paper_accounts SET as_of = ? WHERE id = ? AND as_of = ?`，0 行受影响即 **409**（双击/并发推进）。
 - 幂等建表走 `core/db.py` 既有机制（`CREATE TABLE IF NOT EXISTS` + 另起迁移语句的约定不变）。
 
@@ -839,6 +840,7 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 - **过去的日子以决策日志为准**：策略在历史日子的输出被丢弃（它只负责推进自身状态），当日才用它的输出生成新决策。
   故「策略非确定性」（沙箱白名单里 `datetime` 是允许的，用户可写 `datetime.now()`）**不污染账本**，
   但同一会话两次推进可能给出不同决策 —— 如实记入已知边界。
+- **重放读全量日志**：`step` / `run` 的重放必须读取该会话的**全量**决策日志（账户上限 20 标的 × 250 交易日 ⇒ 至多 5,000 条）；`GET /accounts/{id}` 的展示列表仍可截断（当前 500 条），但**展示截断不得复用于重放**。日志读取失败时拒绝推进并明确报错；若未来改为分页读取，必须校验读取条数与账户决策总数一致，不得用策略输出补齐历史。
 
 ### 前端（M6b）
 
@@ -1094,6 +1096,8 @@ Langfuse 对账的**真源**）/ `budget JSONB` / `report_id UUID` / `error` / `
 `account_id DROP NOT NULL`、`subject JSONB`。深研报用另一个 `REPORT_KIND`（`deep_research_report`）并
 递增 `REPORT_VERSION`；`validate_claims` / `snapshot` / `plain_json` 全部复用。
 
+- **报告落库与运行状态一致**：`report` 帧的落库失败必须把 `research_runs.status` 置为 `failed` 并写 `error`；随后的 `done` 帧不得把失败覆盖成 `done/degraded`。`status in (done, degraded)` 且 `report_id IS NULL` 的组合不允许出现（图本身 `failed` / `awaiting_approval` 的运行不受此条约束）。
+
 ### 前端（M8c）
 
 运行页 + `components/agent-run/`（run-panel / stage-ring / waterfall / budget-bar / approval-card）+ 研报页
@@ -1313,6 +1317,7 @@ A2A（只留 Agent 能力元数据这一零成本预留）· 报告版本历史 
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.61 | 2026-10-31 | P0 修复 | **审计 P0 三项**：① 模拟盘 `step` / `run` 的重放改读**全量**决策日志（`paper_decisions_all`，≤5,000 条），详情展示仍 500 条——修复 >500 条时旧 `filled` 决策被重生成覆盖；② `run` 的批量裁决不再单独落库，pending（非 `agent`）在内存改成 approved/rejected，随 `paper_advance` 同一事务写回——重放失败/409 零副作用；③ 深研报报告落库失败固定 `status=failed` + `error`，禁止 `done` + `report_id=NULL`。详见 §7.5/§7.6/§9；本机离线 **1903**（新增 15 例）/ 覆盖率 **88.95%**（门槛 88）。 |
 | v1.60 | 2026-10-21 | 收口 | **文档收口**：§1 目录树改为模块边界指针；§12 测试策略压成分组表；§13 逐条压缩叙述，保留版本、决策、实测读数与验收结论；不放宽任何技术口径。 |
 | v1.59 | 2026-10-14 | M5b（E1b 修订） | M5b 的「断线即断、不续传」由 P3-E1b 取代：`POST /optimize/{grid,batch}` 改 202 + `{task_id}`，进度由 `GET /api/v1/tasks/{id}/events` 订阅，断开只影响订阅；中止改 `POST /tasks/{id}/cancel`（协作式，结果不落库）。网格展开、闸门、DSR 判据与 `optimization_runs` 结构未动。详见 [P3 SPEC §2.8](P3-En.md#28-e1b网格--批量迁入队列2026-10-14-定稿)。 |
 | v1.58 | 2026-10-14 | M4c-3 | 回测页可选「我的策略」落地：下拉分内置/我的两组，参数按源码 `PARAMS` 渲染，先保存才能跑；走查 11/11。修掉一个真 bug：`BacktestRequest.params` 把 `false` 收成 `0.0`，两处改 `float \| bool` 并补回归用例。后端离线 1346 / 前端 444。 |

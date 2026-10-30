@@ -14,12 +14,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import paper as paper_api
 from app.backtest.types import Side
 from app.data import calendar as cal
 from app.data import duckdb_client
 from app.main import app
+from app.paper import PaperError
 from app.paper.store import decision_to_row
-from app.paper.types import Decision, decision_id
+from app.paper.types import Decision, DecisionStatus, decision_id
 from tests.conftest import make_backtest_dir, ts, write_bars_parquet
 
 client = TestClient(app)
@@ -428,3 +430,72 @@ def test_run_refuses_while_an_agent_proposal_is_pending(paper_env: list[date]) -
 
     assert response.status_code == 409
     assert "Agent 提案" in response.text
+
+
+# ── P0 审计回归：全量重放 + 失败零副作用 ─────────────────────
+
+
+def test_step_passes_all_decisions_not_the_display_limit(
+    paper_env: list[date], signed_in: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重放必须拿到**全量**日志；`paper_decisions(500)` 的展示截断不得混进来。
+
+    修复前 `step` 复用 `DECISION_LIMIT=500`，520 条日志只传 500 条给 replay，最早那条
+    `filled` 会被策略输出重新生成并覆盖。这里拦截 `_run_replay` 的入参，只验“传了几条”。
+    """
+    detail = create().json()
+    account_id = detail["account"]["id"]
+    initial = len(detail["pending"])  # 建会话当天可能已有待审批决策
+    rows = signed_in.paper_decision_rows  # type: ignore[attr-defined]
+    for index in range(520):
+        decision = Decision(
+            id=str(uuid.uuid4()),
+            account_id=account_id,
+            symbol=SYMBOL,
+            trade_date=paper_env[0],
+            side=Side.BUY if index % 2 == 0 else Side.SELL,
+            est_qty=100,
+            est_price=100.0,
+            reason=f"P0 日志 {index}",
+            status=DecisionStatus.PENDING,
+        )
+        rows[decision.id] = decision_to_row(decision)
+
+    captured: list[int] = []
+
+    async def fake_run_replay(**kwargs: object) -> None:
+        captured.append(len(kwargs["decisions"]))  # type: ignore[arg-type]
+        raise PaperError("stop after capture")
+
+    monkeypatch.setattr(paper_api, "_run_replay", fake_run_replay)
+
+    response = client.post(f"/api/v1/paper/accounts/{account_id}/step")
+
+    assert response.status_code == 400
+    assert captured == [initial + 520]
+
+
+def test_run_failure_leaves_pending_decisions_untouched(
+    paper_env: list[date], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` 的批量裁决必须与推进同事务：重放失败时一条决策都不许改。
+
+    修复前 `set_paper_decisions_bulk` 先独立提交，随后 replay 抛错——用户看到失败，
+    但决策已经变成 approved。
+    """
+    detail = create().json()
+    account_id = detail["account"]["id"]
+    pending_ids = [row["id"] for row in detail["pending"]]
+    assert pending_ids
+
+    async def boom(**kwargs: object) -> None:
+        raise PaperError("replay failed")
+
+    monkeypatch.setattr(paper_api, "_run_replay", boom)
+
+    response = client.post(f"/api/v1/paper/accounts/{account_id}/run", json={"approve": "all"})
+
+    assert response.status_code == 400
+    after = client.get(f"/api/v1/paper/accounts/{account_id}").json()
+    assert [row["id"] for row in after["pending"]] == pending_ids
+    assert all(row["status"] == "pending" for row in after["pending"])

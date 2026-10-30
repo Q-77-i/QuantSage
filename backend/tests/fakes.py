@@ -691,6 +691,12 @@ class FakeDatabase:
         rows.sort(key=lambda r: (r["trade_date"], r["symbol"], r["side"]), reverse=True)
         return rows[:limit]
 
+    async def paper_decisions_all(self, account_id: str) -> list[dict[str, Any]]:
+        """重放用全量日志；与真库同一条 SELECT，只是不设 LIMIT。"""
+        rows = [r for r in self.paper_decision_rows.values() if r["account_id"] == account_id]
+        rows.sort(key=lambda r: (r["trade_date"], r["symbol"], r["side"]), reverse=True)
+        return rows
+
     async def paper_equity(self, account_id: str) -> list[dict[str, Any]]:
         return list(self.paper_equity_rows.get(account_id, []))
 

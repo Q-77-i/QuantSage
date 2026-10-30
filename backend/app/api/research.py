@@ -32,6 +32,7 @@ from app.agent.deep.roles.base import RoleContext
 from app.agent.deep.router import PATH_DEEP, RouteDecision, build_brief, route_question
 from app.agent.deep.runner import (
     STATUS_AWAITING,
+    STATUS_DEGRADED,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_RUNNING,
@@ -142,6 +143,7 @@ async def _drive(
     status = STATUS_FAILED
     report_id: str | None = None
     report_hash_value: str | None = None
+    report_error: str | None = None
 
     async for name, payload in astream_deep_run(
         ctx=ctx,
@@ -190,22 +192,39 @@ async def _drive(
                 status = status_candidate
             except Exception as exc:  # noqa: BLE001 —— 落库失败如实报，不假装成功
                 log.warning("深研报落库失败 run=%s: %r", run_id, exc)
-                yield "error", {"message": f"报告落库失败：{type(exc).__name__}: {exc}"}
+                report_error = f"{type(exc).__name__}: {exc}"
+                yield "error", {"message": f"报告落库失败：{report_error}"}
             else:
                 yield "report", {**payload, "report_id": report_id, "report_hash": report_hash_value}
             continue
         if name == "done":
             events = list(payload.get("events") or [])
-            status = str(payload.get("status") or status)
+            final_status = str(payload.get("status") or status)
+            final_error: str | None = None
+            # 图正常结束（done/degraded）但没有报告 = 报告落库失败/未生成。
+            # **不能**让 done 帧把它覆盖回 done：否则 GET /runs/{id} 是 done + report=null。
+            # 图自己 failed/awaiting_approval 的运行不受这条约束。
+            if final_status in (STATUS_DONE, STATUS_DEGRADED) and report_id is None:
+                final_status = STATUS_FAILED
+                final_error = f"报告落库失败：{report_error or '报告未生成'}"
+            status = final_status
             await db.update_research_run(
                 run_id,
-                status=status,
+                status=final_status,
                 events=events,
                 budget=ctx.budget.to_payload(),
                 report_id=report_id,
-                error=None,
+                error=final_error,
             )
-            yield name, {**payload, "report_id": report_id, "report_hash": report_hash_value}
+            frame = {
+                **payload,
+                "status": final_status,
+                "report_id": report_id,
+                "report_hash": report_hash_value,
+            }
+            if final_error is not None:
+                frame["error"] = final_error
+            yield name, frame
             continue
         yield name, payload
 
