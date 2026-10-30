@@ -40,7 +40,6 @@ class ObservabilityMiddleware:
         request_id = supplied if _REQUEST_ID.match(supplied) else uuid.uuid4().hex
         token = request_id_var.set(request_id)
         method = str(scope.get("method", "GET"))
-        path = str(scope.get("path", ""))
         status = 500
         started = time.perf_counter()
 
@@ -61,16 +60,17 @@ class ObservabilityMiddleware:
             route = getattr(scope.get("route"), "path", None) or "unmatched"
             HTTP_REQUESTS.labels(method=method, route=route, status=str(status)).inc()
             HTTP_DURATION.labels(method=method, route=route).observe(duration)
+            # 只记路由模板：原始 path 里的分享/导出 token 是 bearer 凭据，不能进日志。
             log.info(
                 "http_request method=%s path=%s status=%s duration_ms=%.2f",
                 method,
-                path,
+                route,
                 status,
                 duration * 1000,
                 extra={
                     "request_id": request_id,
                     "method": method,
-                    "path": path,
+                    "path": route,
                     "status": status,
                     "duration_ms": round(duration * 1000, 2),
                 },

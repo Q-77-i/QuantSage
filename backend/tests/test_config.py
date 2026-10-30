@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -161,3 +162,13 @@ def test_events_default_window_defaults_to_twelve_months() -> None:
     """S1：默认窗口 12 个月；0 是「关闭窗口」的显式回退值，不是非法值。"""
     assert _settings().events_default_window_months == 12
     assert _settings(events_default_window_months=0).events_default_window_months == 0
+
+
+def test_backup_dir_expands_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`QS_BACKUP_DIR=~/...` 必须展开家目录，不能变成字面 `~` 目录。"""
+    monkeypatch.setenv("QS_BACKUP_DIR", "~/qs-backups-test")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().qs_backup_dir == Path.home() / "qs-backups-test"
+    finally:
+        get_settings.cache_clear()

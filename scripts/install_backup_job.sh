@@ -47,6 +47,26 @@ mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/logs"
 mkdir -p "$TARGET" 2>/dev/null || die "备份目标不可创建：$TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
 
+# 与 app 的 QS_BACKUP_DIR 单源：指标只读 .env 的目录，不一致会永久误报 BackupStale。
+ENV_FILE="$ROOT/.env"
+ENV_TARGET=""
+if [[ -f "$ENV_FILE" ]]; then
+  ENV_TARGET="$(sed -n 's/^[[:space:]]*QS_BACKUP_DIR=//p' "$ENV_FILE" | tail -1 | sed -E 's/^["'\'']//; s/["'\'']$//')"
+fi
+if [[ -n "$ENV_TARGET" ]]; then
+  if [[ "$ENV_TARGET" == "~"* ]]; then
+    ENV_TARGET="$HOME${ENV_TARGET:1}"
+  fi
+  ENV_TARGET="$(cd "$(dirname "$ENV_TARGET")" 2>/dev/null && pwd)/$(basename "$ENV_TARGET")"
+fi
+DEFAULT_RESOLVED="$(cd "$(dirname "$HOME/QuantSageBackups")" && pwd)/$(basename "$HOME/QuantSageBackups")"
+if [[ -n "$ENV_TARGET" && "$ENV_TARGET" != "$TARGET" ]]; then
+  die "备份目标（$TARGET）与 .env 的 QS_BACKUP_DIR（$ENV_TARGET）不一致；请改成同一个目录后重试"
+fi
+if [[ -z "$ENV_TARGET" && "$TARGET" != "$DEFAULT_RESOLVED" ]]; then
+  die "自定义备份目标需要先在 .env 写入 QS_BACKUP_DIR=$TARGET（否则备份年龄指标会读默认目录）"
+fi
+
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.core.db import Database, open_pool
+from app.core.db import Database, init_schema, open_pool
 from tests.integration.conftest import purge_rows, sign_up
 
 pytestmark = pytest.mark.integration
@@ -290,3 +290,112 @@ def test_cascade_keeps_quota_tables_clean(real_stack: TestClient) -> None:
         ).fetchone()
 
     assert (counters, rejections) == ((0,), (0,))
+
+
+def test_slot_admission_counts_out_of_range_active_tasks(real_stack: TestClient) -> None:
+    """上限调小后旧槽位 ≥ limit 的任务仍在飞：准入必须用真实在飞数兜底，不能超发。
+
+    修复前只扫 `0..limit-1` 的空槽；槽位 6/9 的在飞任务“不可见”，会继续放行到
+    active_total > limit（审计复现 5 > 3）。现在同一条 INSERT 里校验 count < limit。
+    """
+    address = email("slot-over")
+    sign_up(address)
+    uid = user_id_of(address)
+
+    try:
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            for slot in (6, 9):
+                conn.execute(
+                    "INSERT INTO tasks (id, user_id, kind, status, request, quota_slot) "
+                    "VALUES (%s::uuid, %s, 'quota-probe', 'queued', '{}'::jsonb, %s)",
+                    (str(uuid.uuid4()), uid, slot),
+                )
+            conn.commit()
+
+        async def admit() -> list[dict | None]:
+            async with open_pool(get_settings().postgres_dsn) as pool:
+                db = Database(pool)
+                return [
+                    await db.create_task(
+                        str(uuid.uuid4()),
+                        uid,
+                        "quota-probe",
+                        {"symbol": "600519"},
+                        active_limit=3,
+                    )
+                    for _ in range(3)
+                ]
+
+        results = asyncio.run(admit())
+        assert sum(row is not None for row in results) == 1, results
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            total = conn.execute(
+                "SELECT count(*) FROM tasks WHERE user_id = %s "
+                "AND status IN ('queued', 'running')",
+                (uid,),
+            ).fetchone()[0]
+        assert total == 3
+    finally:
+        purge_rows([address], [])
+
+
+def test_startup_compaction_closes_the_concurrent_out_of_range_hole(
+    real_stack: TestClient,
+) -> None:
+    """上限调小后：启动压缩把 active 槽位改回 0..n-1，并发突发也不能超过 limit。
+
+    修复前只有 count 守卫：1 条 out-of-range 任务 + limit 3 时，10 个并发都看到
+    count=1 < 3，可抢 3 个空槽 → active_total 4。压缩后只剩 2 个空槽，最多 2 个胜出。
+    """
+    address = email("slot-compact")
+    sign_up(address)
+    uid = user_id_of(address)
+
+    try:
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            conn.execute(
+                "INSERT INTO tasks (id, user_id, kind, status, request, quota_slot) "
+                "VALUES (%s::uuid, %s, 'quota-probe', 'queued', '{}'::jsonb, 9)",
+                (str(uuid.uuid4()), uid),
+            )
+            conn.commit()
+
+        async def compact_then_hammer() -> tuple[list[int], int]:
+            async with open_pool(get_settings().postgres_dsn) as pool:
+                await init_schema(pool)  # 启动压缩
+                db = Database(pool)
+                with psycopg.connect(get_settings().postgres_dsn) as conn:
+                    slots = [
+                        row[0]
+                        for row in conn.execute(
+                            "SELECT quota_slot FROM tasks WHERE user_id = %s "
+                            "AND status IN ('queued', 'running')",
+                            (uid,),
+                        )
+                    ]
+                rows = await asyncio.gather(
+                    *(
+                        db.create_task(
+                            str(uuid.uuid4()),
+                            uid,
+                            "quota-probe",
+                            {"symbol": "600519"},
+                            active_limit=3,
+                        )
+                        for _ in range(10)
+                    )
+                )
+                return slots, sum(row is not None for row in rows)
+
+        slots, granted = asyncio.run(compact_then_hammer())
+        assert slots == [0]  # 旧槽 9 被压缩到 0
+        assert granted == 2  # 只剩槽 1/2 两个空位
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            total = conn.execute(
+                "SELECT count(*) FROM tasks WHERE user_id = %s "
+                "AND status IN ('queued', 'running')",
+                (uid,),
+            ).fetchone()[0]
+        assert total == 3
+    finally:
+        purge_rows([address], [])

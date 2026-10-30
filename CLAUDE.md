@@ -25,7 +25,7 @@
 | 向量库 | Qdrant | ✅ **P2 起已用**：BGE-M3 双索引 + 服务端 RRF / PIT 过滤；对外 MCP Server 直连 |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | ✅ 两档均已用：辩论 / 综合用 pro，取证 / 路由 / 反思用 flash；E4 降级链 pro → flash |
 | LLM 网关 | LiteLLM | ✅ 已用（`ChatLiteLLM` 唯一构造点） |
-| 观测 | 自托管 Langfuse + Prometheus `/metrics` + JSON 日志；可选 Prometheus + Alertmanager（`monitoring` profile） | ✅ Langfuse（LLM trace / token / 成本）+ **E7e**（HTTP / 任务 / 缓存指标、request id、可选 JSON 日志）+ **S8**（队列 p95 / PG 连接 / 宿主 / 备份年龄、6 条规则 + 本地 `alert_hook`，**默认不启动**）；**OTel SDK 未引入**（部署层升级时再评估） |
+| 观测 | 自托管 Langfuse + Prometheus `/metrics` + JSON 日志；可选 Prometheus + Alertmanager（`monitoring` profile） | ✅ Langfuse（LLM trace / token / 成本）+ **E7e**（HTTP / 任务 / 缓存指标、request id、可选 JSON 日志）+ **S8**（队列 p95 / PG 连接 / 宿主 / 备份年龄、8 条规则（P1 增 BackupPartial/ServiceDown）+ 本地 `alert_hook`，**默认不启动**）；**OTel SDK 未引入**（部署层升级时再评估） |
 
 ## 三、关键设计决策
 
@@ -42,7 +42,7 @@
 11. **Agent 下单只到提案**（5a）：工具只能在当前 `as_of` 日创建一条 `pending`、`origin=agent` 的模拟盘决策，不能批准/成交/改风控；用户逐条裁决，`run(approve="all")` 在有待审批 Agent 提案时 409。`user_id` 只从请求上下文取，绝不作 LLM 参数
 12. **策略版本**（5d）：append-only `strategy_versions` + `strategies.version`；内容变才 +1（只改名不增版）；diff / 回滚（回滚 = 追加新版本，保留当前名字）；模拟盘创建时锁定 `strategy_id + version`，回测记录 `strategy_version`
 13. **能力卡是静态元数据**（5b）：`/.well-known/agent-card.json` 只描述能力与边界，不实现 A2A；MCP 仍是 stdio 单工具 `search_events`
-14. **监控是可选单机 profile**（S8）：`monitoring` 提供 Prometheus/Alertmanager + 6 条规则 + 本地 `alert_hook`，默认不启动；不承诺 HA/SLA，不引入 OTel
+14. **监控是可选单机 profile**（S8）：`monitoring` 提供 Prometheus/Alertmanager + 8 条规则（P1 增 BackupPartial/ServiceDown）+ 本地 `alert_hook`，默认不启动；不承诺 HA/SLA，不引入 OTel
 15. **范围冻结暂缓**（2026-10-30）：原计划的冻结**暂不生效**——先收口遗留问题（提交配额串行、端到端延迟等）；冻结草案（允许缺陷修复/安全/依赖/文档，不允许新功能/换栈/架构重构）保留在 ROADMAP，待问题清零后再决定。性能改动照常另起 before/after 基线
 
 ## 四、数据源（小石）
@@ -68,7 +68,7 @@
 | P3-En Enterprise | 企业级思维达标 | 故障注入通过；Claude Desktop 可调我们的 MCP | 2 / 4 |
 | P4-Sn Scale | 单机工程化（S1–S6，已交付；能力演练，非 HA） | S1–S6 验收；各项 before/after；压测/故障/备份 | 1.5 / 2 |
 | P4-S7 承压 | RAG SLO + task worker 池（已交付） | 合批门禁未过（A 不做）；queue p95 1,312ms；bars 1,583/236ms | 1 / 1.5 |
-| P4-S8 可观测 | 可观测性与缓存（已交付） | 命中率可算（99.5%）；4 组指标 + 6 条规则 + 本地 receiver；备份年龄 432s | 0.5 / 1 |
+| P4-S8 可观测 | 可观测性与缓存（已交付） | 命中率可算（99.5%）；4 组指标 + 8 条规则 + 本地 receiver；备份年龄 432s | 0.5 / 1 |
 | P4-S9 数据层 | 数据层热点缓存（已交付） | queue p95 ≤1s → 实测 **503ms**；run p50 86ms；bars 1,660/240ms；metrics/digest 逐键相等 | 2–3.5 天 / 1 |
 | P4-S10+ 后续 | 角色拆分 / 多租户 / 分布式 / 商业化 | 愿景，不排期 | — |
 

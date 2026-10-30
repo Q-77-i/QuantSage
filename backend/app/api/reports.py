@@ -272,6 +272,15 @@ async def create_report(
         report=body,
         report_hash=report_hash(body),
     )
+    if created is None:
+        # 并发另一个请求已插同一 (account, snapshot)：唯一索引判负，回查它的行。
+        existing = await db.find_research_report(user["id"], account_id, digest)
+        if existing is None:
+            # 理论上撞索引成功后必能看到；看不到说明是瞬时不一致，给可重试的 503。
+            raise HTTPException(
+                status_code=503, detail="报告并发写入冲突且回查不到既有行，请稍后重试"
+            )
+        return _row_payload(existing, reused=True)
     return _row_payload(
         {
             "id": created["id"],

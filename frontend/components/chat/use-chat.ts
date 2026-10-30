@@ -74,6 +74,12 @@ export function useChat(onTurnEnd?: () => void) {
   const send = useCallback((text: string) => {
     const message = text.trim();
     if (!message || busyRef.current) return;
+    // 刷新后的历史轮询还在跑：新提问要先停掉它，否则 `loaded` 会把刚发出的
+    // 用户气泡与流式占位整体替换掉，后续 token 打在不存在的 id 上直接“消失”。
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     busyRef.current = true;
 
     const controller = new AbortController();

@@ -25,25 +25,27 @@ def test_append_task_cell_writes_cells_and_respects_worker_fence() -> None:
             db = Database(pool)
             user = await db.create_user(email, "x")
             task_id = str(uuid.uuid4())
+            token = str(uuid.uuid4())
+            wrong = str(uuid.uuid4())
             await db.create_task(task_id, user["id"], "grid", {}, total=3)
             # 直接置 running：不经过 claim_next_task，避免和开发库里的其它排队任务抢件
             await db._exec(
-                "UPDATE tasks SET status = 'running', worker_id = 'w1', attempts = 1 "
-                "WHERE id = %s::uuid",
-                (task_id,),
+                "UPDATE tasks SET status = 'running', worker_id = 'w1', "
+                "claim_token = %s::uuid, attempts = 1 WHERE id = %s::uuid",
+                (token, task_id),
             )
 
             await db.append_task_cell(
                 task_id,
-                worker_id="w1",
+                claim_token=token,
                 done=1,
                 total=3,
                 cell={"index": 0, "ok": True},
             )
-            # 栅栏：别的 worker 的迟到写入不生效
+            # 栅栏：别的 claim 的迟到写入不生效
             await db.append_task_cell(
                 task_id,
-                worker_id="w2",
+                claim_token=wrong,
                 done=2,
                 total=3,
                 cell={"index": 1, "ok": True},
@@ -60,7 +62,7 @@ def test_append_task_cell_writes_cells_and_respects_worker_fence() -> None:
             assert await db.get_task_progress(user["id"] + 100_000, task_id) is None
 
             # 重排后旧 cells 必须清掉：下一次执行从 0 开始，不重复追加
-            assert await db.requeue_task(task_id, worker_id="w1", backoff_seconds=0)
+            assert await db.requeue_task(task_id, claim_token=token, backoff_seconds=0)
             row = await db.get_task_progress(user["id"], task_id)
             assert row is not None and row["status"] == "queued"
             assert row["progress"]["done"] == 0
@@ -69,13 +71,13 @@ def test_append_task_cell_writes_cells_and_respects_worker_fence() -> None:
             # 1000 格硬顶：再追加不增长
             cells = [{"index": i} for i in range(MAX_PROGRESS_CELLS)]
             await db._exec(
-                "UPDATE tasks SET status = 'running', worker_id = 'w1', progress = %s "
-                "WHERE id = %s::uuid",
-                (Jsonb({"done": 0, "total": 3, "cells": cells}), task_id),
+                "UPDATE tasks SET status = 'running', worker_id = 'w1', "
+                "claim_token = %s::uuid, progress = %s WHERE id = %s::uuid",
+                (token, Jsonb({"done": 0, "total": 3, "cells": cells}), task_id),
             )
             await db.append_task_cell(
                 task_id,
-                worker_id="w1",
+                claim_token=token,
                 done=1,
                 total=3,
                 cell={"index": 9999},
@@ -85,11 +87,11 @@ def test_append_task_cell_writes_cells_and_respects_worker_fence() -> None:
             assert len(row["progress"]["cells"]) == MAX_PROGRESS_CELLS
 
             # 终态（取消）后迟到写入 no-op
-            await db.finish_task_cancelled(task_id, worker_id="w1")
+            await db.finish_task_cancelled(task_id, claim_token=token)
             before = len(row["progress"]["cells"])
             await db.append_task_cell(
                 task_id,
-                worker_id="w1",
+                claim_token=token,
                 done=2,
                 total=3,
                 cell={"index": 10000},

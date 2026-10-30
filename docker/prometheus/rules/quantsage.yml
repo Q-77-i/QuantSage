@@ -1,4 +1,4 @@
-# QuantSage 告警与记录规则（P4-S8，6 条告警 + 1 条记录规则）。
+# QuantSage 告警与记录规则（P4-S8 6 条 + P1 BackupPartial / ServiceDown，共 8 条告警 + 1 条记录规则）。
 #
 # 口径（SPEC §9.3）：
 #  * 降级率用**服务端** rag_rerank_degraded_total / rag_rerank_requests_total；
@@ -89,3 +89,21 @@ groups:
         annotations:
           summary: "备份超过 26 小时未更新"
           description: "检查 launchd 任务与备份目标；无 manifest 时指标为 1e9。"
+
+      - alert: BackupPartial
+        expr: quantsage_backup_partial > 0 or quantsage_backup_failures > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "备份有失败项（partial manifest）"
+          description: "当天至少一个段失败；检查 logs/backup-agent.log，修好后重跑备份；有失败时 prune 已跳过。"
+
+      - alert: ServiceDown
+        expr: up{job=~"quantsage-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "QuantSage 服务不可达（{{ $labels.job }}）"
+          description: "Prometheus 抓不到该 job 的 /metrics；API 整体不可用时 PG/宿主/备份指标也会消失，不能只看它们。"

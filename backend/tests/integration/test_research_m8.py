@@ -29,7 +29,7 @@ from app.main import app
 
 # `real_stack` 不在此列：它是 conftest 的 **fixture**，pytest 自动发现；显式导入反而
 # 会在测试函数把它写成参数时构成「重定义」（F811）——`sign_up` 是普通函数，必须导入。
-from tests.integration.conftest import sign_up
+from tests.integration.conftest import purge_rows, sign_up
 from tests.test_deep_graph import DeepFake
 
 AS_OF = "2026-09-30"
@@ -159,3 +159,36 @@ def _user_id(client: Any) -> int:
     response = client.get("/api/v1/auth/me")
     assert response.status_code == 200, response.text
     return int(response.json()["id"])
+
+
+def test_sweep_interrupted_runs_on_real_database(real_stack: TestClient) -> None:
+    """真库：启动扫尾只把 running 标 failed，awaiting_approval 原样保留。"""
+    account, email = _account()
+    db = app.state.db
+    user_id = _user_id(account)
+    running_id = str(uuid.uuid4())
+    awaiting_id = str(uuid.uuid4())
+    try:
+        asyncio.run(
+            db.create_research_run(
+                run_id=running_id, user_id=user_id, question="running", subject={}
+            )
+        )
+        asyncio.run(
+            db.create_research_run(
+                run_id=awaiting_id,
+                user_id=user_id,
+                question="awaiting",
+                subject={},
+                status="awaiting_approval",
+            )
+        )
+
+        assert asyncio.run(db.sweep_interrupted_research_runs()) >= 1
+        assert asyncio.run(db.get_research_run(user_id, running_id))["status"] == "failed"
+        assert (
+            asyncio.run(db.get_research_run(user_id, awaiting_id))["status"]
+            == "awaiting_approval"
+        )
+    finally:
+        purge_rows([email], [])

@@ -36,8 +36,8 @@ log = logging.getLogger(__name__)
 #: 取件间隔（秒）。单次回测 0.3–2s，这点启动延迟可忽略，换来的是零跨 loop 状态。
 POLL_SECONDS = 0.2
 
-#: 本进程的 worker 标识（P4-S2）。进入每一行的 `worker_id`：心跳/终态写入都带它，
-#: 任务被回收并重新取件后，旧 worker 的迟到写入会落空。
+#: 本进程的 worker 标识（P4-S2）。只作诊断与取件归属；**执行期栅栏是每次取件的
+#: `claim_token`**（P1），不是这个进程级常量——同一进程重取同一任务后 token 也会变。
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
 #: 租约 / 心跳 / reaper（SPEC §3.3）。心跳必须显著小于租约：事件循环卡顿一轮不至于丢租约。
@@ -75,7 +75,7 @@ class WorkerHandle:
     """常驻循环 + 可选的单实例锁连接。`lock_conn=None` 只在离线替身/无池场景出现。
 
     `db` 用于停机释放租约（S4）：`stop()` 不 await 在飞任务，但把它的行放回 `queued`；
-    `worker_id` 与取件时一致，作为释放语句的栅栏。
+    释放用的是 `_RUNNING` 里那一件的 **claim token**，不是进程级 `worker_id`。
     """
 
     task: asyncio.Task[None]
@@ -84,9 +84,10 @@ class WorkerHandle:
     worker_id: str = WORKER_ID
 
 
-#: 正在跑的任务 → 中止事件。**本地加速口**：同进程的 `POST /cancel` 立即置位；
-#: 跨进程的权威是 `tasks.cancel_requested_at`（收尾项 6），由执行期的轮询读取。
-_RUNNING: dict[str, asyncio.Event] = {}
+#: 正在跑的任务 → (中止事件, 本次取件的 claim token)。**本地加速口**：同进程的
+#: `POST /cancel` 立即置位；跨进程的权威是 `tasks.cancel_requested_at`（收尾项 6），
+#: 由执行期的轮询读取。claim token 供停机 release 使用——不能再用进程级 `worker_id`。
+_RUNNING: dict[str, tuple[asyncio.Event, str]] = {}
 
 
 def request_stop(task_id: str) -> bool:
@@ -95,10 +96,10 @@ def request_stop(task_id: str) -> bool:
     `False` 不是错误：可能它刚跑完，也可能跑在别的进程里——后者由 DB 标志
     `cancel_requested_at` 兜底（收尾项 6），调用方不必据此判失败。
     """
-    event = _RUNNING.get(task_id)
-    if event is None:
+    entry = _RUNNING.get(task_id)
+    if entry is None:
         return False
-    event.set()
+    entry[0].set()
     return True
 
 
@@ -134,21 +135,27 @@ def _retryable(exc: BaseException) -> bool:
 
 
 async def _heartbeat(
-    db: Any, task_id: str, worker_id: str, lease_seconds: int
+    db: Any,
+    task_id: str,
+    claim_token: str,
+    lease_seconds: int,
+    stop: asyncio.Event,
 ) -> None:
     """每 10s 续租（SPEC §3.3）。异常只记日志——一次数据库抖动不该把执行拖垮；
-    返回 `False`（行不再属于本 worker）就停，迟到的租约不能把行抢回来。"""
+    返回 `False`（行不再属于本次 claim）就停，并置 `stop` 让执行体在格边界收尾。
+    **只停续租是不够的**：旧执行会继续跑完整段，迟到写入还可能命中。"""
     while True:
         await asyncio.sleep(HEARTBEAT_SECONDS)
         try:
             alive = await db.heartbeat_task(
-                task_id, worker_id=worker_id, lease_seconds=lease_seconds
+                task_id, claim_token=claim_token, lease_seconds=lease_seconds
             )
         except Exception:  # noqa: BLE001
             log.warning("任务 %s 心跳失败（继续执行）", task_id, exc_info=True)
             continue
         if not alive:
-            log.warning("任务 %s 的租约已被回收（worker_id 不匹配），停止心跳", task_id)
+            log.warning("任务 %s 的租约已被回收（claim token 不匹配），停止执行", task_id)
+            stop.set()
             return
 
 
@@ -208,13 +215,15 @@ async def run_once(
         return False
 
     task_id = str(task["id"])
+    # 每次取件的 claim token；执行期所有写入都以它做栅栏（不是进程级 worker_id）。
+    claim_token = str(task["claim_token"])
     _observe_queue_wait(task)
     executor = EXECUTORS.get(str(task["kind"]))
     if executor is None:  # pragma: no cover - 端点只建已注册的 kind
         message = f"未知任务类型 {task['kind']!r}"
         try:
             await db.fail_task(
-                task_id, worker_id=worker_id, error={"kind": "internal", "message": message}
+                task_id, claim_token=claim_token, error={"kind": "internal", "message": message}
             )
             bus.publish(task_id, "error", {"code": "internal", "message": message})
         finally:
@@ -227,19 +236,20 @@ async def run_once(
     if task.get("cancel_requested_at") is not None:
         try:
             log.info("任务 %s（%s）取件前已请求取消，直接收尾", task_id, task["kind"])
-            await db.finish_task_cancelled(task_id, worker_id=worker_id)
+            await db.finish_task_cancelled(task_id, claim_token=claim_token)
             bus.publish(task_id, "cancelled", {"message": "任务已取消（中止的结果不落库）"})
         finally:
             bus.release(task_id)
         return True
 
     stop = asyncio.Event()
-    _RUNNING[task_id] = stop
+    _RUNNING[task_id] = (stop, claim_token)
     total = int((task.get("progress") or {}).get("total") or 1)
     heartbeat: asyncio.Task[None] | None = None
     if lease_seconds > 0:
         heartbeat = asyncio.create_task(
-            _heartbeat(db, task_id, worker_id, lease_seconds), name=f"heartbeat-{task_id}"
+            _heartbeat(db, task_id, claim_token, lease_seconds, stop),
+            name=f"heartbeat-{task_id}",
         )
 
     # 协作式任务在执行期轮询 DB 标志：请求可能来自别的进程，本地事件只是加速
@@ -257,13 +267,13 @@ async def run_once(
 
     async def progress(done: int) -> None:
         await db.update_task_progress(
-            task_id, worker_id=worker_id, done=done, total=total
+            task_id, claim_token=claim_token, done=done, total=total
         )
 
     async def record_cell(done: int, cell: dict[str, Any]) -> None:
         # S5：逐格同时落 done/total 与 cells；任意 API worker 的 SSE 都能从库里读到。
         await db.append_task_cell(
-            task_id, worker_id=worker_id, done=done, total=total, cell=cell
+            task_id, claim_token=claim_token, done=done, total=total, cell=cell
         )
 
     ctx = RunContext(
@@ -282,14 +292,14 @@ async def run_once(
             # 取消是权威：用户已请求中止时，异常不再翻成 failed（SPEC §3.4）
             if await _cancel_requested(db, task_id):
                 log.info("任务 %s（%s）执行出错但已请求取消，收尾为 cancelled", task_id, task["kind"])
-                await db.finish_task_cancelled(task_id, worker_id=worker_id)
+                await db.finish_task_cancelled(task_id, claim_token=claim_token)
                 ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
                 return True
             # 基础设施瞬时错误且还有 attempt：回队列，不写 error（还没终态）
             if _retryable(exc) and int(task["attempts"]) < int(task["max_attempts"]):
                 requeued = await db.requeue_task(
                     task_id,
-                    worker_id=worker_id,
+                    claim_token=claim_token,
                     backoff_seconds=RETRY_BACKOFF_SECONDS,
                 )
                 if requeued:
@@ -303,21 +313,21 @@ async def run_once(
                     )
                     return True
             log.warning("任务 %s（%s）失败：%s", task_id, task["kind"], error["message"])
-            await db.fail_task(task_id, worker_id=worker_id, error=error)
+            await db.fail_task(task_id, claim_token=claim_token, error=error)
             ctx.publish("error", {"code": error.get("kind", "internal"), "message": error["message"]})
             return True
 
         if result.get("cancelled"):
             # 协作式中止：执行体已按约定**不落库**，这里只把状态收干净
             log.info("任务 %s（%s）已中止", task_id, task["kind"])
-            await db.finish_task_cancelled(task_id, worker_id=worker_id)
+            await db.finish_task_cancelled(task_id, claim_token=claim_token)
             ctx.publish("cancelled", {"message": "任务已取消（中止的结果不落库）"})
             return True
 
         # 成功 ⇒ 进度满格 + 终态一次写完（P4-S9；invariant：done 的必满格）
         await db.finish_task(
             task_id,
-            worker_id=worker_id,
+            claim_token=claim_token,
             result=result,
             progress_done=total,
             progress_total=total,
@@ -510,18 +520,17 @@ async def stop(handle: WorkerHandle | asyncio.Task[None] | None) -> None:
         return
     task = handle.task if isinstance(handle, WorkerHandle) else handle
     # 快照必须在 cancel 之前：run_once 的 finally 会把 _RUNNING 清空
-    pending = list(_RUNNING)
+    pending = list(_RUNNING.items())
     db = getattr(handle, "db", None) if isinstance(handle, WorkerHandle) else None
-    worker_id = getattr(handle, "worker_id", WORKER_ID)
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
 
     release = getattr(db, "release_task", None)
     if pending and release is not None:
-        for task_id in pending:
+        for task_id, (_event, claim_token) in pending:
             try:
-                status = await release(task_id, worker_id=worker_id)
+                status = await release(task_id, claim_token=claim_token)
             except Exception:  # noqa: BLE001 —— 收尾失败不能拖住停机；启动扫尾兜底
                 log.warning("停机释放任务 %s 租约失败（启动扫尾兜底）", task_id, exc_info=True)
                 continue

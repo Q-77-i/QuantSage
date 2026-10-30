@@ -24,7 +24,7 @@ QuantSage/
 │   │   ├── rag/                  # 嵌入 / 检索 / PIT 硬过滤 / 重排 / 离线评测 / 零命中一轮纠错（5b）
 │   │   │                         #   + 独立推理服务（S3：service/remote/clients/protocols/metrics）
 │   │   ├── etl/                  # 调度器与日增量通道（两条：事件语料、行情按需刷新；只在后台主实例启动）；归档 / 物化 / 落库
-│   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单 worker 取件循环 + 后台主实例锁
+│   │   ├── tasks/                # 异步任务：执行体（backtest/grid/batch）+ 单进程内 worker 池取件 + 后台主实例锁
 │   │   │                         #   + 进度总线与事件流（断线重连）、进程内协作式中止
 │   │   │                         #   + S5：逐格进度落 tasks.progress.cells，非 master 的 SSE 每 1s 轮询补齐
 │   │   ├── data/                 # DuckDB 客户端（S4：每连接 threads/memory_limit/temp + 进程闸门）
@@ -63,7 +63,7 @@ QuantSage/
 │   └── images/                   # README 用截图（由 frontend/scripts/capture-*.mjs 生成）
 ├── .mcp.json.example             # MCP 客户端配置模板（本地 .mcp.json 是绝对路径，不入库）
 ├── docker/postgres/init/
-├── docker/prometheus/            # S8：prometheus.yml + rules（6 条告警 / 1 条记录规则 / promtool 测试）
+├── docker/prometheus/            # S8：prometheus.yml + rules（8 条告警 / 1 条记录规则 / promtool 测试）
 ├── docker/alertmanager/          # S8：告警路由到宿主 alert_hook
 └── docker-compose.yml            # 默认基础设施 + observability（Langfuse）+ monitoring（S8）profile
 ```

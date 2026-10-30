@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.47 ｜ 2026-10-30 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）。
+> 版本 v2.49 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -265,6 +265,9 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 - **上限 ≤ 0 = 不限额**（跳过整条检查）——语义写死，避免 `used < 0` 这类永假条件的隐晦写法。
 - **admin 不限额**：`role = "admin"` 跳过两个维度（运维与演示需要）。
 - **准入实现（2026-10-30 修订）**：gauge 的真值来源仍是上面的 `count(*)`（admin 视图用）；**提交准入**改为占 `tasks.quota_slot`（`0..limit-1`）的空槽，由部分唯一索引 `tasks_active_slot_idx` 保证上限——不再使用 advisory lock。任务进终态时索引项消失、槽位自动释放，不需要减计数或对账。
+- **在飞数守卫（2026-10-31 P1 修订）**：槽位扫描之外，同一条 `INSERT … SELECT` 还要校验 `count(queued/running) < limit`。上限调小后旧任务仍持有 `>= limit` 的槽位，只扫 `0..limit-1` 会把它们当成“不可见”，导致超发；count 只在该用户行上，既有索引可覆盖，代价是每次提交多一次读。count 与空槽两个条件同时成立才放行。实测（DB 层、20 并发 create_task）limit 1000 wall **36.9ms**、limit 3 **19.6ms**（含 count 守卫）。
+- **启动压缩（2026-10-31 P1 修订）**：`init_schema` 把 active 任务按 `(created_at, id)` 重新编号为 `0..n-1`，再重建部分唯一索引（先 drop 索引再编号）。这从根上消除“旧槽位 ≥ 新 limit”的不可见槽位；count 守卫是并发下的第二道保险。编号只动 `queued/running`，终态行不动。
+- **撞槽耗尽 = 503 busy（2026-10-31 P1 修订）**：`QUOTA_SLOT_ATTEMPTS` 用尽仍无行（且不是幂等重放）时抛 `TaskAdmissionBusy`，由 `main.py` 映射 **503 + `Retry-After: 1`**；配额满仍是 **429 `quota_exceeded`**。不得把“有空槽但没抢到”说成“配额满”。
 - **默认值取演示友好档**（与 L0 的 `rate_limit_*` 同调）：正常用碰不到，灌队列 / 刷量时才拦得住。
 - **gauge 为什么不落计数器表**：计数器得在任务终结时减一，而终结有五条路径（`finish_task` / `fail_task` / `finish_task_cancelled` + 启动扫尾 `sweep_interrupted_tasks` + 进程被杀），**漏一处就是永久占额**。直查以 `tasks` 表为唯一真值，天然不漂；既有 `(user_id, created_at)` 索引覆盖谓词，**不新增索引**。
 
@@ -299,7 +302,7 @@ RETURNING used
 
 ### 3.2 挂载点与顺序
 
-**配额是端点内的显式调用，不是依赖**（实施期收敛，见 §11 v2.22 落地记）：`core/quota.py::enforce(db, user, metric)` 在五个端点各调一次。**为什么不做成 `limit(bucket)` 那样的依赖**——依赖跑在 handler 体之前，既会挡住**幂等重放**（`POST /backtest` 的重复提交是在 handler 里短路的：它不建任务，也就不该被配额挡），也会跑在**请求体校验之前**（非法请求该拿 422，而不是配额话术）。
+**Agent 配额是端点内的显式调用，不是依赖**（实施期收敛，见 §11 v2.22 落地记）：`core/quota.py::enforce(db, user, metric)` 在三个 LLM 端点各调一次（chat / research create / reports）；**在飞任务配额不在 `enforce` 里**——它在 `idempotency.create_task` 的插入语句里判（槽位 + 在飞数守卫，见 §3.1）。**为什么不做成 `limit(bucket)` 那样的依赖**——依赖跑在 handler 体之前，既会挡住**幂等重放**（`POST /backtest` 的重复提交是在 handler 里短路的：它不建任务，也就不该被配额挡），也会跑在**请求体校验之前**（非法请求该拿 422，而不是配额话术）。
 
 位置规则一句话：**「这个请求确定要被服务」的那一刻**——客户端错误（401/404/422）已排除、服务已就绪之后，任何 LLM 调用或入队之前。
 
@@ -1126,7 +1129,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 
 ### 7.8 已知边界（如实）
 
-- **CI 绿 ≠ 全绿**：集成套件 **114 项**、真语料评测集读数、四幕演练、MCP 握手**都不在 CI 里**——它们要真容器、真数据、真密钥（`/data/` 2.6GB 不进 Git）。这是单机形态的必然，不是遗漏。
+- **CI 绿 ≠ 全绿**：CI 跑离线套件 + **配额/队列定向集成**（Postgres service，`tests/integration/test_quota_e2.py`）；其余集成（paper / research / 真实 `data/`）、真语料评测集读数、四幕演练、MCP 握手**仍不在 CI 里**——它们要真容器、真数据、真密钥（`/data/` 2.6GB 不进 Git）。当前集成总数 **149**（`pytest --collect-only -m integration`），CI 注释不再写死 114。这是单机形态的必然，不是遗漏。
 - **「离线」按维度分别成立**：不连外部服务 ≠ 不读本地数据。离线轨已做到**不读 `data/`**（§7.10 的订正），但这条性质**靠纪律维持**——新写用例若在模块级或夹具外读真实数据，会立刻在 CI 上变红。
 - **「离线」仍有残余缺口（E7b 覆盖率对比查出来的，登记为已知债）**：同一份用例在本机（有 Postgres / `data/` / Langfuse）与 CI（裸环境）走的是**不同的代码路径**——本机多覆盖 221 行（角色取数主体、`init_schema`、lifespan 的「库可用」分支），CI 多覆盖 17 行（连库失败与未配置的降级分支）。**两端各自只验了半边**，全绿不等于都把两条路径验了。修复方向是把相关用例显式喂合成数据/假服务（独立一块，未排期）；在此之前，**覆盖率读数要按环境读，别当唯一事实**（§7.3 的逐行明细）。
 - **覆盖率只覆盖离线可达的 `app/`**：懒加载路径（真实编码器/精排器）、需要真库的分支测不到，会拉低数字——如实呈现，不为凑数写假测试。
@@ -1413,6 +1416,12 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 **E 批（2026-10-17）**：后台主实例锁——task worker、ETL/行情/体检调度器、结算调度器只由持锁进程启动；非持锁进程只服务 HTTP，`POST /etl/run` 与 `POST /data/rollback` 返回 409；`/etl/status` 增 `owner/active`；非主实例的进度流在 keepalive 超时后从库回放终态。完整边界见 §2.4。
 
+### 8.11 访问日志与本地文件权限（2026-10-31 P1）
+
+- **访问日志只记路由模板**：`ObservabilityMiddleware` 的 `path` 取 `scope["route"].path`，未匹配记 `unmatched`——分享/导出 token 在原始 path 里，不能进日志。`dev.sh`/`prod.sh` 的 uvicorn 加 `--no-access-log`（uvicorn access log 的 `propagate=false`，脱敏过滤器盖不到）。
+- **本地文件权限**：`dev.sh` 启动时把 `.env` 设为 600；备份 dump / manifest 为 600，备份目录为 700（`backup.py`）。`logs/metrics_token` / `rag_token` 仍为 644——Prometheus 容器以 nobody 读宿主绑定挂载，600 在 Docker Desktop 下可能读不到；这是**已知例外**，注释写在 `dev.sh`。
+- 验证：`test_observability.py` 断言日志不含 token；`test_backup_cli.py` 断言 manifest/目录权限；`promtool` 规则测试通过。
+
 **仍未做**：完整容器化 / 独立低权限用户——2026-10-17 spike 已证明 bwrap 在容器内可用（`seccomp=unconfined` + 非 root + 只读根 + `cap_drop ALL`），DuckDB bind mount 与 Chromium 中文 PDF 均通过；但 torch 在 linux/arm64 会拉 CUDA 13 依赖（>2.5GB），CPU-only 轮子与最小 seccomp profile 未定案，故**暂缓全量容器化**。多 worker 不是受支持形态——调度器与 task worker 已收口到后台主实例，但限流/熔断/逐格进度/指标/并发闸门仍按进程计算；**running 取消已改为 DB 标志**（§2.3/§2.4），不再依赖同进程投递（见 §2.4 的单实例契约与 §8.7）。
 
 ### 8.11 收尾项 6：CSP 生产验证与容器化 spike（2026-10-17）
@@ -1596,6 +1605,8 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.49 | 2026-10-31 | **审计 P1 安全卫生**：访问日志改记路由模板（不再落分享/导出 token），`dev.sh`/`prod.sh` 关 uvicorn access log；`.env` 启动时 600，备份 dump/manifest 600、目录 700；token 文件 644 的 Prometheus 例外如实记录。 |
+| v2.48 | 2026-10-31 | **审计 P1 配额/CI**：① 槽位准入同语句加「在飞数 < limit」守卫，并在启动时把 active 槽位压缩为 `0..n-1` 后重建索引，修复上限调小后旧槽位 ≥ limit 不可见导致的超发（含并发）；② `QUOTA_SLOT_ATTEMPTS` 耗尽改抛 `TaskAdmissionBusy` → **503 + Retry-After**，不再冒充 429 配额满；③ 修正 §3.2「`enforce` 在五个端点各调一次」的旧口径（active_tasks 在 `create_task` 判，`enforce` 只管三个 LLM 端点）；④ CI 加 Postgres service 跑 `test_quota_e2.py` 定向集成，集成总数 114 → **149**。详见 §3.1/§3.2/§7.8。 |
 | v2.47 | 2026-10-30 | **E2 配额准入实现修订（API 契约不变）**：在飞任务配额由「每用户 advisory lock + `count(*)`」改为「`tasks.quota_slot` `0..limit-1` + 部分唯一索引」；并发提交撞槽由唯一索引判负、换槽重试（随机起点环扫），任务进终态索引项消失即释放——无锁、无计数、无对账。老库启动时补槽位再建索引。429 契约与 `QUOTA_ACTIVE_TASKS` 语义不变；拒绝路径不再额外 count，`used` 报上限。实测（20 并发 / mixed）：配额 1000 提交 p50 **3.2s → 1.1s**、配额 3 **4.9s → 2.1s**；真库并发恰好放行 limit、槽位随终态释放。 |
 | v2.46 | 2026-10-21 | **文档收口**：抬头 1489 字状态行改为一段；目录按 § 号排序并说明「编号按交付顺序」；§10 压成分组表；§11 逐条压缩叙述，保留决策、实测读数与验收结论；不放宽任何技术口径。 |
 | v2.45 | 2026-10-20 | **E9 交付，P3 收口**：`docs/enterprise/` 四篇 + 索引；定向两轴评审四接缝 **26 条 findings**（2 必须修复 + 13 建议 + 11 参考；修 12、记录 14）。两条必须修复：admin 登录漏 `role`；停牌顺延买单未计入 `pending_notional`。验收：离线 **1797 passed / 136 deselected**、`ruff` 全绿；集成 auth 2 / paper 6 / RAG PIT 1；`check_docs.py` 10 份 0。 |

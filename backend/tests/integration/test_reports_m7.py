@@ -240,3 +240,45 @@ def test_decision_memory_round_trip_on_the_real_store(
 
     purge_memory(account_id)
     purge_rows(emails, [])
+
+
+def test_account_report_unique_index_is_enforced(real_stack: TestClient) -> None:
+    """真库：同 `(account_id, snapshot_hash)` 第二次插入返回 None，索引本身是 UNIQUE。"""
+    emails = _fresh_emails(1)
+    try:
+        client = sign_up(emails[0])
+        user_id = int(client.get("/api/v1/auth/me").json()["id"])
+        account_id = _make_account(client, "M7 唯一索引会话")
+
+        async def scenario() -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+            async with open_pool(get_settings().postgres_dsn) as pool:
+                from app.core.db import Database
+
+                db = Database(pool)
+                args: dict[str, Any] = {
+                    "user_id": user_id,
+                    "account_id": account_id,
+                    "snapshot": {},
+                    "snapshot_hash": f"dup-{uuid.uuid4().hex}",
+                    "report": {},
+                    "report_hash": "same-report",
+                }
+                first = await db.create_research_report(
+                    report_id=str(uuid.uuid4()), **args
+                )
+                second = await db.create_research_report(
+                    report_id=str(uuid.uuid4()), **args
+                )
+                index = await db._one(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE indexname = 'research_reports_account_snapshot_uidx'",
+                    (),
+                )
+                return first, second, index["indexdef"] if index else None
+
+        first, second, indexdef = asyncio.run(scenario())
+        assert first is not None
+        assert second is None
+        assert indexdef is not None and "UNIQUE" in indexdef
+    finally:
+        purge_rows(emails, [])

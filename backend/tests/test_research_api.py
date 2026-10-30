@@ -350,3 +350,39 @@ def test_report_save_failure_marks_the_run_failed(
     assert stored["status"] == "failed"
     assert stored["report_id"] is None
     assert stored["error"]
+
+
+def test_sweep_interrupted_research_runs_only_touches_running() -> None:
+    """启动扫尾只把 running 标 failed；awaiting_approval 是合法暂停，不能误伤。"""
+    db = FakeDatabase()
+    asyncio.run(
+        db.create_research_run(
+            run_id="run-live", user_id=1, question="running", subject={}
+        )
+    )
+    asyncio.run(
+        db.create_research_run(
+            run_id="run-await",
+            user_id=1,
+            question="awaiting",
+            subject={},
+            status="awaiting_approval",
+        )
+    )
+
+    assert asyncio.run(db.sweep_interrupted_research_runs()) == 1
+    assert asyncio.run(db.get_research_run(1, "run-live"))["status"] == "failed"
+    assert asyncio.run(db.get_research_run(1, "run-await"))["status"] == "awaiting_approval"
+
+
+def test_research_drain_detached_cancels_and_clears() -> None:
+    async def scenario() -> tuple[int, bool, int]:
+        async def slow() -> None:
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(slow())
+        research_api._DETACHED.add(task)
+        count = await research_api.drain_detached(timeout=0.1)
+        return count, task.cancelled(), len(research_api._DETACHED)
+
+    assert asyncio.run(scenario()) == (1, True, 0)

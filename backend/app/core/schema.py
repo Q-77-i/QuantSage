@@ -258,9 +258,24 @@ SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS research_reports_user_created_idx "
     "ON research_reports (user_id, created_at DESC)",
-    # 幂等复用按 (账户, 快照) 查：同一份输入不出第二份报告
-    "CREATE INDEX IF NOT EXISTS research_reports_account_snapshot_idx "
-    "ON research_reports (account_id, snapshot_hash)",
+    # 幂等复用按 (账户, 快照) 查：同一份输入不出第二份报告。
+    # P1：普通索引升级为**部分唯一索引**；先查历史重复，有重复就明确报错（不自动删用户报告）。
+    """
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM research_reports
+        WHERE account_id IS NOT NULL
+        GROUP BY account_id, snapshot_hash
+        HAVING count(*) > 1
+      ) THEN
+        RAISE EXCEPTION 'research_reports 存在重复的 (account_id, snapshot_hash)；请人工处理后重试';
+      END IF;
+    END $$;
+    """,
+    "DROP INDEX IF EXISTS research_reports_account_snapshot_idx",
+    "CREATE UNIQUE INDEX IF NOT EXISTS research_reports_account_snapshot_uidx "
+    "ON research_reports (account_id, snapshot_hash) WHERE account_id IS NOT NULL",
     # ── M8：深路径运行记录（过程可视化的真源）+ 报告容器扩列 ──
     # 深研报落**同一张** research_reports：分享 / 撤销 / 公开只读 / Markdown / PDF 全部按
     # report id 工作，另起一张表等于把 M7 的六个端点重写一遍（SPEC §9「不得重做」）。
@@ -308,6 +323,7 @@ SCHEMA = (
         max_attempts INT        NOT NULL DEFAULT 2,
         lease_expires_at TIMESTAMPTZ,
         worker_id   TEXT,
+        claim_token UUID,
         last_heartbeat_at TIMESTAMPTZ,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
         started_at  TIMESTAMPTZ,
@@ -324,25 +340,23 @@ SCHEMA = (
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     "CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_idx "
     "ON tasks (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL",
-    # ── 在飞任务配额：槽位而不是锁（2026-10-30）──
+    # ── 在飞任务配额：槽位而不是锁（2026-10-30；2026-10-31 压缩）──
     # 配额从「advisory lock + count(*)」改成「占一个 0..limit-1 的空槽」：并发提交
     # 各插各的，撞槽由部分唯一索引判负、重试换槽；任务进终态后索引项自动消失，
-    # 槽位释放，不需要任何减计数/对账。老库的正在飞任务在下面先补槽位再建索引。
+    # 槽位释放，不需要任何减计数/对账。
+    # P1：启动时把 active 任务**重新编号为 0..n-1**（不只是补 NULL）——上限调小后
+    # 旧槽位可能 ≥ limit，只补 NULL 会留下“不可见槽位”，count 守卫在并发下仍有洞。
+    # 先 drop 索引再重编号，最后重建；`init_schema` 有 DDL 锁且发生在服务就绪前。
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS quota_slot SMALLINT",
+    "DROP INDEX IF EXISTS tasks_active_slot_idx",
     """
     WITH ranked AS (
-        SELECT t.id,
-               coalesce(
-                   (SELECT max(x.quota_slot) FROM tasks x
-                    WHERE x.user_id = t.user_id
-                      AND x.status IN ('queued', 'running')
-                      AND x.quota_slot IS NOT NULL),
-                   -1
-               ) + row_number() OVER (
-                   PARTITION BY t.user_id ORDER BY t.created_at, t.id
-               ) AS slot
-        FROM tasks t
-        WHERE t.status IN ('queued', 'running') AND t.quota_slot IS NULL
+        SELECT id,
+               row_number() OVER (
+                   PARTITION BY user_id ORDER BY created_at, id
+               ) - 1 AS slot
+        FROM tasks
+        WHERE status IN ('queued', 'running')
     )
     UPDATE tasks t SET quota_slot = ranked.slot
     FROM ranked WHERE t.id = ranked.id
@@ -363,6 +377,8 @@ SCHEMA = (
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 2",
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ",
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_id TEXT",
+    # P1：每次取件一个 UUID。执行期写入以它做栅栏——同一进程重取也不会让旧执行命中。
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claim_token UUID",
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS tasks_claim_idx "
     "ON tasks (status, available_at, priority DESC, created_at)",

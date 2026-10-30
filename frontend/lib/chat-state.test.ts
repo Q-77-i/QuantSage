@@ -270,3 +270,22 @@ describe("canRetry —— 上一轮没拿到回答时才给「重新生成」", 
     expect(canRetry(finished)).toBe(true);
   });
 });
+
+
+describe("流式与历史轮询的竞态", () => {
+  it("流式中收到 loaded 不覆盖实时消息", () => {
+    const sent = chatReducer(initialChatState, { type: "sent", text: "新问题" });
+    const streamingId = sent.streamingId;
+    const messages = sent.messages;
+
+    const loaded = chatReducer(sent, {
+      type: "loaded",
+      messages: [{ role: "user", content: "刷新前的旧问题", tools: [] }],
+      running: true,
+    });
+
+    expect(loaded.messages).toBe(messages);
+    expect(loaded.streamingId).toBe(streamingId);
+    expect(loaded.running).toBe(true);
+  });
+});

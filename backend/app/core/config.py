@@ -352,6 +352,15 @@ class Settings(BaseSettings):
             raise ValueError("API_WORKERS 必须 ≥1（回退单 worker 用 1）")
         return value
 
+    @field_validator("qs_backup_dir", mode="after")
+    @classmethod
+    def _expand_backup_dir(cls, value: Path) -> Path:
+        """`.env` 里写 `~/QuantSageBackups` 时展开家目录，而不是当成字面 `~` 目录。
+
+        指标读取与备份脚本共用这一个路径；不展开会让 `BackupStale` 永远报 1e9。
+        """
+        return value.expanduser()
+
     @field_validator("duckdb_memory_limit")
     @classmethod
     def _duckdb_memory_limit_shape(cls, value: str) -> str:

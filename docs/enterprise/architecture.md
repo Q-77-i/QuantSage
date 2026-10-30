@@ -124,7 +124,7 @@ Redis coord 192m（S5）、Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `vol
 | `app/memory/` | 决策记忆：到期结算、教训、跨账户聚合（LangGraph Store） | 不做 RAG 检索 |
 | `app/rag/` | 嵌入 / 检索 / PIT 硬过滤 / 重排 / 离线评测 / 零命中纠错 | 不把 PIT 过滤放到本地后置 |
 | `app/etl/` | 调度器与日增量通道（事件语料、行情按需刷新） | 三条 job 串行；撞锁跳过并留痕 |
-| `app/tasks/` | 异步任务执行体 + 单 worker 取件循环 + 租约/心跳/重排 + 后台主实例锁 + 进度总线 | 队列实体是 `tasks` 表，不引消息队列 |
+| `app/tasks/` | 异步任务执行体 + 单进程内按 kind 的 worker 池取件循环 + 租约/心跳/重排 + 后台主实例锁 + 进度总线 | 队列实体是 `tasks` 表，不引消息队列；任务 worker 仍单实例 |
 | `app/data/` | DuckDB 客户端、交易日历、行情刷新、小石 CLI/MCP 装配、体检/快照/回滚/缓存 | 数据落盘后冻结；不引第二数据源 |
 | `app/mcp/` | 对外 MCP Server：把 PIT 语料检索亮给外部 AI 客户端 | stdio 单工具；无鉴权、无网络暴露面 |
 
@@ -181,7 +181,7 @@ START ─┬─ market ─┐
 
 ### 4.3 回测任务
 
-`POST /api/v1/backtest` → **202 + `{task_id}`** → `tasks` 表 → 单 worker 取件 → `backtest/engine.py` → 报告。
+`POST /api/v1/backtest` → **202 + `{task_id}`** → `tasks` 表 → 单进程内 worker 池取件（backtest×3 + grid/batch 各 1）→ `backtest/engine.py` → 报告。
 
 - 信号当根收盘生成、**次根开盘成交**；A 股整手、佣金/印花税/滑点、涨跌停规则
 - PIT 模式按 `available_at` 设卡；非 PIT 按 `event_time`，两口径差异写入报告（方向不预设）
@@ -330,7 +330,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 2 | LangGraph 只做控制流，合规用纯 Python | LLM 不可决定合规；闸门可测试 | 深路径要多写一层代码闸门 | `agent/deep/graph.py`、`agent/deep/risk_gate.py` |
 | 3 | 读并行、写单点 | 取证可以 fan-out；综合与下单必须单点 | 归并与去重逻辑更复杂 | `agent/deep/graph.py` |
 | 4 | 回测/模拟盘/批量共用撮合与费用实现 | 风控关闭时全部批准的模拟盘 ⇔ 一次回测，逐笔相等 | 同一套实现要同时满足三种调用形态 | `backtest/broker.py`、`backtest/costs.py`、`paper/replay.py` |
-| 5 | 队列实体是 `tasks` 表，单 worker | 持久、原子取件（`SKIP LOCKED`）、幂等键、进度、取消、终态、有限次重排都已有；不引 MQ | 单实例；重排只覆盖基础设施故障，重试上限 2 次 | `tasks/worker.py`、`core/db_tasks.py` |
+| 5 | 队列实体是 `tasks` 表，单进程内 worker 池 | 持久、原子取件（`SKIP LOCKED`）、幂等键、进度、取消、终态、有限次重排都已有；不引 MQ | 任务 worker 仍单实例；重排只覆盖基础设施故障，重试上限 2 次 | `tasks/worker.py`、`core/db_tasks.py` |
 | 6 | 单实例契约 + 后台主实例锁 | 任务队列仍单实例；限流/指标在 S5 跨进程（coord / 多进程聚合），熔断/并发闸门仍进程内 | 无 HA、主实例退出不自动晋升（uvicorn 补进程后重新竞选） | `tasks/worker.py::BACKGROUND_LOCK_KEY` |
 | 7 | PIT 过滤写进 Qdrant 服务端 filter | 本地后置过滤会静默塌陷召回 | 依赖 Qdrant 的 filter 能力 | `rag/retrieve.py` |
 | 8 | 用户策略子进程 + OS 级沙箱 + AST 检查 | `build_namespace()` 不是安全边界；未来函数要在运行前拦 | 平台相关（sandbox-exec/bwrap） | `strategy/isolation.py`、`strategy/static_check.py` |
@@ -344,7 +344,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 
 ### 9.1 消息队列：不引入
 
-1. 当前队列是 `tasks` 表：持久、原子取件（`FOR UPDATE SKIP LOCKED`）、带幂等键/进度/取消/终态；单 worker 串行是**有意选择**，不是缺失。
+1. 当前队列是 `tasks` 表：持久、原子取件（`FOR UPDATE SKIP LOCKED`）、带幂等键/进度/取消/终态；**单进程内按 kind 的多协程池**（backtest×3 + grid/batch 各 1，任务 worker 仍单实例）是**有意选择**，不是缺失。
 2. 已做**有限次重排**（租约/心跳 + reaper + `max_attempts=2` + `task_id` 结果幂等）：只覆盖基础设施故障，确定性错误不重试；at-least-once / 死信 / 多消费者扇出仍不引入，MQ 会改变这条语义。
 3. 触发重新评估的条件（任一）：持续任务提交 > 1/s，或队列等待 p95 > 30s；需要跨主机 worker / 独立扩缩容；需要死信队列、多消费者扇出、无上限重试；任务表成为 DB 热点。
 4. 触发后的顺序：**Redis Streams（独立 `noeviction` 实例）→ Kafka**；DB 队列 v2 已落地（S2），不先上 Celery。
@@ -375,7 +375,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - **深研报的解读受模型知识截止影响**：数字由代码取并过追溯闸门，叙述层没有对策
 - **提示注入只做纵深防御**：边界标记是其中一层，不是「解决了注入」
 - **冻结日历止于 2026-12-31**：到期前等上游更新后重生成，不用工作日近似
-- **监控是可选单机 profile**（S8）：`compose --profile monitoring` 提供 Prometheus :9092 + Alertmanager :9093（默认不启动）、6 条规则与本地 `alert_hook`；**未引入 OTel SDK**
+- **监控是可选单机 profile**（S8）：`compose --profile monitoring` 提供 Prometheus :9092 + Alertmanager :9093（默认不启动）、8 条规则与本地 `alert_hook`；**未引入 OTel SDK**
 
 ## 10. 代码锚点索引
 
