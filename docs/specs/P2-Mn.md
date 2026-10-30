@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 v1.61 ｜ 2026-10-31 ｜ 状态：**M1–M10 全部交付并验收**；M4c-3（回测页可选「我的策略」）已交付，见 §5 M4c。2026-10-31 追加 P0 修复：模拟盘重放读全量决策日志、`run` 批量裁决与推进同事务、深研报报告落库失败固定 `failed`（见 §13 v1.61）。逐段决策、实测读数与验收见 §13。
+> 版本 v1.62 ｜ 2026-10-31 ｜ 状态：**M1–M10 全部交付并验收**；M4c-3（回测页可选「我的策略」）已交付，见 §5 M4c。2026-10-31 追加 P0 修复：模拟盘重放读全量决策日志、`run` 批量裁决与推进同事务、深研报报告落库失败固定 `failed`（见 §13 v1.61）；追加 P1 修复：研报部分唯一索引、停机 drain 与 research 启动扫尾（见 §13 v1.62）。逐段决策、实测读数与验收见 §13。
 >
 > 本 SPEC 覆盖 PRD §2.2 的 M1–M10。正文章节按功能 ID 排序（§2–§11 对应 M1–M10）。
 > 功能范围依据竞品调研（docs/private/Pn-n/P2-Mn/P2-Mn-竞品调研.md，2026-10-06）：相对 P1 收尾时点新增 15 项功能并新开 M10，均已获确认。
@@ -955,6 +955,7 @@ DSR = Φ[ (SR − SR₀)·√(T−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR
 - 新表一张：`research_reports`（`id UUID PK` / `user_id FK` / `account_id UUID` / `created_at` /
   `snapshot JSONB` / `snapshot_hash TEXT` / `report JSONB` / `report_hash TEXT` / `share_token TEXT UNIQUE NULL` /
   `shared_at TIMESTAMPTZ NULL`）；幂等建表走 `core/db.py` 既有机制。
+- **报告幂等唯一索引（2026-10-31 P1 修复）**：`(account_id, snapshot_hash)` 建**部分唯一索引**（`WHERE account_id IS NOT NULL`）；`create_research_report` 用 `ON CONFLICT DO NOTHING`，撞上就回查既有行并标 `reused=true`。并发生成同一份数据只出一行；深研报 `account_id IS NULL` 不受该索引约束。迁移前若发现历史重复，**不自动删除**，明确报错交人工处理。
 - `snapshot` = `{bars: {shards[{name, sha256}], digest}, events: {digest, days, last_day, rows},
   corpus: {start, end}, market_end, decisions_hash, account: {id, config_hash, as_of}}`——**顺带还上 M2c 的挂账**
   （`backtest_runs.request` 不含数据版本指纹；M7 起报告自带，`backtest_runs` 新写入补指纹列可延）。
@@ -1097,6 +1098,7 @@ Langfuse 对账的**真源**）/ `budget JSONB` / `report_id UUID` / `error` / `
 递增 `REPORT_VERSION`；`validate_claims` / `snapshot` / `plain_json` 全部复用。
 
 - **报告落库与运行状态一致**：`report` 帧的落库失败必须把 `research_runs.status` 置为 `failed` 并写 `error`；随后的 `done` 帧不得把失败覆盖成 `done/degraded`。`status in (done, degraded)` 且 `report_id IS NULL` 的组合不允许出现（图本身 `failed` / `awaiting_approval` 的运行不受此条约束）。
+- **停机与重启（2026-10-31 P1 修复）**：lifespan 收尾对 chat / research 的 `_DETACHED` 做限时 cancel/await（默认 5s），再关连接池；后台主实例启动时把本实例遗留的 `research_runs.status='running'` 标为 `failed` + `error.kind='interrupted'`，`awaiting_approval` 保持不动（合法暂停）。
 
 ### 前端（M8c）
 
@@ -1317,6 +1319,7 @@ A2A（只留 Agent 能力元数据这一零成本预留）· 报告版本历史 
 
 | 版本 | 日期 | 关联 | 变更 |
 |---|---|---|---|
+| v1.62 | 2026-10-31 | P1 修复 | **审计 P1**：① `research_reports(account_id, snapshot_hash)` 加部分唯一索引（`account_id IS NOT NULL`），`create_research_report` 改 `ON CONFLICT DO NOTHING` 回查；并发只出一份，历史重复不自动删、迁移明确报错。② lifespan 收尾对 chat/research 的 `_DETACHED` 限时 cancel/await（5s）；后台主实例启动把遗留 `research_runs.status='running'` 标 `failed/interrupted`，`awaiting_approval` 保持不动。详见 §8/§9。 |
 | v1.61 | 2026-10-31 | P0 修复 | **审计 P0 三项**：① 模拟盘 `step` / `run` 的重放改读**全量**决策日志（`paper_decisions_all`，≤5,000 条），详情展示仍 500 条——修复 >500 条时旧 `filled` 决策被重生成覆盖；② `run` 的批量裁决不再单独落库，pending（非 `agent`）在内存改成 approved/rejected，随 `paper_advance` 同一事务写回——重放失败/409 零副作用；③ 深研报报告落库失败固定 `status=failed` + `error`，禁止 `done` + `report_id=NULL`。详见 §7.5/§7.6/§9；本机离线 **1903**（新增 15 例）/ 覆盖率 **88.95%**（门槛 88）。 |
 | v1.60 | 2026-10-21 | 收口 | **文档收口**：§1 目录树改为模块边界指针；§12 测试策略压成分组表；§13 逐条压缩叙述，保留版本、决策、实测读数与验收结论；不放宽任何技术口径。 |
 | v1.59 | 2026-10-14 | M5b（E1b 修订） | M5b 的「断线即断、不续传」由 P3-E1b 取代：`POST /optimize/{grid,batch}` 改 202 + `{task_id}`，进度由 `GET /api/v1/tasks/{id}/events` 订阅，断开只影响订阅；中止改 `POST /tasks/{id}/cancel`（协作式，结果不落库）。网格展开、闸门、DSR 判据与 `optimization_runs` 结构未动。详见 [P3 SPEC §2.8](P3-En.md#28-e1b网格--批量迁入队列2026-10-14-定稿)。 |

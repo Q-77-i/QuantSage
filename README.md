@@ -113,7 +113,7 @@ memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_M
 
 **P4-S7 / S9（2026-10-30）**：task worker 单进程内按 kind 池化（backtest×3 + grid/batch 各 1，`TASK_WORKER_POOL_ENABLED=false` 回退）；RAG 合批经原型门禁否决，按 A 不做。数据层热点缓存（ST 名单 / 全市场等权日表 / 窗口指纹，`BT_DATA_CACHE_ENABLED=false` 回退）：20 回测 queue p95 **2.4s → 1,312ms → 503ms**、run p50 **86ms**；2w bars c=300 **1,660 req/s / p95 240ms** 不回归；metrics / `data_digest` 逐键相等。
 
-**P4-S8 可观测性与缓存（2026-10-30）**：可选 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，**默认不启动**）+ 6 条规则 + 本地 `alert_hook`；`/metrics` 新增队列 p95 / PG 连接 / 宿主内存/swap / 备份年龄与 `qs:cache_hit_ratio:5m`。验收：L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，Redis 2 键含数据代际）；冷查询 50 个不同标的 **39.97 req/s**（S1 38.1）→ 不新增限流；bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**；RAG 过载 / PG 105 连接 / 旧备份三条真实告警 firing→resolved；备份 launchd 每日 03:30，kickstart 后年龄 **432s**。
+**P4-S8 可观测性与缓存（2026-10-30）**：可选 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，**默认不启动**）+ 8 条规则（P1 增 BackupPartial/ServiceDown）+ 本地 `alert_hook`；`/metrics` 新增队列 p95 / PG 连接 / 宿主内存/swap / 备份年龄与 `qs:cache_hit_ratio:5m`。验收：L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，Redis 2 键含数据代际）；冷查询 50 个不同标的 **39.97 req/s**（S1 38.1）→ 不新增限流；bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**；RAG 过载 / PG 105 连接 / 旧备份三条真实告警 firing→resolved；备份 launchd 每日 03:30，kickstart 后年龄 **432s**。
 
 **备份与恢复（S6，本地演练口径，不是 SLA）**：
 
@@ -124,6 +124,8 @@ bash scripts/restore.sh --source 20261029 --pg-db quantsage_restore_20261029 \
   --qdrant-collection cn_events_v1_restore_20261029 --data-target /tmp/qs-restore
 bash scripts/install_backup_job.sh             # 可选：launchd 每日 03:30（不会自动安装）
 ```
+
+> `install_backup_job.sh --target` 必须与 `.env` 的 `QS_BACKUP_DIR` 指向同一个目录；不一致时安装器会显式失败——备份年龄指标只读 `.env`，两处不同会永久误报 `BackupStale`。
 
 PG 用 `pg_dump -Fc`（`quantsage` + `langfuse`，排除测试库），Qdrant 用 collection snapshot（`embeddings.json` 未变则复用上一份），`data/` 用 `rsync --link-dest` 硬链接快照；保留 **7 日 + 4 周**。恢复默认进 scratch 目标（新库/新集合/临时目录）。覆盖已存在的目标需 `--force` **再加二次确认**：TTY 下输入 `yes`，非 TTY（脚本/CI）显式 `--yes`；覆盖线上库 `quantsage`、线上集合 `cn_events_v1` 或仓库 `data/` 还要 `--allow-live`。`--force` 单独不等于确认，拒绝发生在任何删除之前。RPO 24h / RTO ≤1h 是**本地演练口径**，不是 SLA；`.env`、`logs/`、Redis 不在备份范围。**备份含用户表（密码哈希）与业务数据：只放本机/受控外置盘，不进仓库、不上传公共云盘。**
 
@@ -310,7 +312,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 - **模拟盘重放读全量决策日志**：`step` / 跑到末尾都从会话起点重放该账户的**全部**决策（上限 20 标的 × 250 交易日 ⇒ 至多 5,000 条）；详情页的决策流水仍最多显示 500 条。两者不是同一个查询，展示截断不会影响账本
 - **回测引擎不含组合与实盘**：模拟盘是**单账户多标的等额配额**，不是组合优化；样本不足时年化与夏普会被放大，UI 常驻提示。**风控开启的会话不再与回测逐笔平价**——上限是硬顶不是目标（单标的上限在 5 只以上池子里通常不触发），止损按收盘价判定、次日开盘成交，跳空可能成交在更差价位
 - **网格/批量与回测一样是任务**：`POST /api/v1/optimize/{grid,batch}` 回 202 + 任务号，进度订阅 `GET /api/v1/tasks/{id}/events`。**断开订阅不影响执行**——关掉页面/刷新，任务照跑完并落库（`?task=` 刷新后自动接回）。「停止」是真取消（协作式），**中止的结果不落库**
-- **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例契约**：同一业务库只允许一个进程承担后台任务；启动时用 advisory lock 竞选后台主实例，只有持锁者跑 task worker / ETL / 结算调度器，非持锁进程只服务 HTTP（`POST /etl/run` 与 `POST /data/rollback` 返回 409）。API 层可条件跑 2 个 worker（S5），任务 worker 仍单实例；主实例退出后不做运行中晋升，uvicorn 补进程后由新进程在启动时重新竞选（`API_WORKERS>1` 时锁重试 3×0.25s）；被重启/崩溃打断的任务**有限次自动重排**（租约 + 心跳 + reaper，默认最多执行 2 次；确定性错误不重试），结果按 `task_id` 幂等，重排不产生重复记录
+- **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单进程内按 kind 的 worker 池**（backtest×3 + grid/batch 各 1）消费 `tasks` 表（不引 Celery/Redis Streams；任务 worker 仍单实例）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例契约**：同一业务库只允许一个进程承担后台任务；启动时用 advisory lock 竞选后台主实例，只有持锁者跑 task worker / ETL / 结算调度器，非持锁进程只服务 HTTP（`POST /etl/run` 与 `POST /data/rollback` 返回 409）。API 层可条件跑 2 个 worker（S5），任务 worker 仍单实例；主实例退出后不做运行中晋升，uvicorn 补进程后由新进程在启动时重新竞选（`API_WORKERS>1` 时锁重试 3×0.25s）；被重启/崩溃打断的任务**有限次自动重排**（租约 + 心跳 + reaper，默认最多执行 2 次；确定性错误不重试），结果按 `task_id` 幂等，重排不产生重复记录
 - **Agent 下单只到提案**：Agent 工具只能创建**当前交易日、待审批**的模拟盘决策，不能批准 / 成交 / 改数量 / 改风控；用户必须逐条裁决，有待审批 Agent 提案时「跑到结束」直接 409。只支持会话池内标的、等额配额买入 / 全仓卖出（M6 不支持部分成交）；不做盘中触发
 - **策略版本按内容计**：只有 `code` / `params` 实际变化才 +1，只改名不增版；回滚追加新版本并保留当前名字；删除策略会级联删版本行。模拟盘创建时锁定 `strategy_id + version`（旧会话缺键时按名字回落），回测记录绑定 `strategy_version`，**优化记录本轮不绑定版本**（源码已在任务行冻结，但历史摘要无法证明当时版本）
 
@@ -327,7 +329,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 
 - **消息队列 / 容器化 / 多 worker 的边界**：不引 MQ（`tasks` 表即队列）、全量容器化暂缓、API 可条件跑 2 个 worker（S5；任务 worker / 调度器仍单实例）；四句话的触发判据见 [企业级文档 · 已知边界与未来触发](docs/enterprise/architecture.md#9-已知边界与未来触发)
 - **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流默认进程内；多 worker 时 `RATE_LIMIT_SHARED=true` 走 redis-coord 共享令牌桶，coord 挂了降级为进程内 `floor(capacity/N)`；熔断仍进程内。调度器与 task worker 已收口到后台主实例（E 批）
-- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。**P4-S8 起**有可选的 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，默认不启动；6 条规则 + 本地 `alert_hook`），指标另含队列 p95、PG 连接、宿主内存/swap 与备份年龄；**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
+- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。**P4-S8 起**有可选的 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，默认不启动；8 条规则 + 本地 `alert_hook`），指标另含队列 p95、PG 连接、宿主内存/swap 与备份年龄；**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
 
 ### 展示与前端
 

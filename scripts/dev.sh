@@ -33,6 +33,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # QS_MODE=prod 由 scripts/prod.sh 设置；直接跑本脚本时是 dev。
 MODE="${QS_MODE:-dev}"
+
+# 本地密钥文件默认 600：同机其他用户不能读 .env（P1 安全卫生）。
+if [[ -f "$ROOT/.env" ]]; then
+  chmod 600 "$ROOT/.env" 2>/dev/null || true
+fi
 # S5：API worker 数。shell 环境优先；没设则读 .env（app 也从 .env 读同名键，
 # 两处必须是同一个值——否则 dev.sh 起 1 个而 app 以为自己有 2 个，限流降级分母会错）。
 API_WORKERS="${API_WORKERS:-}"
@@ -237,7 +242,10 @@ start_backend() {
       export PROMETHEUS_MULTIPROC_DIR="$PROM_DIR"
     fi
     # S4：SIGTERM 后先停接新请求、drain 在飞/SSE（上限 15s），再走 lifespan 收尾。
+    # `--no-access-log`：uvicorn 的 access log 记原始 path（含分享/导出 token，
+    # 且 propagate=false，脱敏过滤器盖不到）；访问日志由 ObservabilityMiddleware 统一记路由模板。
     nohup .venv/bin/python -m uvicorn app.main:app --port "$BACKEND_PORT" \
+      --no-access-log \
       --workers "$API_WORKERS" \
       --timeout-graceful-shutdown 15 >>"$BACKEND_LOG" 2>&1 &
     echo $! >"$BACKEND_PID"

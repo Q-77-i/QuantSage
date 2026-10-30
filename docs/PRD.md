@@ -286,7 +286,7 @@
 | 工作包 | 内容 | 验收口径 | 预估 |
 |---|---|---|---|
 | P4-S7（已交付） | RAG 分级/SLO（合批门禁未过，按 A 不做）；task worker 单进程内按 kind 池化（3+1+1） | 20 回测 queue p95 **1,312ms**（S6 2,423ms）；bars **1,583/236ms** 不回归；20/20 done | 4–5 天 |
-| P4-S8（已交付） | 缓存命中率/冷查询；Prometheus + Alertmanager + 6 条告警；备份 launchd | L1/L2/合计可算（验收 **99.5%**）；4 组指标 scrape 一次一值；3 条真实告警 firing→resolved；备份年龄 432s | 3.5–4.5 天 |
+| P4-S8（已交付） | 缓存命中率/冷查询；Prometheus + Alertmanager + 8 条告警；备份 launchd | L1/L2/合计可算（验收 **99.5%**）；4 组指标 scrape 一次一值；3 条真实告警 firing→resolved；备份年龄 432s | 3.5–4.5 天 |
 | P4-S9（已交付） | 数据层热点缓存：ST 名单、全市场等权日表、窗口指纹；`BT_DATA_CACHE_ENABLED` 回滚 | 20 回测 queue p95 **503ms**、run p50 86ms；bars **1,660/240ms** 不回归；metrics/digest 逐键相等 | 2–3.5 天 |
 
 技术规格见 [P4-Sn SPEC](specs/P4-Sn.md) §8/§9/§10（v3.13）。

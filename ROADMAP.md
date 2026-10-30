@@ -12,7 +12,7 @@
 
 **进行中**：无。**范围冻结暂缓（2026-10-30）**——先收口遗留问题，草案见文末「范围冻结（草案）」。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）。
 
-**下一个动作**：无活跃工作包，后续按触发条件评估。S8 见下（6 条规则、3 条真实告警 firing/resolved、缓存命中率可算、备份 launchd）；S7 复测（20 回测 queue p95 1,312ms、bars 1,583/236ms）；S9 数据层缓存后 queue p95 **503ms**、run p50 86ms、bars 1,660/240ms；S6 最终复测（2w bars 1,710 req/s / p95 280ms、health 11,599；8 行故障演练通过；备份 4.6GB / 恢复 36.3s）。后续愿景（角色拆分顺延 P4-S10 及以后）仍按触发条件评估。
+**下一个动作**：无活跃工作包，后续按触发条件评估。S8 见下（8 条规则、3 条真实告警 firing/resolved、缓存命中率可算、备份 launchd）；S7 复测（20 回测 queue p95 1,312ms、bars 1,583/236ms）；S9 数据层缓存后 queue p95 **503ms**、run p50 86ms、bars 1,660/240ms；S6 最终复测（2w bars 1,710 req/s / p95 280ms、health 11,599；8 行故障演练通过；备份 4.6GB / 恢复 36.3s）。后续愿景（角色拆分顺延 P4-S10 及以后）仍按触发条件评估。
 
 **待决事项**
 
@@ -76,7 +76,7 @@
 | S5 双 API Worker（条件） | ✅ | health ≥1.8×、bars c300 p95 ≤300ms、限额 5 仍只放行 5；coord 降级、多进程指标、跨进程进度、停机 | 1.5–2 天 |
 | S6 验证与收口 | ✅ | 压测/故障/备份恢复/文档；每项 before/after；8 行故障通过、恢复 36.3s | 1–1.5 天 |
 | S7 RAG SLO + worker 池 | ✅ | 合批门禁未过（按 A 不做）；RAG SLO 记录；worker 3+1+1 queue p95 1,312ms；bars 1,583/236ms | 4–5 天 |
-| S8 可观测性与缓存 | ✅ | 缓存命中率 L1/L2/合计可算（验收 99.5%）；4 组指标 + 6 条规则（3 条真实 firing/resolved）+ 备份年龄；launchd 每日 03:30 | 3.5–4.5 天 |
+| S8 可观测性与缓存 | ✅ | 缓存命中率 L1/L2/合计可算（验收 99.5%）；4 组指标 + 8 条规则（3 条真实 firing/resolved）+ 备份年龄；launchd 每日 03:30 | 3.5–4.5 天 |
 | S9 数据层热点优化 | ✅ | `cached_st_symbols` + benchmark/digest 缓存 + 开关；20 回测 queue p95 **503ms**、run p50 86ms、bars 1,660/240ms；黄金对照四项全等 | 2–3.5 天 |
 
 **S1 复验（2026-10-27，同机 `ab`，单进程）**：旧代码 c=50 63 req/s / p95 1,045ms；新代码 c=50 **1,098 req/s / p95 69ms**、c=10 1,186 req/s / p95 12ms（缓存预热）。冷缓存单次 73ms；50 个不同标的顺序跑 38 req/s（如实记录，**不列入 SLO**——S1 的达标读数是同一 URL 的缓存命中）。规格 v3.1：`dc.events_page` 有界结果缓存 + 默认窗口/limit/truncated。
@@ -97,7 +97,7 @@
 
 **S9 复验（2026-10-30，harness 8100，2 API workers）**：数据层三处缓存 + `BT_DATA_CACHE_ENABLED` + `progress+finish` 合并。20 回测 queue p95 **503ms**（3 轮中位：1,160 / 473 / 503；5 轮中位 505ms）、run p50 **86ms**（S7 1,312ms / 209–304ms）；bars c=300 **1,660 req/s / p95 240ms**（3 次中位：1,708/240、1,660/248、1,651/215），不回归；真数据黄金对照 metrics / digest / equity_curve / trades **四项全等**（缓存热 50.5ms vs 直算 143.7ms）；后端进程树 RSS 1.83GB、无 OOM。**S9 达标，S7 的 ≤1s 复验成立**。测试：新增 5 个缓存用例 + finish 进度合并单测/真库用例。规格 v3.11（§10）。
 
-**S8 复验（2026-10-30，同机）**：`/metrics` 新增队列 p95、PG 连接、宿主内存/swap、备份年龄；2 worker 下每指标**一条值**；`qs:cache_hit_ratio:5m` 压测后 **0.969**。缓存：dev 栈 2 worker + `CACHE_ENABLED=true` 一轮 L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，L2 占 L1 未命中 **86.7%**），Redis 2 键 / 1.51MB、键含代际；harness bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**（0 失败、无回归）。冷查询 50 个不同标的顺序读 **39.97 req/s**（p50 18.7ms / p95 37.4ms；S1 38.1 / 24.3 / 38.2）→ **不新增限流**。告警：`monitoring` profile（Prometheus :9092 + Alertmanager :9093）默认不启动；6 条规则 promtool 全过；真实演练 **RAG 过载 / PG 105 连接 / 伪造旧备份** 三条 firing → resolved 全落 `logs/alerts.log`。备份 launchd 已装并 kickstart，manifest `20261030.json`、年龄 432s。修复：RAG `/metrics` 配 token 后永远 401、Prometheus 缺 `alerting.alertmanagers`、SIGHUP 热加载会清空 scrape 目标。规格 v3.13（§9）。
+**S8 复验（2026-10-30，同机）**：`/metrics` 新增队列 p95、PG 连接、宿主内存/swap、备份年龄；2 worker 下每指标**一条值**；`qs:cache_hit_ratio:5m` 压测后 **0.969**。缓存：dev 栈 2 worker + `CACHE_ENABLED=true` 一轮 L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，L2 占 L1 未命中 **86.7%**），Redis 2 键 / 1.51MB、键含代际；harness bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**（0 失败、无回归）。冷查询 50 个不同标的顺序读 **39.97 req/s**（p50 18.7ms / p95 37.4ms；S1 38.1 / 24.3 / 38.2）→ **不新增限流**。告警：`monitoring` profile（Prometheus :9092 + Alertmanager :9093）默认不启动；8 条规则 promtool 全过；真实演练 **RAG 过载 / PG 105 连接 / 伪造旧备份** 三条 firing → resolved 全落 `logs/alerts.log`。备份 launchd 已装并 kickstart，manifest `20261030.json`、年龄 432s。修复：RAG `/metrics` 配 token 后永远 401、Prometheus 缺 `alerting.alertmanagers`、SIGHUP 热加载会清空 scrape 目标。规格 v3.13（§9）。
 
 **提交配额优化（2026-10-30，两阶段）**：① 先把「占着业务池连接阻塞在 `pg_advisory_xact_lock`」改为 try-lock + 抢不到归还连接再退避——DB 执行 **14.22s → 0.30s**、>50ms 慢查询 **18 → 0**、池等待均值 **45.5 → 30.5ms**，但提交 p50 持平（串行化仍在）。② 再把准入从「锁 + `count(*)`」改为 `tasks.quota_slot`（`0..limit-1`）+ 部分唯一索引：随机起点环扫空槽、撞槽重试，任务进终态索引项消失即释放。20 并发 mixed：配额 1000 提交 p50 **3.2s → 1.1s**、配额 3 **4.9s → 2.1s**；真库并发**恰好放行 limit**、槽位随终态释放。证据：`docs/private/Pn-n/P4-Sn/baseline/s8-db-20261030-212105`（前）/`215824`（try-lock 后）/`225808`（槽位后）、`s8-submit-stages-*`（P1/P2/P4 分阶段）。
 

@@ -2,9 +2,10 @@ name: CI
 
 # 触发：主干推送 + PR + 手动重跑。
 #
-# ⚠ **集成套件不在 CI 内**（114 项需要真容器 / 真实 `data/`——2.6GB，不进 Git / 真密钥），
-# 四幕可靠性演练与 MCP 握手同样不在。**「CI 绿」不等于「全部测试通过」**，这条口径写在
-# `docs/specs/P3-En.md` §7.8，别在两处各讲一遍。
+# ⚠ **集成套件默认不在 CI 内**（149 项中大部分需要真容器 / 真实 `data/`——2.6GB，不进 Git /
+# 真密钥），四幕可靠性演练与 MCP 握手同样不在。**例外**：配额/队列定向集成
+# `tests/integration/test_quota_e2.py` 用 Postgres service 在 CI 跑（见下方 backend job）。
+# **「CI 绿」不等于「全部测试通过」**，这条口径写在 `docs/specs/P3-En.md` §7.8，别在两处各讲一遍。
 on:
   push:
     branches: [main]
@@ -55,6 +56,21 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # 配额/队列定向集成需要真 Postgres；这是 P1 起 CI 唯一跑的真实依赖集成。
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: quantsage
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: quantsage
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U quantsage -d quantsage"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -95,6 +111,15 @@ jobs:
       # 平时看日志也直接知道哪没测到。
       - name: 测试
         run: uv run pytest -q --cov=app --cov-fail-under=88 --cov-report=term-missing:skip-covered
+      # P1：槽位/计数守卫、并发准入、幂等重放这些语义只有真 SQL 能验。
+      # 只跑配额/队列定向文件；需要真实 data/ 的 paper/research 集成仍不在 CI。
+      - name: 配额/队列定向集成（真 Postgres）
+        env:
+          DATABASE_URL: postgresql://quantsage:ci@localhost:5432/quantsage
+          API_WORKERS: "1"
+          METRICS_TOKEN: ""
+          RATE_LIMIT_SHARED: "false"
+        run: uv run pytest tests/integration/test_quota_e2.py -q -m integration
 
   frontend:
     name: 前端 · lint + typecheck + test + build

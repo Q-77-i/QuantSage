@@ -9,6 +9,8 @@ from typing import Any
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 
+from app.core.quota import TaskAdmissionBusy
+
 
 def like_pattern(text: str) -> str:
     """把用户输入变成 `ILIKE` 模式（admin 视图的邮箱搜索）。
@@ -82,7 +84,8 @@ _PROGRESS_RESET = "jsonb_set(progress - 'cells', '{done}', '0'::jsonb)"
 
 #: 槽位撞车的重试次数。只发生在「两个并发提交同时选中同一个空槽」——
 #: 唯一索引判负的一方换槽重试；没有空槽时语句直接返回 0 行，不消耗重试。
-QUOTA_SLOT_ATTEMPTS = 5
+#: 20 次是 P1 定的：5 次在高并发突发下可能把「有空槽但没抢到」误判成配额满。
+QUOTA_SLOT_ATTEMPTS = 20
 
 
 class TasksMixin:
@@ -178,7 +181,11 @@ class TasksMixin:
                 "CROSS JOIN LATERAL ("
                 "  SELECT (i + %s::int) %% %s::int AS slot"
                 ") AS s "
-                "WHERE NOT EXISTS ("
+                # P1：上限调小后旧槽位可能 ≥ limit，只扫槽位会把它们当成“不可见”。
+                # 同一条语句再校验真实在飞数；两者同时成立才放行。
+                "WHERE (SELECT count(*) FROM tasks WHERE user_id = %s "
+                "  AND status IN ('queued', 'running')) < %s::int "
+                "AND NOT EXISTS ("
                 "  SELECT 1 FROM tasks WHERE user_id = %s AND quota_slot = s.slot "
                 "  AND status IN ('queued', 'running')"
                 ") "
@@ -186,7 +193,15 @@ class TasksMixin:
                 "ON CONFLICT (user_id, idempotency_key) "
                 "WHERE idempotency_key IS NOT NULL DO NOTHING "
                 f"RETURNING {_TASK_COLUMNS}",
-                (*params, active_limit, offset, active_limit, user_id),
+                (
+                    *params,
+                    active_limit,
+                    offset,
+                    active_limit,
+                    user_id,
+                    active_limit,
+                    user_id,
+                ),
             )
         return await cursor.fetchone()
 
@@ -238,10 +253,13 @@ class TasksMixin:
                         conn, None, user_id, idempotency_key
                     )
                 return None
-            # 连续撞槽用尽重试：仍按「重放优先」回查一次，避免把重放误判成配额满
+            # 连续撞槽用尽重试：仍按「重放优先」回查一次，避免把重放误判成配额满。
+            # 不是重放就是**有空槽但没抢到**——503 busy，不能冒充 429 配额满。
             if idempotency_key is not None:
-                return await self._row_or_replay(conn, None, user_id, idempotency_key)
-            return None
+                row = await self._row_or_replay(conn, None, user_id, idempotency_key)
+                if row is not None:
+                    return row
+            raise TaskAdmissionBusy("任务准入繁忙，请稍后重试")
 
     async def task_by_idempotency_key(self, user_id: int, key: str) -> dict[str, Any] | None:
         """按幂等键回查（E4b / L7）。闸门**之前**的短路用它，重复提交不再走一遍闸门。"""
@@ -319,61 +337,63 @@ class TasksMixin:
             ") "
             "UPDATE tasks SET status = 'running', started_at = now(), "
             "  attempts = attempts + 1, worker_id = %s, "
+            "  claim_token = gen_random_uuid(), "
             "  lease_expires_at = CASE WHEN %s > 0 "
             "    THEN now() + make_interval(secs => %s) ELSE NULL END, "
             "  last_heartbeat_at = CASE WHEN %s > 0 THEN now() ELSE NULL END, "
             f"  progress = {_PROGRESS_RESET}, "
             "  updated_at = now() "
             "WHERE id = (SELECT id FROM picked) "
-            "RETURNING user_id, cancel_requested_at, attempts, max_attempts, "
+            "RETURNING user_id, cancel_requested_at, attempts, max_attempts, claim_token, "
             f"{_TASK_COLUMNS}",
             (kinds_arg, kinds_arg, worker_id, lease_seconds, lease_seconds, lease_seconds),
         )
 
     async def heartbeat_task(
-        self, task_id: str, *, worker_id: str, lease_seconds: int
+        self, task_id: str, *, claim_token: str, lease_seconds: int
     ) -> bool:
         """续租。返回是否命中——**没命中也别重试**：租约已被 reaper 回收，
-        旧 worker 的迟到心跳不能把行抢回来（SPEC §3.3）。"""
+        旧执行的迟到心跳不能把行抢回来（SPEC §3.3）。"""
         row = await self._one(
             "UPDATE tasks SET last_heartbeat_at = now(), "
             "  lease_expires_at = now() + make_interval(secs => %s), updated_at = now() "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s "
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid "
             "RETURNING id",
-            (lease_seconds, task_id, worker_id),
+            (lease_seconds, task_id, claim_token),
         )
         return row is not None
 
     async def requeue_task(
-        self, task_id: str, *, worker_id: str, backoff_seconds: float
+        self, task_id: str, *, claim_token: str, backoff_seconds: float
     ) -> bool:
         """可重排错误：`running` → `queued`，清租约，返回是否重排。
 
-        条件带 `worker_id`：任务已被 reaper 回收（并可能被新 worker 取走）时，
-        旧 worker 不得把它按回 `queued`。`attempts < max_attempts` 是数据库层兜底——
+        条件带 `claim_token`：任务已被 reaper 回收（并可能被新一次取件拿走）时，
+        旧执行不得把它按回 `queued`。`attempts < max_attempts` 是数据库层兜底——
         调用方已判过一次，这里防的是并发下 `attempts` 被别处推过上限。
         **不写 `error`**：还没到终态。
         """
         row = await self._one(
             "UPDATE tasks SET status = 'queued', "
             "  available_at = now() + make_interval(secs => %s), "
-            "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
+            "  worker_id = NULL, claim_token = NULL, "
+            "  lease_expires_at = NULL, last_heartbeat_at = NULL, "
             f"  progress = {_PROGRESS_RESET}, "
             "  updated_at = now() "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s "
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid "
             "  AND attempts < max_attempts "
             "RETURNING id",
-            (backoff_seconds, task_id, worker_id),
+            (backoff_seconds, task_id, claim_token),
         )
         return row is not None
 
-    async def release_task(self, task_id: str, *, worker_id: str) -> str | None:
+    async def release_task(self, task_id: str, *, claim_token: str) -> str | None:
         """优雅停机：释放本 worker 持有的租约（S4 §5.4），不把任务算作一次失败。
 
         - 未请求取消 → `queued`、`attempts = greatest(attempts-1, 0)`、清租约、进度归零；
           `attempts-1` 是刻意的：进程正常退出不是执行失败，不该消耗重排次数。
         - 已请求取消 → `cancelled` + `finished_at`（取消是权威，不重排）。
-        - `worker_id` 栅栏：行已被 reaper 回收并重新取件时返回 `None`，不误放别人的租约。
+        - `claim_token` 栅栏：行已被 reaper 回收并重新取件时返回 `None`，不误放别人的租约。
 
         与 `requeue_task` 的区别：那个给「执行期瞬时错误」用（保留 attempts、带退避）；
         这个只给停机收尾用（attempts 回退、立即排队）。
@@ -388,13 +408,14 @@ class TasksMixin:
             "    THEN now() ELSE available_at END, "
             "  finished_at = CASE WHEN cancel_requested_at IS NOT NULL "
             "    THEN now() ELSE finished_at END, "
-            "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
+            "  worker_id = NULL, claim_token = NULL, "
+            "  lease_expires_at = NULL, last_heartbeat_at = NULL, "
             "  progress = CASE WHEN cancel_requested_at IS NULL "
             f"    THEN {_PROGRESS_RESET} ELSE progress END, "
             "  updated_at = now() "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s "
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid "
             "RETURNING status",
-            (task_id, worker_id),
+            (task_id, claim_token),
         )
         return str(row["status"]) if row else None
 
@@ -430,7 +451,8 @@ class TasksMixin:
             "  finished_at = CASE "
             "    WHEN cancel_requested_at IS NOT NULL OR attempts >= max_attempts "
             "    THEN now() ELSE finished_at END, "
-            "  worker_id = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, "
+            "  worker_id = NULL, claim_token = NULL, "
+            "  lease_expires_at = NULL, last_heartbeat_at = NULL, "
             "  progress = CASE "
             "    WHEN cancel_requested_at IS NULL AND attempts < max_attempts "
             f"    THEN {_PROGRESS_RESET} "
@@ -447,23 +469,23 @@ class TasksMixin:
         return counts
 
     async def update_task_progress(
-        self, task_id: str, *, worker_id: str, done: int, total: int
+        self, task_id: str, *, claim_token: str, done: int, total: int
     ) -> None:
         """进度。E1a 的单次回测只在收尾置 1/1（E1b 的网格逐格推）。
 
-        `worker_id` 栅栏：任务被回收并重新取件后，旧 worker 的进度不能盖住新 worker 的。
+        `claim_token` 栅栏：任务被回收并重新取件后，旧执行的进度不能盖住新一次的。
         """
         await self._exec(
             "UPDATE tasks SET progress = progress || %s::jsonb, updated_at = now() "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
-            (Jsonb({"done": done, "total": total}), task_id, worker_id),
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid",
+            (Jsonb({"done": done, "total": total}), task_id, claim_token),
         )
 
     async def append_task_cell(
         self,
         task_id: str,
         *,
-        worker_id: str,
+        claim_token: str,
         done: int,
         total: int,
         cell: dict[str, Any],
@@ -471,7 +493,7 @@ class TasksMixin:
         """网格/批量逐格进度（S5）：`done/total` 与 `cells` 一条 UPDATE 写入。
 
         `cells` 是 JSONB 数组；`MAX_CELLS=100`，上限 1,000 是防御性硬顶（未来放宽
-        网格上限时不会让单行无限长）。`worker_id` 栅栏与 `update_task_progress` 同源。
+        网格上限时不会让单行无限长）。`claim_token` 栅栏与 `update_task_progress` 同源。
         """
         await self._exec(
             "UPDATE tasks SET progress = jsonb_build_object("
@@ -481,21 +503,21 @@ class TasksMixin:
             "    THEN COALESCE(progress->'cells', '[]'::jsonb) || %s::jsonb "
             "    ELSE COALESCE(progress->'cells', '[]'::jsonb) END"
             "), updated_at = now() "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
-            (done, total, Jsonb(cell), task_id, worker_id),
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid",
+            (done, total, Jsonb(cell), task_id, claim_token),
         )
 
     async def finish_task(
         self,
         task_id: str,
         *,
-        worker_id: str,
+        claim_token: str,
         result: dict[str, Any],
         progress_done: int | None = None,
         progress_total: int | None = None,
     ) -> None:
-        """标完成。`status='running' AND worker_id=%s` 是栅栏：被回收标成 `failed` 的行、
-        或被新 worker 重新取件的行，都不该被迟到的完成覆盖（SPEC §3.3）。
+        """标完成。`status='running' AND claim_token=%s` 是栅栏：被回收标成 `failed` 的行、
+        或被新一次取件拿走的行，都不该被迟到的完成覆盖（SPEC §3.3）。
 
         P4-S9：给出 `progress_done` 时把「进度满格」并进同一次 UPDATE（`progress || {...}`
         保留 `cells`），成功路径因此少一次独立 UPDATE；不给则保持旧的纯终态写法。
@@ -504,8 +526,8 @@ class TasksMixin:
             await self._exec(
                 "UPDATE tasks SET status = 'done', result = %s, finished_at = now(), "
                 "updated_at = now() WHERE id = %s::uuid AND status = 'running' "
-                "AND worker_id = %s",
-                (Jsonb(result), task_id, worker_id),
+                "AND claim_token = %s::uuid",
+                (Jsonb(result), task_id, claim_token),
             )
             return
         total = progress_done if progress_total is None else progress_total
@@ -513,23 +535,23 @@ class TasksMixin:
             "UPDATE tasks SET status = 'done', result = %s, finished_at = now(), "
             "updated_at = now(), "
             "progress = progress || jsonb_build_object('done', %s::int, 'total', %s::int) "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
-            (Jsonb(result), progress_done, total, task_id, worker_id),
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid",
+            (Jsonb(result), progress_done, total, task_id, claim_token),
         )
 
     async def fail_task(
-        self, task_id: str, *, worker_id: str, error: dict[str, Any]
+        self, task_id: str, *, claim_token: str, error: dict[str, Any]
     ) -> None:
         """标失败。**不落 `backtest_runs`**——与今天异常路径不留半条记录的语义一致。
         栅栏同 `finish_task`。"""
         await self._exec(
             "UPDATE tasks SET status = 'failed', error = %s, finished_at = now(), "
             "updated_at = now() WHERE id = %s::uuid AND status = 'running' "
-            "AND worker_id = %s",
-            (Jsonb(error), task_id, worker_id),
+            "AND claim_token = %s::uuid",
+            (Jsonb(error), task_id, claim_token),
         )
 
-    async def finish_task_cancelled(self, task_id: str, *, worker_id: str) -> None:
+    async def finish_task_cancelled(self, task_id: str, *, claim_token: str) -> None:
         """协作式中止收尾：`running` → `cancelled`。
 
         与 `finish_task` 分开是为了让「中止」在库里有自己的终态（`result` 为空——
@@ -537,8 +559,8 @@ class TasksMixin:
         """
         await self._exec(
             "UPDATE tasks SET status = 'cancelled', finished_at = now(), updated_at = now() "
-            "WHERE id = %s::uuid AND status = 'running' AND worker_id = %s",
-            (task_id, worker_id),
+            "WHERE id = %s::uuid AND status = 'running' AND claim_token = %s::uuid",
+            (task_id, claim_token),
         )
 
     async def cancel_task(self, user_id: int, task_id: str) -> dict[str, Any] | None:

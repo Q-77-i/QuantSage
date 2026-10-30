@@ -112,18 +112,23 @@ def test_release_task_requeues_and_cancels(jwt_env: Any) -> None:
     schema = f"probe_s4_{uuid.uuid4().hex[:8]}"
     queued_id = str(uuid.uuid4())
     cancelled_id = str(uuid.uuid4())
+    queued_token = str(uuid.uuid4())
+    cancelled_token = str(uuid.uuid4())
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(f'CREATE SCHEMA "{schema}"')
         conn.execute(f'CREATE TABLE "{schema}".tasks (LIKE public.tasks INCLUDING ALL)')
-        for task_id, cancel in ((queued_id, None), (cancelled_id, True)):
+        for task_id, cancel, token in (
+            (queued_id, None, queued_token),
+            (cancelled_id, True, cancelled_token),
+        ):
             conn.execute(
                 f'INSERT INTO "{schema}".tasks '
                 "(id, user_id, kind, status, request, progress, attempts, max_attempts, "
-                " worker_id, lease_expires_at, cancel_requested_at) "
+                " worker_id, claim_token, lease_expires_at, cancel_requested_at) "
                 "VALUES (%s::uuid, 1, 'backtest', 'running', '{}'::jsonb, "
                 "'{\"done\": 40, \"total\": 100}'::jsonb, 1, 2, 'release-worker', "
-                "now() + interval '1 hour', CASE WHEN %s THEN now() END)",
-                (task_id, cancel),
+                "%s::uuid, now() + interval '1 hour', CASE WHEN %s THEN now() END)",
+                (task_id, token, cancel),
             )
 
     try:
@@ -143,9 +148,13 @@ def test_release_task_requeues_and_cancels(jwt_env: Any) -> None:
             await pool.open(wait=True, timeout=10)
             try:
                 db = Database(pool)
-                queued = await db.release_task(queued_id, worker_id="release-worker")
-                cancelled = await db.release_task(cancelled_id, worker_id="release-worker")
-                wrong = await db.release_task(queued_id, worker_id="other-worker")
+                queued = await db.release_task(queued_id, claim_token=queued_token)
+                cancelled = await db.release_task(
+                    cancelled_id, claim_token=cancelled_token
+                )
+                wrong = await db.release_task(
+                    queued_id, claim_token=str(uuid.uuid4())
+                )
                 return queued, cancelled, wrong
             finally:
                 await pool.close()
@@ -155,14 +164,15 @@ def test_release_task_requeues_and_cancels(jwt_env: Any) -> None:
 
         with psycopg.connect(dsn) as conn:
             row = conn.execute(
-                f'SELECT status, attempts, worker_id, lease_expires_at, progress, finished_at '
+                f'SELECT status, attempts, worker_id, claim_token, lease_expires_at, '
+                f'progress, finished_at '
                 f'FROM "{schema}".tasks WHERE id = %s::uuid',
                 (queued_id,),
             ).fetchone()
             assert row is not None
             assert row[0] == "queued" and row[1] == 0
-            assert row[2] is None and row[3] is None
-            assert row[4]["done"] == 0 and row[5] is None
+            assert row[2] is None and row[3] is None and row[4] is None
+            assert row[5]["done"] == 0 and row[6] is None
 
             row = conn.execute(
                 f'SELECT status, attempts, finished_at FROM "{schema}".tasks WHERE id = %s::uuid',
@@ -280,17 +290,18 @@ def test_finish_task_merges_full_progress_in_one_update(jwt_env: Any) -> None:
     dsn = get_settings().postgres_dsn
     schema = f"probe_s9_{uuid.uuid4().hex[:8]}"
     task_id = str(uuid.uuid4())
+    claim_token = str(uuid.uuid4())
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(f'CREATE SCHEMA "{schema}"')
         conn.execute(f'CREATE TABLE "{schema}".tasks (LIKE public.tasks INCLUDING ALL)')
         conn.execute(
             f'INSERT INTO "{schema}".tasks '
             "(id, user_id, kind, status, request, progress, attempts, max_attempts, "
-            " worker_id, lease_expires_at) "
+            " worker_id, claim_token, lease_expires_at) "
             "VALUES (%s::uuid, 1, 'batch', 'running', '{}'::jsonb, "
             "'{\"done\": 1, \"total\": 3, \"cells\": [{\"i\": 0}]}'::jsonb, "
-            "1, 2, 'finish-worker', now() + interval '1 hour')",
-            (task_id,),
+            "1, 2, 'finish-worker', %s::uuid, now() + interval '1 hour')",
+            (task_id, claim_token),
         )
 
     try:
@@ -313,7 +324,7 @@ def test_finish_task_merges_full_progress_in_one_update(jwt_env: Any) -> None:
                 db = Database(pool)
                 await db.finish_task(
                     task_id,
-                    worker_id="finish-worker",
+                    claim_token=claim_token,
                     result={"run_id": "r"},
                     progress_done=3,
                     progress_total=3,

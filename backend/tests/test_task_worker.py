@@ -124,7 +124,7 @@ def test_finish_task_merges_full_progress_in_one_write(signed_in: FakeDatabase) 
         signed_in.tasks[task_id]["progress"] = {"done": 1, "total": 3, "cells": [{"i": 0}]}
         await signed_in.finish_task(
             task_id,
-            worker_id=WID,
+            claim_token=str(claimed["claim_token"]),
             result={"run_id": "r"},
             progress_done=3,
             progress_total=3,
@@ -263,6 +263,7 @@ def test_reaper_requeues_expired_lease_and_blocks_late_finish(
     claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
     assert claimed is not None  # 取件后卡在 running（模拟进程被杀）
     assert claimed["attempts"] == 1
+    old_token = str(claimed["claim_token"])
 
     signed_in.tasks[task_id]["lease_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
     assert asyncio.run(signed_in.reap_running_tasks(backoff_seconds=0)) == {"queued": 1}
@@ -270,12 +271,18 @@ def test_reaper_requeues_expired_lease_and_blocks_late_finish(
     assert task["status"] == "queued"
     assert task["attempts"] == 1  # 重新取件时才 +1
     assert task["worker_id"] is None
+    assert task["claim_token"] is None
     assert task["error"] is None  # 还没终态，不写 error
 
-    # 新 worker 重新取件后，旧 worker 的迟到完成必须落空（`worker_id` 栅栏）
+    # 新一次取件后，旧 claim token 的迟到完成必须落空
     signed_in.tasks[task_id]["available_at"] = datetime.now(UTC)
-    assert asyncio.run(signed_in.claim_next_task("other-worker", lease_seconds=60)) is not None
-    asyncio.run(signed_in.finish_task(task_id, worker_id=WID, result={"run_id": "late"}))
+    re_claimed = asyncio.run(signed_in.claim_next_task("other-worker", lease_seconds=60))
+    assert re_claimed is not None
+    asyncio.run(
+        signed_in.finish_task(
+            task_id, claim_token=old_token, result={"run_id": "late"}
+        )
+    )
     assert signed_in.tasks[task_id]["status"] == "running"
     assert signed_in.tasks[task_id]["result"] is None
 
@@ -313,7 +320,9 @@ def test_stop_releases_inflight_task_without_counting_an_attempt(
 ) -> None:
     """S4：正常停机把在飞任务放回 queued，attempts 回退（停机不算失败）。"""
     task_id = queue(signed_in, frozen_request())
-    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # attempts=1
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # attempts=1
+    assert claimed is not None
+    token = str(claimed["claim_token"])
 
     async def scenario() -> None:
         handle = worker.WorkerHandle(
@@ -321,7 +330,7 @@ def test_stop_releases_inflight_task_without_counting_an_attempt(
             db=signed_in,
             worker_id=WID,
         )
-        worker._RUNNING[task_id] = asyncio.Event()
+        worker._RUNNING[task_id] = (asyncio.Event(), token)
         try:
             await worker.stop(handle)
         finally:
@@ -341,7 +350,9 @@ def test_stop_marks_cancelled_inflight_task_as_cancelled(
 ) -> None:
     """取消是权威：停机释放时不回 queued，直接收成 cancelled。"""
     task_id = queue(signed_in, frozen_request())
-    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    assert claimed is not None
+    token = str(claimed["claim_token"])
     signed_in.tasks[task_id]["cancel_requested_at"] = datetime.now(UTC)
 
     async def scenario() -> None:
@@ -350,7 +361,7 @@ def test_stop_marks_cancelled_inflight_task_as_cancelled(
             db=signed_in,
             worker_id=WID,
         )
-        worker._RUNNING[task_id] = asyncio.Event()
+        worker._RUNNING[task_id] = (asyncio.Event(), token)
         try:
             await worker.stop(handle)
         finally:
@@ -363,18 +374,21 @@ def test_stop_marks_cancelled_inflight_task_as_cancelled(
     assert row["finished_at"] is not None
 
 
-def test_release_task_is_fenced_by_worker_id(
+def test_release_task_is_fenced_by_claim_token(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
-    """租约可能已被 reaper 回收并重新取件：别的 worker 不能放我们的行。"""
+    """租约可能已被 reaper 回收并重新取件：旧 claim token 不能放新一次的行。"""
     task_id = queue(signed_in, frozen_request())
-    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    assert claimed is not None
+    token = str(claimed["claim_token"])
 
-    released = asyncio.run(signed_in.release_task(task_id, worker_id="another-worker"))
+    released = asyncio.run(signed_in.release_task(task_id, claim_token=str(uuid.uuid4())))
 
     assert released is None
     assert signed_in.tasks[task_id]["status"] == "running"
     assert signed_in.tasks[task_id]["worker_id"] == WID
+    assert signed_in.tasks[task_id]["claim_token"] == token
 
 
 def test_start_does_not_sweep_when_lock_held(
@@ -442,6 +456,7 @@ def test_claim_sets_attempts_and_resets_progress(
     task = signed_in.tasks[task_id]
     assert task["attempts"] == 1
     assert task["worker_id"] == WID
+    assert task["claim_token"] is not None
     assert task["lease_expires_at"] is not None
     assert task["progress"]["done"] == 0
     # S5：重排后旧 cells 不能带进新一次执行（否则会重复追加/串格）
@@ -453,16 +468,20 @@ def test_heartbeat_extends_lease_and_requires_owner(
 ) -> None:
     """心跳续租；别的 worker 续不动（被回收后旧心跳不能把租约抢回来）。"""
     task_id = queue(signed_in, frozen_request())
-    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    claimed = asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))
+    assert claimed is not None
+    token = str(claimed["claim_token"])
     before = signed_in.tasks[task_id]["lease_expires_at"]
 
     assert asyncio.run(
-        signed_in.heartbeat_task(task_id, worker_id=WID, lease_seconds=120)
+        signed_in.heartbeat_task(task_id, claim_token=token, lease_seconds=120)
     )
     assert signed_in.tasks[task_id]["lease_expires_at"] > before
 
     assert not asyncio.run(
-        signed_in.heartbeat_task(task_id, worker_id="other", lease_seconds=120)
+        signed_in.heartbeat_task(
+            task_id, claim_token=str(uuid.uuid4()), lease_seconds=120
+        )
     )
 
 
@@ -636,3 +655,53 @@ def test_claim_next_task_filters_kinds(signed_in: FakeDatabase) -> None:
         asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60, kinds=("grid",)))
         is None
     )
+
+
+def test_heartbeat_loss_sets_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """心跳发现 claim 已失效时必须置 stop——只停续租会让旧执行继续跑完整段。"""
+
+    class _LostLease:
+        async def heartbeat_task(
+            self, task_id: str, *, claim_token: str, lease_seconds: int
+        ) -> bool:
+            return False
+
+    stop = asyncio.Event()
+    monkeypatch.setattr(worker, "HEARTBEAT_SECONDS", 0)
+    asyncio.run(worker._heartbeat(_LostLease(), "task-1", "token-1", 60, stop))
+    assert stop.is_set()
+
+
+def test_slot_retry_exhaustion_raises_busy_not_quota_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """20 次撞槽用尽 = 503 busy，不是 429 配额满——两者出口必须分开。"""
+    from contextlib import asynccontextmanager
+
+    from psycopg import errors as pg_errors
+
+    from app.core.db import Database
+    from app.core.quota import TaskAdmissionBusy
+
+    class _Pool:
+        @asynccontextmanager
+        async def connection(self):
+            yield object()
+
+    db = Database(_Pool())  # type: ignore[arg-type]
+
+    async def always_collide(*args: object, **kwargs: object) -> None:
+        raise pg_errors.UniqueViolation()
+
+    monkeypatch.setattr(db, "_insert_task", always_collide)
+
+    with pytest.raises(TaskAdmissionBusy):
+        asyncio.run(
+            db.create_task(
+                str(uuid.uuid4()),
+                TEST_USER["id"],
+                "backtest",
+                {"symbol": SYMBOL},
+                active_limit=1,
+            )
+        )

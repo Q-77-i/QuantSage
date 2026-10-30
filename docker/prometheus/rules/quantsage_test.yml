@@ -46,6 +46,39 @@ tests:
               summary: "PG 客户端连接数超过 80"
               description: "max_connections=120；检查连接泄漏或 Langfuse 占用。"
 
+  # P1：partial manifest ⇒ BackupPartial 触发
+  - interval: 1m
+    input_series:
+      - series: 'quantsage_backup_partial'
+        values: '1+0x10'
+      - series: 'quantsage_backup_failures'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BackupPartial
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "备份有失败项（partial manifest）"
+              description: "当天至少一个段失败；检查 logs/backup-agent.log，修好后重跑备份；有失败时 prune 已跳过。"
+
+  # P1：抓取不到 job ⇒ ServiceDown（for 2m）
+  - interval: 1m
+    input_series:
+      - series: 'up{job="quantsage-api"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: quantsage-api
+            exp_annotations:
+              summary: "QuantSage 服务不可达（quantsage-api）"
+              description: "Prometheus 抓不到该 job 的 /metrics；API 整体不可用时 PG/宿主/备份指标也会消失，不能只看它们。"
+
   # 比率型：请求与降级各 10/min ⇒ 降级率 1.0 > 0.5
   - interval: 1m
     input_series:

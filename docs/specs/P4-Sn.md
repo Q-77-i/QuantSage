@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.14** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（6 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）。
+> 版本 **v3.16** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（8 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）、P1 租约 claim token（v3.15，见 §3.3）与 P1 备份/告警（v3.16，见 §9.3）。
 >
 > 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8，已交付）、P4-S8 可观测性与缓存（§9，已交付）与 P4-S9 数据层热点优化（§10，已交付）**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
 > 实测基线：S1–S6 见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；S7 基线见 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -210,15 +210,18 @@ UPDATE tasks
 SET status = 'running', started_at = now(),
     attempts = attempts + 1,
     worker_id = %s,
+    claim_token = gen_random_uuid(),
     lease_expires_at = now() + interval '60 seconds',
     last_heartbeat_at = now(), updated_at = now()
 WHERE id = (SELECT id FROM picked)
-RETURNING ...;
+RETURNING ..., claim_token;
 ```
 
-**心跳**：worker 每 10s 更新 `last_heartbeat_at` 与 `lease_expires_at = now()+60s`；任务在子线程/子进程跑时，心跳循环在事件循环里继续。**续租必须带 `status='running' AND worker_id=%s` 条件**——任务被 reaper 回收后，旧 worker 的迟到心跳不能把租约抢回来。
+**心跳**：worker 每 10s 更新 `last_heartbeat_at` 与 `lease_expires_at = now()+60s`；任务在子线程/子进程跑时，心跳循环在事件循环里继续。**续租必须带 `status='running' AND claim_token=%s` 条件**——任务被 reaper 回收后，旧 worker 的迟到心跳不能把租约抢回来。
 
-**迟到完成**：被回收后旧 worker 若仍跑完，`finish_task` / `fail_task` / `finish_task_cancelled` / `update_task_progress` 必须带 **`AND worker_id = %s`** 栅栏。只靠 `status='running'` 拦不住：任务被回收并**重新取件**后状态又是 `running`，旧 worker 会覆盖新 worker 的结果。结果写入再靠 `task_id` 唯一约束兜底。
+**迟到完成**：被回收后旧 worker 若仍跑完，`finish_task` / `fail_task` / `finish_task_cancelled` / `update_task_progress` / 逐格写入 / 重排 / 释放必须带 **`AND claim_token = %s`** 栅栏。只靠 `status='running'` 拦不住：任务被回收并**重新取件**后状态又是 `running`，旧 worker 会覆盖新 worker 的结果。结果写入再靠 `task_id` 唯一约束兜底。
+
+**claim token（2026-10-31 P1 修复）**：`claim_token` 是**每次取件**生成的新 UUID，不是进程级 `worker_id`。同一进程内的另一条 worker 道重取同一任务后也会拿到新 token，因此旧执行的迟到写入必然落空——`worker_id` 只保留诊断用途，**不再作为栅栏**。心跳失败时不得只停续租：必须置停止标志，让执行体在格边界收尾，避免旧执行继续跑完整段。
 
 **取件时进度归零**：`progress = jsonb_set(progress, '{done}', '0')`——重排后从 0 重新计，避免「排队中显示上次的 40/100」。
 
@@ -524,7 +527,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ### 7.3 备份与恢复
 
 - **脚本**：`scripts/backup.sh` / `scripts/restore.sh` / `scripts/install_backup_job.sh`（launchd 03:30，**安装器提供但不自动安装**，由用户执行）。
-- **落点**：参数化 `--target DIR`，默认 `~/QuantSageBackups`；外置盘用 `--target /Volumes/...`。目标不可写/未挂载 → 非零退出并明确报错，不静默跳过。
+- **落点**：参数化 `--target DIR`，默认 `~/QuantSageBackups`；外置盘用 `--target /Volumes/...`。目标不可写/未挂载 → 非零退出并明确报错，不静默跳过。`QS_BACKUP_DIR` 与安装器的 `--target` 必须指向同一目录（安装器校验并在不一致时失败）；`~` 由配置层展开，不当作字面目录。
 - **PG**：`quantsage` + `langfuse`，`pg_dump -Fc --no-owner`；排除 `quantsage_loadtest_*` 等测试库。每日；保留 7 日 + 4 周。
 - **Qdrant**：`POST /collections/cn_events_v1/snapshots`；`data/_meta/embeddings.json` 未变则复用上一份（`reused: true`），变更后必做；快照用 `docker compose cp` 从容器 `/qdrant/snapshots/` 拷到宿主。
 - **data**：`rsync -a --link-dest=<上一份>/ --exclude='_tmp/' data/ <target>/data/<date>/`；生成 `<date>.data.sha256`；目标 FS 不支持硬链接时回退普通复制并 warning（空间预检）。
@@ -765,7 +768,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ### 9.1 目标与范围
 
 1. **缓存命中率与冷查询**：命中率可算、可查；冷查询先测后治；热标预热可选。
-2. **监控与告警**：Prometheus + Alertmanager（compose `monitoring` profile，默认不启动）；6 条告警；备份年龄与 launchd。
+2. **监控与告警**：Prometheus + Alertmanager（compose `monitoring` profile，默认不启动）；8 条告警（P1 增 BackupPartial/ServiceDown）；备份年龄与 launchd。
 
 **范围边界**：只做可观测性/缓存，不改 S7 的 RAG/worker 行为；不做 API/worker/RAG 角色拆分、反向代理、多 API 实例（P4-S10 及以后）；不承诺多机 HA 或 SLA。
 
@@ -802,13 +805,15 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 - `docker-compose.yml` 新增 `monitoring` profile：`prometheus`（约 150–250MB）+ `alertmanager`（约 30MB）；**默认不启动**，需要时 `docker compose --profile monitoring up -d`；镜像按仓库惯例 pin digest（与 PG/Redis/Qdrant 同）。宿主端口用 **9092（Prometheus）/ 9093（Alertmanager）**——9090/9091 已被 `observability` profile 的 MinIO 占用。
 - `docker/prometheus/prometheus.yml`：scrape API `host.docker.internal:8000/metrics` 与 RAG `:8200/metrics`；`evaluation_interval: 15s`。
-- 6 条规则（起始值，压测后可调；用实际指标名）：
+- 8 条规则（起始值，压测后可调；用实际指标名）：
   1. `histogram_quantile(0.95, sum by (le, kind) (rate(quantsage_task_queue_seconds_bucket[5m]))) > 5` for 10m；
   2. `sum(rate(rag_rerank_degraded_total[5m])) / sum(rate(rag_rerank_requests_total[5m])) > 0.5` for 10m；
   3. `quantsage_pg_connections > 80` for 5m；
   4. `sum(rate(quantsage_http_requests_total{status=~"5.."}[5m])) / sum(rate(quantsage_http_requests_total[5m])) > 0.005` for 5m；
   5. `quantsage_host_available_bytes < 2e9` 或 `quantsage_host_swap_used_bytes > 1.06e10`（2026-10-30 实测基线 9.61GB + 1GB）for 10m；
-  6. `quantsage_backup_age_seconds > 93600`（26h）for 10m。
+  6. `quantsage_backup_age_seconds > 93600`（26h）for 10m；
+  7. `quantsage_backup_partial > 0 or quantsage_backup_failures > 0` for 5m（P1：partial manifest 不能因为 mtime 新就当成健康备份）。
+  8. `up{job=~"quantsage-.*"} == 0` for 2m（P1：API/RAG 整体不可达时，PG/宿主/备份指标会一起消失，必须有存活告警）。
 - 告警的降级率用**服务端** `degraded_total/requests_total`；SLO 验收用 **harness 客户端**的 `degraded_reason` 口径，两者不混写成同一个数。
 - 规则文件要过 `promtool check rules`；能跑 `promtool test rules` 就加一条规则单测；不能跑则在 `scripts/alert_hook.py` 的单测里覆盖阈值计算。
 
@@ -821,7 +826,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 #### 9.3.5 备份定时
 
 - `bash scripts/install_backup_job.sh --hour 3 --minute 30`（默认 03:30，ETL 21:10 之后）；安装前需用户确认，装后 `launchctl kickstart -k gui/$UID/com.quantsage.backup` 验一次。
-- 验收：manifest 新日期、`quantsage_backup_age_seconds` 下降、`backup_age > 26h` 规则在伪造旧 manifest 时触发；`--uninstall` 可回滚。
+- 验收：manifest 新日期、`quantsage_backup_age_seconds` 下降、`backup_age > 26h` 规则在伪造旧 manifest 时触发；**有失败项时 `partial=true` + `quantsage_backup_partial/failures`，且当天跳过 prune**；`--uninstall` 可回滚。
 - 备份内容与保留沿用 S6，不改口径（本机/受控外置盘，不进仓库/公共云盘）。
 
 #### 9.3.6 监控项验收与回滚
@@ -836,7 +841,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 |---|---|---|---|
 | 缓存命中率 | L1 常开 / L2 默认 false，无看板 | L1/L2/合计可算；`CACHE_ENABLED=true` 验收一轮 | 不新增限流 |
 | 冷查询 | 50 标的顺序读约 38 req/s（S1） | 记录 before/after；有证据才加限流/调闸门 | 不先加限制 |
-| 监控 | 无 Prometheus/告警 | 4 组新指标（queue/PG/host/backup）+ 6 条规则 + 本地 receiver | scrape 一次一值 |
+| 监控 | 无 Prometheus/告警 | 4 组新指标（queue/PG/host/backup）+ 8 条规则 + 本地 receiver | scrape 一次一值 |
 | 备份 | 手动 4.6GB / 36.3s | launchd 每日 + 年龄告警 | 需用户确认安装 |
 | 回归 | 离线/集成/前端/ruff | 全绿 | CI 三 job |
 
@@ -851,7 +856,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 | 1 | 本 §9 过审 + 落地记录 | 0.5 |
 | 2 | 缓存命中率/冷查询 | 1 |
 | 3 | 指标/鉴权/compose profile | 1.5 |
-| 4 | 6 条规则 + alert_hook + 备份 launchd | 1 |
+| 4 | 8 条规则 + alert_hook + 备份 launchd | 1 |
 | 5 | 故障注入 + 文档 | 0.5–1 |
 | | **合计** | **3.5–4.5** |
 
@@ -1067,6 +1072,8 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-31 | v3.16 | **审计 P1 备份/告警**：`/metrics` 新增 `quantsage_backup_partial` / `quantsage_backup_failures`（读最新 manifest，年龄仍按 mtime）；`BackupPartial` + `ServiceDown` 告警（8 条规则）；`backup.py` 有失败项时 `partial=true` 并跳过 prune，避免写坏 manifest 后删最老完好日备；`QS_BACKUP_DIR` 展开 `~`，安装器校验它与 `--target` 同源。promtool 规则单测通过。 |
+| 2026-10-31 | v3.15 | **审计 P1 租约 claim token**：`tasks` 增 `claim_token UUID`，每次 `claim_next_task` 生成新 token；心跳 / 进度 / 逐格 / finish / fail / cancelled / requeue / release 的栅栏从进程级 `worker_id` 改为 `claim_token`（`worker_id` 仅诊断）。租约丢失后同进程重取也不会让旧执行迟到写入命中；心跳失败必须置停止标志，不能只停续租。 |
 | 2026-10-31 | v3.14 | **审计 P0 恢复门槛修复**：`restore.sh` / `backup.py restore` 补 `--yes`（非 TTY 必填）与 `--allow-live`（线上库 `quantsage` / 线上集合 `cn_events_v1` / 仓库 `data/` 必填）；`--force` 只解除存在性保护，不等于确认；拒绝发生在任何 `dropdb` / `rmtree` 之前；`--dry-run` 不触发确认。`backup.sh` / 定时备份不受影响。 |
 | 2026-10-30 | v3.13 | S8 交付并验收：新增队列 p95 直方图、PG 连接 / 宿主内存 / swap / 备份年龄三个 scrape 快照 Gauge（2 worker 各一条）、`rag_rerank_requests_total` 分母、`/metrics` Bearer、`QS_BACKUP_DIR`；`monitoring` profile（Prometheus :9092 + Alertmanager :9093）+ 6 条规则 + 本地 `alert_hook`；备份 launchd 已装并 kickstart。实测：缓存 L1 385 / L2 13 / miss 2（**99.5%**）、`qs:cache_hit_ratio:5m` 0.969、bars c300 cache on/off 1,656/1,714 req/s、冷查询 39.97 req/s（不新增限流）；RAG 过载 / PG 105 / 旧备份三条真实告警 firing→resolved。修复 RAG `/metrics` 配 token 后 401、Prometheus 缺 `alerting` 目标、SIGHUP 热加载清空 scrape 目标。 |
 | 2026-10-30 | v3.12 | S8 执行前订正 5 处口径：①「停 RAG → 降级告警」不成立（服务端比率停采集后 0/0，`unavailable` 按 §9.3.3 不进比率）→ 改为 RAG 过载注入验收，停 RAG 只记录 `up{job="rag"}=0`；②queue 直方图在持锁进程取件时 observe、正常走 mmap，只有 PG/host/backup 三个 Gauge 用 scrape 时 collector；③备份年龄取最新 manifest 的 mtime（文件名只用于选最新），避免每日备份前假报；④API/RAG 用 `logs/metrics_token` 与 `logs/rag_token` 两个文件（`METRICS_TOKEN` ≠ `RAG_SERVICE_TOKEN`）；⑤Prometheus/Alertmanager 宿主端口 9092/9093（9090/9091 被 MinIO 占用），规则 5 基线字面量 `1.06e10`（实测 9.61GB + 1GB）。保持 6 条规则；备份 launchd 本次安装并 kickstart。 |

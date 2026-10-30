@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -145,6 +146,14 @@ _SNAPSHOT_GAUGES = {
         "quantsage_backup_age_seconds",
         "Seconds since the newest backup manifest was written.",
     ),
+    "backup_partial": (
+        "quantsage_backup_partial",
+        "1 when the newest backup manifest is partial=true.",
+    ),
+    "backup_failures": (
+        "quantsage_backup_failures",
+        "Number of failed sections in the newest backup manifest.",
+    ),
 }
 
 
@@ -179,6 +188,27 @@ def backup_age_seconds(backup_dir: Path | str, *, now: float | None = None) -> f
     except (OSError, IndexError):
         return 1e9
     return max(0.0, (time.time() if now is None else now) - mtime)
+
+
+def backup_status(backup_dir: Path | str, *, now: float | None = None) -> dict[str, float]:
+    """最新 manifest 的年龄 + 是否 partial + 失败项数。
+
+    只按 mtime 算年龄（原因同 `backup_age_seconds`）；manifest 里 `partial=true`
+    说明当天有步骤失败，**不能因为 mtime 新就当成健康备份**。
+    """
+    status = {"backup_age_seconds": 1e9, "backup_partial": 0.0, "backup_failures": 0.0}
+    try:
+        manifests = sorted((Path(backup_dir) / "manifests").glob("20*.json"))
+        latest = manifests[-1]
+        status["backup_age_seconds"] = max(
+            0.0, (time.time() if now is None else now) - latest.stat().st_mtime
+        )
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+    except (OSError, IndexError, json.JSONDecodeError):
+        return status
+    status["backup_partial"] = 1.0 if payload.get("partial") else 0.0
+    status["backup_failures"] = float(len(payload.get("failures") or []))
+    return status
 
 
 class SnapshotCollector:

@@ -60,6 +60,25 @@ router = APIRouter(prefix="/api/v1", tags=["research"])
 _DETACHED: set[asyncio.Task[None]] = set()
 
 
+async def drain_detached(timeout: float = 5.0) -> int:
+    """停机收尾：取消断线后仍在跑的 pump，限时等待；超时只记 warning。
+
+    断线时 pump 继续跑（落库不丢），**停机**时才取消——否则 lifespan 关闭业务池后
+    它们会在已关闭的池上写失败。
+    """
+    tasks = [task for task in _DETACHED if not task.done()]
+    _DETACHED.difference_update(tasks)
+    for task in tasks:
+        task.cancel()
+    if not tasks:
+        return 0
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+    except TimeoutError:
+        log.warning("停机 drain：%d 个研究 pump 在 %.0fs 内未收尾", len(tasks), timeout)
+    return len(tasks)
+
+
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

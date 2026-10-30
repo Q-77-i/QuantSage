@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.quota import TaskAdmissionBusy
 from app.data import duckdb_client
 from app.main import app
 from app.strategy.templates import template_source
@@ -53,6 +54,23 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     get_settings.cache_clear()
     yield tmp_path
     get_settings.cache_clear()
+
+
+def test_admission_busy_maps_to_503(
+    signed_in: FakeDatabase, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """撞槽用尽不是 429 配额满：503 + Retry-After，前端可重试。"""
+
+    async def busy(*args: Any, **kwargs: Any) -> None:
+        raise TaskAdmissionBusy("任务准入繁忙，请稍后重试")
+
+    monkeypatch.setattr(signed_in, "create_task", busy)
+
+    response = submit()
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert response.json()["kind"] == "task_admission_busy"
 
 
 def submit(**overrides: Any):
@@ -245,12 +263,21 @@ def test_cancel_running_or_finished_is_409(
     signed_in: FakeDatabase, data_dir: Path
 ) -> None:
     task_id = submit().json()["task_id"]
-    asyncio.run(signed_in.claim_next_task(WID, lease_seconds=60))  # 模拟「worker 已取走，正在跑」
+    claimed = asyncio.run(
+        signed_in.claim_next_task(WID, lease_seconds=60)
+    )  # 模拟「worker 已取走，正在跑」
+    assert claimed is not None
     running = client.post(f"/api/v1/tasks/{task_id}/cancel")
     assert running.status_code == 409
     assert "执行" in running.json()["detail"]
 
-    asyncio.run(signed_in.finish_task(task_id, worker_id=WID, result={"run_id": "whatever"}))
+    asyncio.run(
+        signed_in.finish_task(
+            task_id,
+            claim_token=str(claimed["claim_token"]),
+            result={"run_id": "whatever"},
+        )
+    )
     done = client.post(f"/api/v1/tasks/{task_id}/cancel")
     assert done.status_code == 409
     assert "已结束" in done.json()["detail"]

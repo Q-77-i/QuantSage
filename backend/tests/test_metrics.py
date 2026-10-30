@@ -205,3 +205,29 @@ def test_queue_histogram_is_observed_on_claim() -> None:
     )
     after = metric_value(metrics.render().decode(), prefix)
     assert after == before + 1
+
+
+def test_backup_status_reports_partial_and_failures(tmp_path: Path) -> None:
+    """P1：partial manifest 的失败项必须可观测；年龄仍按 mtime 算。"""
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    manifest = manifests / "20260101.json"
+    manifest.write_text(
+        '{"partial": true, "failures": ["pg: down", "data: rsync failed"]}',
+        encoding="utf-8",
+    )
+    old = 1_700_000_000.0
+    os.utime(manifest, (old, old))
+
+    status = metrics.backup_status(tmp_path, now=old + 60)
+
+    assert status["backup_age_seconds"] == pytest.approx(60)
+    assert status["backup_partial"] == 1.0
+    assert status["backup_failures"] == 2.0
+
+
+def test_backup_status_without_manifest_is_stale_and_not_partial(tmp_path: Path) -> None:
+    status = metrics.backup_status(tmp_path)
+    assert status["backup_age_seconds"] == 1e9
+    assert status["backup_partial"] == 0.0
+    assert status["backup_failures"] == 0.0

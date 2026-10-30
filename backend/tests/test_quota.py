@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ from app.agent.graph import build_agent
 from app.core import quota
 from app.core.auth import require_user
 from app.core.config import get_settings
+from app.core.db_tasks import _TASK_COLUMNS
 from app.data import duckdb_client
 from app.main import app
 from tests.conftest import TEST_USER, drive_tasks, make_backtest_dir, trading_days
@@ -269,3 +272,52 @@ def test_rejection_is_recorded(signed_in: FakeDatabase, agent: Any, limits: Any)
     assert row["user_id"] == 1
     assert row["metric"] == "agent_calls"
     assert (row["used"], row["limit_value"]) == (2, 2)
+
+
+def test_fake_admission_uses_slots_and_releases_on_terminal() -> None:
+    """替身必须照抄槽位语义：0..limit-1 各占一个，终态释放；不能退回 count。"""
+    db = FakeDatabase()
+
+    async def scenario() -> tuple[list[dict | None], list[int | None], dict | None]:
+        rows = [
+            await db.create_task(
+                str(uuid.uuid4()), TEST_USER["id"], "quota-probe", {},
+                active_limit=2,
+            )
+            for _ in range(3)
+        ]
+        slots = [
+            db.tasks[str(row["id"])]["quota_slot"]
+            for row in rows
+            if row is not None
+        ]
+        # 放掉一个槽位后，下一次应能再进
+        first = rows[0]
+        assert first is not None
+        db.tasks[str(first["id"])]["status"] = "done"
+        again = await db.create_task(
+            str(uuid.uuid4()), TEST_USER["id"], "quota-probe", {},
+            active_limit=2,
+        )
+        return rows, slots, again
+
+    rows, slots, again = asyncio.run(scenario())
+    assert [row is not None for row in rows] == [True, True, False]
+    assert sorted(slots) == [0, 1]
+    assert again is not None
+    assert db.tasks[str(again["id"])]["quota_slot"] == 0  # 最低空槽
+
+
+def test_fake_task_row_shape_matches_the_real_columns() -> None:
+    """替身对外的任务行键集合必须与真库 `_TASK_COLUMNS` 一致（防悄悄多/少键）。"""
+    db = FakeDatabase()
+
+    async def scenario() -> dict[str, Any]:
+        row = await db.create_task(
+            str(uuid.uuid4()), TEST_USER["id"], "backtest", {}
+        )
+        assert row is not None
+        return row
+
+    row = asyncio.run(scenario())
+    assert set(row) == {part.strip() for part in _TASK_COLUMNS.split(",")}

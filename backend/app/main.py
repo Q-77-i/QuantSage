@@ -37,6 +37,8 @@ from app.agent.tools import (
     query_market_bars,
     search_events,
 )
+from app.api import chat as chat_api
+from app.api import research as research_api
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
@@ -75,7 +77,7 @@ from app.core.db import (
 from app.core.langfuse import build_langfuse_handler
 from app.core.logging import setup_logging
 from app.core.observability import ObservabilityMiddleware
-from app.core.quota import QuotaExceeded
+from app.core.quota import QuotaExceeded, TaskAdmissionBusy
 from app.core.security import SecurityHeadersMiddleware
 from app.core.session import SessionRenewalMiddleware
 from app.data.duckdb_client import DataNotReady
@@ -151,6 +153,13 @@ async def _start_background(app: FastAPI, db: Any) -> _Background:
     background.worker = handle
     app.state.task_worker = handle
     log.info("本进程为后台主实例：task worker + ETL/结算调度器")
+
+    try:
+        interrupted = await db.sweep_interrupted_research_runs()
+        if interrupted:
+            log.warning("研究运行启动扫尾：%d 条 running → failed/interrupted", interrupted)
+    except Exception as exc:  # noqa: BLE001 —— 扫尾失败不阻断服务启动
+        log.warning("研究运行启动扫尾失败（%s），继续启动", type(exc).__name__)
 
     try:
         background.scheduler = start_scheduler()
@@ -293,6 +302,10 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            # 先收断连任务（它们要吃 DB/checkpointer），再停后台 worker，最后才由
+            # AsyncExitStack 关池。顺序反了会在已关闭的池上写失败。
+            await chat_api.drain_detached()
+            await research_api.drain_detached()
             # 用本地句柄停：不读 app.state，避免嵌套 lifespan 时把别人的调度器 shutdown 两次
             await _stop_background(background)
             app.state.background_owner = None
@@ -487,6 +500,20 @@ async def _quota_exceeded(_: Request, exc: QuotaExceeded) -> JSONResponse:
     )
 
 
+@app.exception_handler(TaskAdmissionBusy)
+async def _task_admission_busy(_: Request, exc: TaskAdmissionBusy) -> JSONResponse:
+    """槽位撞车用尽：**503 + Retry-After**，不是 429 配额满（SPEC §3.1/§3.2）。
+
+    429 的话术是“等一个任务结束再来”，会误导用户去删任务；这里只是瞬时并发，
+    客户端带 Retry-After 重试即可。
+    """
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc), "kind": exc.kind},
+        headers={"Retry-After": "1"},
+    )
+
+
 @app.exception_handler(StrategyCheckFailed)
 async def _strategy_check_failed(_: Request, exc: StrategyCheckFailed) -> JSONResponse:
     """运行前的静态检查闸门：422 + findings（编辑器标注与检查面板直接吃这份）。"""
@@ -586,11 +613,9 @@ async def metrics(request: Request) -> Response:
     settings = get_settings()
     snapshot: dict[str, float] = {}
     try:
-        snapshot["backup_age_seconds"] = metrics_mod.backup_age_seconds(
-            settings.qs_backup_dir
-        )
+        snapshot.update(metrics_mod.backup_status(settings.qs_backup_dir))
     except Exception as exc:  # noqa: BLE001 —— 指标算不出来只跳过一个序列
-        log.warning("备份年龄指标读取失败（%s），本次跳过", type(exc).__name__)
+        log.warning("备份指标读取失败（%s），本次跳过", type(exc).__name__)
     try:
         snapshot.update(metrics_mod.host_metrics())
     except Exception as exc:  # noqa: BLE001 —— psutil 失败不该让整个 scrape 失败

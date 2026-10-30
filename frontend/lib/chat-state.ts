@@ -292,6 +292,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, messages: [], loading: true, loadError: null, streamingId: null };
 
     case "loaded": {
+      // 流式回答进行中：轮询历史**不得**覆盖实时消息。send 已经会停掉轮询；
+      // 这里再兜一层，防止已排队的 `loaded` 在 sent 之后到达。
+      if (state.streamingId !== null) {
+        return { ...state, running: action.running ?? false };
+      }
       const { messages, seq } = historyToMessages(action.messages, state.seq);
       return {
         ...state,

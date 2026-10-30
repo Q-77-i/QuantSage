@@ -63,6 +63,16 @@ class QuotaExceeded(Exception):
         self.reset_at = reset_at
 
 
+class TaskAdmissionBusy(Exception):
+    """槽位准入撞车用尽重试：**有空槽但没抢到**，不是配额满。
+
+    429 `quota_exceeded` 的意思是“等一个任务结束再来”；这里是瞬时并发，客户端应
+    带 `Retry-After` 短暂重试。由 `main.py` 映射成 **503 + Retry-After: 1**。
+    """
+
+    kind = "task_admission_busy"
+
+
 def period_key(now: datetime | None = None) -> str:
     """计数器的周期键：Asia/Shanghai 的**自然日**。换天即换键，不需要定时清理。"""
     moment = now or datetime.now(CN_TZ)

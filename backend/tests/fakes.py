@@ -34,7 +34,7 @@ from app.core.db import (
     StrategyVersionConflict,
     SymbolTracked,
 )
-from app.core.db_tasks import MAX_PROGRESS_CELLS
+from app.core.db_tasks import KIND_PRIORITY, MAX_PROGRESS_CELLS
 
 
 def _reset_progress(progress: dict[str, Any] | None) -> dict[str, Any]:
@@ -774,7 +774,15 @@ class FakeDatabase:
         self, *, report_id: str, user_id: int, account_id: str | None, snapshot: dict[str, Any],
         snapshot_hash: str, report: dict[str, Any], report_hash: str,
         kind: str = "paper_account_report", subject: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
+        # 与真库的部分唯一索引同语义：同 (account_id, snapshot_hash) 不插第二行。
+        if account_id is not None:
+            for existing in self.reports.values():
+                if (
+                    existing["account_id"] == account_id
+                    and existing["snapshot_hash"] == snapshot_hash
+                ):
+                    return None
         row = {
             "id": report_id,
             "user_id": user_id,
@@ -869,6 +877,14 @@ class FakeDatabase:
         row = self.runs.get(run_id)
         return None if row is None or row["user_id"] != user_id else dict(row)
 
+    async def sweep_interrupted_research_runs(self) -> int:
+        count = 0
+        for row in self.runs.values():
+            if row.get("status") == "running":
+                row.update(status="failed", error="服务重启中断（interrupted）")
+                count += 1
+        return count
+
     async def claim_research_resume(self, user_id: int, run_id: str) -> dict[str, Any] | None:
         row = self.runs.get(run_id)
         if row is None or row["user_id"] != user_id or row["status"] != "awaiting_approval":
@@ -925,6 +941,9 @@ class FakeDatabase:
             "attempts",
             "max_attempts",
             "worker_id",
+            "claim_token",
+            "quota_slot",
+            "idempotency_key",
             "lease_expires_at",
             "last_heartbeat_at",
         }
@@ -953,14 +972,25 @@ class FakeDatabase:
                     and row.get("idempotency_key") == idempotency_key
                 ):
                     return row  # 与真库的 ON CONFLICT 同语义：回既有那一行
+        quota_slot: int | None = None
         if active_limit is not None:
-            active = sum(
-                1
+            active_rows = [
+                row
                 for row in self.tasks.values()
-                if row["user_id"] == user_id and row["status"] in ("queued", "running")
-            )
-            if active >= active_limit:
-                return None  # 配额已满且不是重放（真库在同一条 INSERT 里判）
+                if row["user_id"] == user_id
+                and row["status"] in ("queued", "running")
+            ]
+            if len(active_rows) >= active_limit:
+                return None  # 配额已满（真库的同一条 INSERT 用 count 守卫判）
+            used = {
+                row["quota_slot"]
+                for row in active_rows
+                if row.get("quota_slot") is not None
+            }
+            free = next((slot for slot in range(active_limit) if slot not in used), None)
+            if free is None:
+                return None  # 槽位全占（真库由部分唯一索引判）
+            quota_slot = free
         self.tasks[task_id] = {
             "id": task_id,
             "user_id": user_id,
@@ -973,11 +1003,13 @@ class FakeDatabase:
             "cancel_requested_at": None,
             "idempotency_key": idempotency_key,
             # 队列 v2：与真库同语义（priority 按 kind、max_attempts 建任务时快照）
-            "priority": {"backtest": 10}.get(kind, 0),
+            "priority": KIND_PRIORITY.get(kind, 0),
             "available_at": datetime.now(UTC),
             "attempts": 0,
             "max_attempts": max_attempts,
             "worker_id": None,
+            "claim_token": None,
+            "quota_slot": quota_slot,
             "lease_expires_at": None,
             "last_heartbeat_at": None,
             "created_at": datetime.now(UTC),
@@ -1071,6 +1103,7 @@ class FakeDatabase:
             started_at=now,
             attempts=row["attempts"] + 1,
             worker_id=worker_id,
+            claim_token=str(uuid.uuid4()),
             progress=_reset_progress(row.get("progress")),
         )
         if lease_seconds > 0:
@@ -1083,13 +1116,13 @@ class FakeDatabase:
         return dict(row)
 
     async def heartbeat_task(
-        self, task_id: str, *, worker_id: str, lease_seconds: int
+        self, task_id: str, *, claim_token: str, lease_seconds: int
     ) -> bool:
         row = self.tasks.get(task_id)
         if (
             row is None
             or row["status"] != "running"
-            or row["worker_id"] != worker_id
+            or row["claim_token"] != claim_token
         ):
             return False
         now = datetime.now(UTC)
@@ -1098,13 +1131,13 @@ class FakeDatabase:
         return True
 
     async def requeue_task(
-        self, task_id: str, *, worker_id: str, backoff_seconds: float
+        self, task_id: str, *, claim_token: str, backoff_seconds: float
     ) -> bool:
         row = self.tasks.get(task_id)
         if (
             row is None
             or row["status"] != "running"
-            or row["worker_id"] != worker_id
+            or row["claim_token"] != claim_token
             or row["attempts"] >= row["max_attempts"]
         ):
             return False
@@ -1112,15 +1145,16 @@ class FakeDatabase:
             status="queued",
             available_at=datetime.now(UTC) + timedelta(seconds=backoff_seconds),
             worker_id=None,
+            claim_token=None,
             lease_expires_at=None,
             last_heartbeat_at=None,
         )
         return True
 
-    async def release_task(self, task_id: str, *, worker_id: str) -> str | None:
+    async def release_task(self, task_id: str, *, claim_token: str) -> str | None:
         """优雅停机释放租约（S4）：与真库同形，attempts 回退。"""
         row = self.tasks.get(task_id)
-        if row is None or row["status"] != "running" or row["worker_id"] != worker_id:
+        if row is None or row["status"] != "running" or row["claim_token"] != claim_token:
             return None
         now = datetime.now(UTC)
         if row.get("cancel_requested_at") is not None:
@@ -1132,7 +1166,7 @@ class FakeDatabase:
                 attempts=max(row["attempts"] - 1, 0),
                 progress=_reset_progress(row.get("progress")),
             )
-        row.update(worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
+        row.update(worker_id=None, claim_token=None, lease_expires_at=None, last_heartbeat_at=None)
         return str(row["status"])
 
     async def reap_running_tasks(
@@ -1167,17 +1201,17 @@ class FakeDatabase:
                     finished_at=now,
                 )
                 counts["failed"] = counts.get("failed", 0) + 1
-            row.update(worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
+            row.update(worker_id=None, claim_token=None, lease_expires_at=None, last_heartbeat_at=None)
         return counts
 
     async def update_task_progress(
-        self, task_id: str, *, worker_id: str, done: int, total: int
+        self, task_id: str, *, claim_token: str, done: int, total: int
     ) -> None:
         row = self.tasks.get(task_id)
         if (
             row is not None
             and row["status"] == "running"
-            and row["worker_id"] == worker_id
+            and row["claim_token"] == claim_token
         ):
             row["progress"] = {**row.get("progress", {}), "done": done, "total": total}
 
@@ -1185,7 +1219,7 @@ class FakeDatabase:
         self,
         task_id: str,
         *,
-        worker_id: str,
+        claim_token: str,
         done: int,
         total: int,
         cell: dict[str, Any],
@@ -1194,7 +1228,7 @@ class FakeDatabase:
         if (
             row is None
             or row["status"] != "running"
-            or row["worker_id"] != worker_id
+            or row["claim_token"] != claim_token
         ):
             return
         cells = list((row.get("progress") or {}).get("cells") or [])
@@ -1206,18 +1240,18 @@ class FakeDatabase:
         self,
         task_id: str,
         *,
-        worker_id: str,
+        claim_token: str,
         result: dict[str, Any],
         progress_done: int | None = None,
         progress_total: int | None = None,
     ) -> None:
         row = self.tasks.get(task_id)
-        # 与真库同语义：`status='running' AND worker_id` 才写得进去——
-        # 被回收/被新 worker 重新取件的行不被迟到完成覆盖
+        # 与真库同语义：`status='running' AND claim_token` 才写得进去——
+        # 被回收/被新一次取件拿走的行不被迟到完成覆盖
         if (
             row is not None
             and row["status"] == "running"
-            and row["worker_id"] == worker_id
+            and row["claim_token"] == claim_token
         ):
             row.update(status="done", result=dict(result), finished_at=datetime.now(UTC))
             # P4-S9：进度满格与终态同一次写；`cells` 原样保留
@@ -1228,23 +1262,23 @@ class FakeDatabase:
                     "total": progress_done if progress_total is None else progress_total,
                 }
 
-    async def finish_task_cancelled(self, task_id: str, *, worker_id: str) -> None:
+    async def finish_task_cancelled(self, task_id: str, *, claim_token: str) -> None:
         row = self.tasks.get(task_id)
         if (
             row is not None
             and row["status"] == "running"
-            and row["worker_id"] == worker_id
+            and row["claim_token"] == claim_token
         ):
             row.update(status="cancelled", finished_at=datetime.now(UTC))
 
     async def fail_task(
-        self, task_id: str, *, worker_id: str, error: dict[str, Any]
+        self, task_id: str, *, claim_token: str, error: dict[str, Any]
     ) -> None:
         row = self.tasks.get(task_id)
         if (
             row is not None
             and row["status"] == "running"
-            and row["worker_id"] == worker_id
+            and row["claim_token"] == claim_token
         ):
             row.update(status="failed", error=dict(error), finished_at=datetime.now(UTC))
 

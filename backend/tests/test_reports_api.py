@@ -6,6 +6,7 @@ Parquet；**综述一律注入假模型**——离线用例不该真的去调 LL
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.data import duckdb_client
 from app.main import app
 from app.report.narrative import Narrative
 from tests.conftest import TEST_USER, make_backtest_dir, ts, write_bars_parquet
+from tests.fakes import FakeDatabase
 
 client = TestClient(app)
 SYMBOL = "600519"
@@ -216,6 +218,36 @@ def test_second_generation_reuses_the_same_report(report_env: dict[str, Any]) ->
     assert again.json()["id"] == report_env["report_id"]
     assert again.json()["reused"] is True
     assert len(report_env["db"].reports) == 1
+
+
+def test_report_create_is_idempotent_at_the_database_seam() -> None:
+    """并发窗口的底线：DB 层同 `(account, snapshot)` 不能再插第二行。
+
+    修复前唯一性只在应用层 `find → insert`，两个并发请求会各插一行；现在由部分唯一
+    索引判负，第二个 `create_research_report` 返回 `None`，调用方回查既有行。
+    """
+    db = FakeDatabase()
+    account_id = str(uuid.uuid4())
+    kwargs: dict[str, Any] = {
+        "user_id": 1,
+        "account_id": account_id,
+        "snapshot": {},
+        "snapshot_hash": "same-digest",
+        "report": {},
+        "report_hash": "same-report",
+    }
+    first = asyncio.run(
+        db.create_research_report(report_id=str(uuid.uuid4()), **kwargs)
+    )
+    second = asyncio.run(
+        db.create_research_report(report_id=str(uuid.uuid4()), **kwargs)
+    )
+
+    assert first is not None
+    assert second is None
+    found = asyncio.run(db.find_research_report(1, account_id, "same-digest"))
+    assert found is not None and found["id"] == first["id"]
+    assert len(db.reports) == 1
 
 
 def test_list_reports_returns_summaries_without_body(report_env: dict[str, Any]) -> None:

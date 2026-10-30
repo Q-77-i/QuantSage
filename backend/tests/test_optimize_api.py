@@ -469,11 +469,12 @@ def test_cancel_running_grid_is_cooperative(signed_in: Any, data_dir: Path) -> N
     from app.tasks.executors import CANCELLED, RunContext, execute_grid
 
     task_id = client.post("/api/v1/optimize/grid", json=grid_body()).json()["task_id"]
-    asyncio.run(
+    claimed = asyncio.run(
         signed_in.claim_next_task("test-worker", lease_seconds=60)
     )  # worker 取件（此刻还没跑）
+    assert claimed is not None
     stop = asyncio.Event()
-    task_worker._RUNNING[task_id] = stop
+    task_worker._RUNNING[task_id] = (stop, str(claimed["claim_token"]))
 
     response = client.post(f"/api/v1/tasks/{task_id}/cancel")
     assert response.status_code == 200, response.text

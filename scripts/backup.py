@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from contextlib import suppress
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -145,8 +146,14 @@ def preflight(target: Path, *, need_pg: bool, need_qdrant: bool, dry: bool) -> N
             raise Failure(f"外置盘未挂载：{volume}")
     try:
         if not dry:
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
             for sub in ("pg", "qdrant", "data", "manifests", "logs", "weekly"):
-                (target / sub).mkdir(parents=True, exist_ok=True)
+                path = target / sub
+                path.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with suppress(OSError):
+                    os.chmod(path, 0o700)
+            with suppress(OSError):
+                os.chmod(target, 0o700)
             probe = target / ".write-test"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
@@ -184,6 +191,10 @@ def backup_pg(target: Path, date_str: str, dry: bool) -> dict[str, Any]:
             log(f"[dry] pg_dump {db} → {dest}")
             continue
         tmp = dest.with_name(dest.name + ".partial")
+        # dump 含 users.password_hash / share_token：只给当前用户读。
+        tmp.touch(mode=0o600, exist_ok=True)
+        with suppress(OSError):
+            os.chmod(tmp, 0o600)
         with tmp.open("wb") as handle:
             proc = subprocess.run(
                 ["docker", "compose", "exec", "-T", "postgres", "pg_dump", "-U", user, "-Fc", "--no-owner", db],
@@ -196,6 +207,8 @@ def backup_pg(target: Path, date_str: str, dry: bool) -> dict[str, Any]:
             tmp.unlink(missing_ok=True)
             raise Failure(f"pg_dump {db} 失败：{proc.stderr.decode(errors='replace')[:500]}")
         os.replace(tmp, dest)
+        with suppress(OSError):
+            os.chmod(dest, 0o600)
         entries[db] = {
             "file": str(dest.relative_to(target)),
             "bytes": dest.stat().st_size,
@@ -223,6 +236,8 @@ def backup_qdrant(target: Path, date_str: str, data_dir: Path, dry: bool) -> dic
                     os.link(prev_file, dest)
                 except OSError:
                     shutil.copy2(prev_file, dest)
+                with suppress(OSError):
+                    os.chmod(dest, 0o600)
                 log(f"Qdrant: 复用 {prev_file}（embeddings 未变）")
             else:
                 log("Qdrant: 复用当前快照（同日重跑）")
@@ -250,7 +265,10 @@ def backup_qdrant(target: Path, date_str: str, data_dir: Path, dry: bool) -> dic
     container_path = f"/qdrant/snapshots/{collection()}/{name}"
     try:
         compose(["cp", f"qdrant:{container_path}", str(tmp)])
+        os.chmod(tmp, 0o600)
         os.replace(tmp, dest)
+        with suppress(OSError):
+            os.chmod(dest, 0o600)
     finally:
         try:
             compose(["exec", "-T", "qdrant", "rm", "-f", container_path])
@@ -344,8 +362,13 @@ def write_manifest(
         log(f"[dry] manifest → {path}")
         return path
     tmp = path.with_name(path.name + ".partial")
+    tmp.touch(mode=0o600, exist_ok=True)
+    with suppress(OSError):
+        os.chmod(tmp, 0o600)
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+    with suppress(OSError):
+        os.chmod(path, 0o600)
     log(f"manifest: {path}")
     return path
 
@@ -440,7 +463,11 @@ def do_backup(args: argparse.Namespace) -> int:
             failures.append(f"{name}: {exc}")
     if not args.dry_run:
         write_manifest(target, date_str, sections, partial=bool(failures), failures=failures, dry=False)
-        prune(target, args.keep_daily, args.keep_weekly, dry=False)
+        # 有失败项时保留旧备：当天 manifest 已经写坏/缺段，再 prune 会删掉最老的完好日备
+        if failures:
+            warn("有失败项，跳过 prune（保留旧备）")
+        else:
+            prune(target, args.keep_daily, args.keep_weekly, dry=False)
     else:
         write_manifest(target, date_str, sections, partial=bool(failures), failures=failures, dry=True)
     if failures:

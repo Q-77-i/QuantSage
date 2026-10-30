@@ -78,6 +78,25 @@ class ChatRequest(BaseModel):
 #: 静默停在半路——那正是我们要避免的「半截 checkpoint」
 _DETACHED: set[asyncio.Task[None]] = set()
 
+
+async def drain_detached(timeout: float = 5.0) -> int:
+    """停机收尾：取消断连后仍在跑的图，限时等待；超时只记 warning（进程退出兜底）。
+
+    与 `API` 的「断连不取消」不矛盾：断连时图继续跑，**停机**时才需要收尾——否则
+    lifespan 关闭 checkpointer/业务池后，这些任务会在已关闭的池上写失败。
+    """
+    tasks = [task for task in _DETACHED if not task.done()]
+    _DETACHED.difference_update(tasks)
+    for task in tasks:
+        task.cancel()
+    if not tasks:
+        return 0
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+    except TimeoutError:
+        log.warning("停机 drain：%d 个断连图在 %.0fs 内未收尾", len(tasks), timeout)
+    return len(tasks)
+
 #: 每个会话一把跑图锁（键是 thread_id）。**同一会话不并发跑图**：断连不再取消之后，
 #: 「刷新（旧轮继续跑）+ 立刻再问一次」会让两个图同时写同一个 thread 的 checkpoint，
 #: 两边的消息会交错落盘，用户看到的是错乱的问答。锁的生命周期跟**运行**走（不是跟连接走），

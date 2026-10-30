@@ -175,3 +175,57 @@ def test_restore_yes_and_allow_live_proceed(
 
     assert rc == 0
     assert called == ["pg"]
+
+
+def test_backup_failure_skips_prune(
+    backup: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1：有失败项时不能 prune——否则当天写坏 manifest 还会删最老的完好日备。"""
+    import argparse
+
+    pruned: list[object] = []
+    manifests: list[object] = []
+
+    def fail_pg(*args: object, **kwargs: object) -> None:
+        raise backup.Failure("pg dump failed")
+
+    monkeypatch.setattr(backup, "preflight", lambda *a, **k: None)
+    monkeypatch.setattr(backup, "backup_pg", fail_pg)
+    monkeypatch.setattr(
+        backup, "write_manifest", lambda *a, **k: manifests.append((a, k))
+    )
+    monkeypatch.setattr(backup, "prune", lambda *a, **k: pruned.append((a, k)))
+
+    args = argparse.Namespace(
+        target=str(tmp_path / "backups"),
+        keep_daily=7,
+        keep_weekly=4,
+        no_pg=False,
+        no_qdrant=True,
+        no_data=True,
+        dry_run=False,
+    )
+    rc = backup.do_backup(args)
+
+    assert rc == 1
+    assert manifests and manifests[0][1]["partial"] is True  # type: ignore[index]
+    assert pruned == []
+
+
+def test_backup_files_are_private(backup: ModuleType, tmp_path: Path) -> None:
+    """P1 安全卫生：manifest 与备份目录只给当前用户读。"""
+    import stat
+
+    backup.preflight(tmp_path, need_pg=False, need_qdrant=False, dry=False)
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+
+    backup.write_manifest(
+        tmp_path,
+        "20260101",
+        {"pg": {}, "qdrant": {}, "data": {}},
+        partial=False,
+        failures=[],
+        dry=False,
+    )
+    manifest = tmp_path / "manifests" / "20260101.json"
+    assert stat.S_IMODE(manifest.stat().st_mode) == 0o600

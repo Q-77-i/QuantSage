@@ -22,19 +22,34 @@ class ResearchMixin:
         report_hash: str,
         kind: str = "paper_account_report",
         subject: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """落一份冻结报告。`account_id=None` = 深研报（M8，没有账户主体）。"""
-        row = await self._one(
+    ) -> dict[str, Any] | None:
+        """落一份冻结报告。`account_id=None` = 深研报（M8，没有账户主体）。
+
+        账户报告走部分唯一索引 `(account_id, snapshot_hash)`：并发撞上时 `RETURNING`
+        0 行，返回 `None`，由调用方回查既有行（`reused=true`）。深研报没有账户主体，
+        保持普通插入。
+        """
+        values = (report_id, user_id, account_id, Jsonb(snapshot), snapshot_hash,
+                  Jsonb(report), report_hash, kind,
+                  Jsonb(subject) if subject is not None else None)
+        if account_id is None:
+            row = await self._one(
+                "INSERT INTO research_reports "
+                "(id, user_id, account_id, snapshot, snapshot_hash, report, report_hash, kind, subject) "
+                "VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s) "
+                "RETURNING id, created_at",
+                values,
+            )
+            assert row is not None  # 无唯一冲突，RETURNING 必有一行
+            return row
+        return await self._one(
             "INSERT INTO research_reports "
             "(id, user_id, account_id, snapshot, snapshot_hash, report, report_hash, kind, subject) "
             "VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s) "
-            "RETURNING id, created_at",
-            (report_id, user_id, account_id, Jsonb(snapshot), snapshot_hash,
-             Jsonb(report), report_hash, kind,
-             Jsonb(subject) if subject is not None else None),
+            "ON CONFLICT (account_id, snapshot_hash) WHERE account_id IS NOT NULL "
+            "DO NOTHING RETURNING id, created_at",
+            values,
         )
-        assert row is not None  # RETURNING 必有一行
-        return row
 
     # ── M8 深路径运行记录 ──
 
@@ -91,6 +106,19 @@ class ResearchMixin:
             (*params, run_id),
         )
         return row is not None
+
+    async def sweep_interrupted_research_runs(self) -> int:
+        """启动扫尾：本实例遗留的 `running` 研究运行标 `failed/interrupted`。
+
+        只动 `running`；`awaiting_approval` 是合法暂停（等人工 resume），不能扫成失败。
+        由后台主实例在启动时调用一次（与 task worker 扫尾同一把锁，避免多 worker 互踩）。
+        """
+        rows = await self._all(
+            "UPDATE research_runs SET status = 'failed', error = %s, updated_at = now() "
+            "WHERE status = 'running' RETURNING id",
+            ("服务重启中断（interrupted）",),
+        )
+        return len(rows)
 
     async def get_research_run(self, user_id: int, run_id: str) -> dict[str, Any] | None:
         return await self._one(
