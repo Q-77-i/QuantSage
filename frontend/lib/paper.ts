@@ -11,6 +11,7 @@
  * 这层决定的是「**语气**」：要你动手 / 你已决定等市场 / 正常结果 / 已成往事 / 出了意外。
  */
 
+import { safeHref } from "./event-detail";
 import { amount, num } from "./format";
 import type {
   PaperAccountDetail,
@@ -101,7 +102,8 @@ export function sourceRows(decision: PaperDecision): SourceRow[] {
   if (s.event_time) rows.push({ label: "事发", value: s.event_time });
   if (s.available_at) rows.push({ label: "可得", value: s.available_at });
   if (s.content_hash) rows.push({ label: "内容哈希", value: `${s.content_hash.slice(0, 12)}…` });
-  if (s.source_url) rows.push({ label: "链接", value: "打开原文", href: s.source_url });
+  const href = safeHref(s.source_url);
+  if (href) rows.push({ label: "链接", value: "打开原文", href });
   return rows;
 }
 

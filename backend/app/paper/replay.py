@@ -34,6 +34,7 @@ from app.backtest.a_share_rules import REJECT_REASONS, RejectCode, order_reject
 from app.backtest.broker import Broker, affordable_qty
 from app.backtest.strategies import Strategy, build_strategy
 from app.backtest.types import Bar, BarContext, Mode, Side, Signal
+from app.core.urls import safe_source_url
 from app.paper import MAX_DEFER_DAYS, PaperError
 from app.paper import risk as risk_gates
 from app.paper.account import PaperAccount
@@ -567,7 +568,16 @@ def _sources_for(event_id: str | None, data: MarketData) -> Mapping[str, str] | 
     if row is None:
         return None
     # 列按需取：`source_url` 这类列在夹具与旧分片里可能不存在，缺就是缺
-    return {key: str(row[key]) for key in keys if row.get(key) is not None}
+    out = {
+        key: str(row[key])
+        for key in keys
+        if key != "source_url" and row.get(key) is not None
+    }
+    # 外部链接只放行 http(s)（与事件详情同一白名单）；非法值宁可缺一行，不给可点链接
+    url = safe_source_url(row.get("source_url"))
+    if url:
+        out["source_url"] = url
+    return out
 
 
 def _resolve_carry(

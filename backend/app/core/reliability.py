@@ -267,7 +267,12 @@ def bucket_of(name: str) -> Bucket:
     table: dict[str, tuple[int, float]] = {
         "llm-chat": (settings.rate_limit_chat, settings.rate_limit_chat_window),
         "llm-research": (settings.rate_limit_research, settings.rate_limit_research_window),
+        "llm-research-resume": (
+            settings.rate_limit_research_resume,
+            settings.rate_limit_research_resume_window,
+        ),
         "task-submit": (settings.rate_limit_task_submit, settings.rate_limit_task_submit_window),
+        "task-events": (settings.rate_limit_task_events, settings.rate_limit_task_events_window),
         "paper-run": (settings.rate_limit_paper, settings.rate_limit_paper_window),
         "pdf": (settings.rate_limit_pdf, settings.rate_limit_pdf_window),
         "pdf-public": (settings.rate_limit_pdf_public, settings.rate_limit_pdf_window),

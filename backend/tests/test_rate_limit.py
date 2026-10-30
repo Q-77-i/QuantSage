@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -21,7 +22,14 @@ from tests.conftest import TEST_USER, FakeDatabase
 
 client = TestClient(app)
 
-BUCKETS = ("llm-chat", "llm-research", "task-submit", "auth")
+BUCKETS = (
+    "llm-chat",
+    "llm-research",
+    "llm-research-resume",
+    "task-submit",
+    "task-events",
+    "auth",
+)
 CAPACITY = 2
 
 
@@ -98,6 +106,37 @@ def test_buckets_are_per_user(signed_in: FakeDatabase) -> None:
 
     app.dependency_overrides[require_user] = lambda: {**TEST_USER, "id": 2}
     assert client.post("/api/v1/chat", json={"message": "你好"}).status_code != 429
+
+
+def test_research_resume_has_its_own_bucket(signed_in: FakeDatabase) -> None:
+    """HITL resume 不能被 create 的 3/10 分钟误伤，但也不能无限续跑。"""
+    run_id = uuid.uuid4()
+    for _ in range(CAPACITY):
+        assert (
+            client.post(
+                f"/api/v1/research/runs/{run_id}/resume", json={"choice": "continue"}
+            ).status_code
+            != 429
+        )
+
+    assert (
+        client.post(
+            f"/api/v1/research/runs/{run_id}/resume", json={"choice": "continue"}
+        ).status_code
+        == 429
+    )
+
+
+def test_task_events_bucket_limits_reconnects(signed_in: FakeDatabase) -> None:
+    """事件订阅的重连风暴在开流前挡掉（404 也先过 L0 桶）。"""
+    task_id = uuid.uuid4()
+    for _ in range(CAPACITY):
+        assert client.get(f"/api/v1/tasks/{task_id}/events").status_code == 404
+
+    response = client.get(f"/api/v1/tasks/{task_id}/events")
+
+    assert response.status_code == 429
+    assert response.json()["kind"] == "rate_limited"
 
 
 AUTH_BODY = {"email": "nobody@example.com", "password": "wrong-password"}

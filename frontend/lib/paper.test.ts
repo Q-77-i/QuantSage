@@ -159,6 +159,18 @@ describe("sourceRows", () => {
     expect(rows[5].value).toBe("9a4a62b0eec1…");
   });
 
+  it("非 http(s) 的 source_url 不渲染成链接（与事件详情同一白名单）", () => {
+    const rows = sourceRows(
+      decision({
+        sources: {
+          source: "xiaoshi-archive",
+          source_url: "javascript:alert(1)",
+        },
+      }),
+    );
+    expect(rows.some((row) => row.label === "链接")).toBe(false);
+  });
+
   it("缺字段就少一行，不补空值", () => {
     const rows = sourceRows(decision({ sources: { source: "xiaoshi-archive" } }));
     expect(rows).toEqual([{ label: "来源", value: "xiaoshi-archive" }]);

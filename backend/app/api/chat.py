@@ -36,6 +36,7 @@ from app.api.limits import limit
 from app.api.sse import sse_frame
 from app.core import quota, reliability
 from app.core.auth import require_db, require_user
+from app.core.db_base import ChatLockBusy
 from app.core.langfuse import langfuse_callbacks
 
 log = logging.getLogger(__name__)
@@ -191,13 +192,36 @@ async def chat(
     # 排在状态码 401/404/422/503 之后、开流之前，与 L0 同一条「未开流即拒」的约束
     await quota.enforce(db, user, quota.METRIC_AGENT_CALLS)
 
-    # 归属行必须赶在首字节之前落：中途失败宁可 500，也不留一条无主会话
-    if body.thread_id:
-        await db.touch_thread(thread_id, int(user["id"]))
-    else:
-        await db.claim_thread(thread_id, int(user["id"]))
+    # P2 A8：锁连接许可在**开流前**拿——满了直接 503，不占住 SSE 首字节。
+    # 许可跟图走（pump 结束才释放），断连后图继续跑时也仍被计入。
+    acquire_slot = getattr(db, "acquire_chat_lock_slot", None)
+    release_slot = getattr(db, "release_chat_lock_slot", None)
+    slot_held = False
+    if acquire_slot is not None:
+        try:
+            await acquire_slot()
+            slot_held = True
+        except ChatLockBusy as exc:
+            raise HTTPException(
+                status_code=503, detail=str(exc), headers={"Retry-After": "1"}
+            ) from exc
 
-    callbacks = langfuse_callbacks(request.app.state)
+    def release_slot_once() -> None:
+        nonlocal slot_held
+        if slot_held and release_slot is not None:
+            slot_held = False
+            release_slot()
+
+    # 归属行必须赶在首字节之前落：中途失败宁可 500，也不留一条无主会话
+    try:
+        if body.thread_id:
+            await db.touch_thread(thread_id, int(user["id"]))
+        else:
+            await db.claim_thread(thread_id, int(user["id"]))
+        callbacks = langfuse_callbacks(request.app.state)
+    except Exception:
+        release_slot_once()
+        raise
 
     async def stream() -> AsyncIterator[str]:
         yield ": ok\n\n"  # 先送一帧，让响应头尽快落地
@@ -229,7 +253,14 @@ async def chat(
                     reset_agent_context(token)
                     queue.put_nowait(("end", None))
 
-        task = asyncio.create_task(pump())
+        try:
+            task = asyncio.create_task(pump())
+        except Exception:
+            release_slot_once()
+            raise
+        if slot_held:
+            # 许可跟**图**走：客户端断了也由图跑完后再释放；任务被取消也会走到这里。
+            task.add_done_callback(lambda _: release_slot_once())
         try:
             while True:
                 try:

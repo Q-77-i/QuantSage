@@ -44,7 +44,7 @@ function PaperView() {
   // 已有会话时表单收起来（这一页的主人是账户，不是表单）
   const [showForm, setShowForm] = useState(false);
 
-  const { sessions, reload: reloadSessions } = usePaperSessions();
+  const { sessions, error: sessionsError, reload: reloadSessions } = usePaperSessions();
   // 没指定就打开最近建的那个（列表已按创建时间倒序）；一个都没有才显示创建表单
   const accountId = idParam ?? (sessions?.length ? sessions[0].id : null);
   const { detail, loading, error, busy, step, decide, runToEnd, reload } =
@@ -97,6 +97,18 @@ function PaperView() {
         >
           {error}
           <button type="button" onClick={() => void reload()} className="ml-2 underline">
+            重试
+          </button>
+        </p>
+      ) : null}
+
+      {sessionsError && !error ? (
+        <p
+          role="alert"
+          className="mt-4 rounded-[var(--radius)] border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {sessionsError}
+          <button type="button" onClick={() => void reloadSessions()} className="ml-2 underline">
             重试
           </button>
         </p>

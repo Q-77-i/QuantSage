@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseFrames, streamPost } from "./sse";
+import { idleWatchdog, parseFrames, streamPost } from "./sse";
 
 describe("parseFrames", () => {
   it("一个分片里切出多帧", () => {
@@ -127,5 +127,34 @@ describe("streamPost（M5b：网格 / 批量的通用 POST 流）", () => {
     const seen: string[] = [];
     await streamPost("/api/v1/optimize/grid", {}, { onFrame: (frame) => seen.push(frame.event) });
     expect(seen).toEqual(["done"]);
+  });
+});
+
+
+describe("idleWatchdog", () => {
+  it("无数据到点 abort；touch 重置计时；dispose 后不再触发", () => {
+    vi.useFakeTimers();
+    try {
+      const idle = idleWatchdog(1000);
+      vi.advanceTimersByTime(900);
+      idle.touch();
+      vi.advanceTimersByTime(900);
+      expect(idle.signal.aborted).toBe(false);
+      vi.advanceTimersByTime(100);
+      expect(idle.signal.aborted).toBe(true);
+      idle.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    vi.useFakeTimers();
+    try {
+      const idle = idleWatchdog(1000);
+      idle.dispose();
+      vi.advanceTimersByTime(1000);
+      expect(idle.signal.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

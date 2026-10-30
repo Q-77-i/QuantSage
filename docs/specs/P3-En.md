@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.49 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）。
+> 版本 v2.50 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）；追加 P2：任务 SSE 连接闸门/退避、resume 限流、覆盖率 per-module 与 promtool 进 CI（§2.8/§5.4/§7.3/§7.5/§7.8）。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -194,6 +194,7 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 | 执行 | worker 的 `EXECUTORS` 加 `grid` / `batch`：复用**既有** `run_cells`（连 `CONCURRENCY=2` 的进程级闸门一起——它本就是「E1 异步队列的前置形态」）；每完成一格 `bus.publish(task_id, cell)` 并推一格 `progress`；收尾落 `optimization_runs` **一次**（语义与今天一字不变）→ `finish_task(result=done 帧载荷)` → **广播终态帧**（`done` / `error` / `cancelled`，三态都发——漏了它在线订阅者会一直停在「运行中」，见下「实施期逮到的两个 bug」） |
 | 进度总线 | 新 `app/tasks/bus.py`：按 `task_id` 的**累积缓冲 + 订阅者队列**。订阅者先收回放（断线重连补齐已有格）再收新帧；缓冲在**最后一个订阅者离开且任务已终结**时释放。进程内（单实例契约同 §2.4——服务重启则任务标 failed、缓冲消失；非主实例只保证终态回放，逐格实时不跨进程，如实） |
 | 重连 | 新 `GET /api/v1/tasks/{task_id}/events`（SSE，受保护，越权/不存在 404）：**已终结** → 从 `optimization_runs.summary.cells` 回放 + 补一帧 `done`（无记录 = 失败/取消 → `error` 帧）；**仍在跑** → 订阅总线回放 + 续流。帧形状与 `POST /optimize/*` 的流**逐字同形**（同一编码件），前端两条路共用一个消费器 |
+| 订阅闸门（P2） | 连接前过 `limit("task-events")`（默认 30 次/分钟/用户）；每用户最多 **3 条并发 SSE**（与默认 `QUOTA_ACTIVE_TASKS=3` 对齐），第 4 条在开流前 **429**；连接计数按进程，`API_WORKERS=2` 时有效上限 ×2。协作式任务在无新格时轮询 **1s → 2s → 5s** 退避，收到新帧/新格立即回 1s；终态回放不丢 |
 | 兜底通道 | **不需要**：提交回的是 202 + `{task_id}` JSON，任务号在响应体里就拿到了——不存在「流断了还没拿到号」的窗口（把提交与订阅分开的副产品） |
 | 取消 | `running` 的网格/批量 → **协作式中止**（`run_cells(stop=)` 已有：停止派发新格，已在跑的最多 2 格自然跑完）→ 任务标 `cancelled`。**中止的结果不落库**（与 M5b「中止的结果不是一份可引用的记录」一致），前端保留本地已收到的格并标注「未落库」 |
 
@@ -233,9 +234,10 @@ M4c「运行前带行号给话术」的承诺因此**分两段兑现**：静态�
 
 **已知代价（如实）**
 
-- **单 worker 串行**：满格网格（30s–2min）会把随后的单次回测挡在队列里——前端显示「排队中」，代价可见（E2 配额会把它显式化）。**不引多 worker**（PRD 定「单 worker」）。
+- ~~**单 worker 串行**~~（E1b 当时）：S7 起改为**单进程内按 kind 池化**（backtest×3 + grid×1 + batch×1），满格网格不再挡死所有单次回测；仍不引多进程 worker，`API_WORKERS` 只用于 HTTP 副本。
 - 服务重启仍丢正在跑的网格（任务标 `failed/interrupted`，无部分结果）——与 E1a 同一条边界，不粉饰。
 - 取消的结果不落库：那是「中止」，不是「一份可以引用的记录」。
+- **SSE 连接闸门按进程**：每用户 3 条、30 次/分钟是单进程计数；2 个 API worker 时有效上限是 2×3。跨进程精确计数要 Redis 协调，属 P2 可延项，本批不做。
 
 ## 3. E2 多用户治理
 
@@ -390,9 +392,9 @@ RETURNING used
 
 ### 3.7 已知边界（如实）
 
-- **四个 LLM 端点仍无限流**：`POST /research/runs/{id}/resume`、`POST /reports`、`GET /accounts/{id}/review`、`POST /accounts/{id}/settle`——**属 E4 的范围**，E2 不揽（`POST /reports` 已进配额计数，其余三个的调用量不可放大，见 §3.2）。
+- **三个 LLM 端点仍无限流**：`POST /reports`、`GET /accounts/{id}/review`、`POST /accounts/{id}/settle`——**属 E4 的范围**，E2 不揽（`POST /reports` 已进配额计数，其余两个的调用量不可放大，见 §3.2）。`POST /research/runs/{id}/resume` 已在 P2 补 `limit("llm-research-resume")`（默认 10/10 分钟），不再属于本条。
 - **配额按请求、不按成本**：一次深研与一次提问各占 1 个额度，尽管成本差两个数量级。按成本计费需要 token 级计量与对账，是另一个量级的事（§3.0 三层分工）。
-- **配额不改变吞吐**：在飞任务配额只是把「谁在占队列」显式化，队列仍是单 worker 串行（PRD 定死）。
+- **配额不改变吞吐**：在飞任务配额只是把「谁在占队列」显式化；S7 起执行是单进程内按 kind 池化（backtest×3 + grid×1 + batch×1），不是多进程 worker。
 - **`grant_admin` 是本地脚本**：无操作审计（谁在何时提了谁）；admin 视图里的「审计」只覆盖**配额拒绝**，决策审计属 E5。
 - **admin 视图是当前快照**：`usage_counters` 按日留存、无清理策略（量级：每用户每天 1 行，不需要）。
 
@@ -700,11 +702,14 @@ class Dependency:
 |---|---|---|
 | `llm-chat` | 10/分钟 | `POST /api/v1/chat` |
 | `llm-research` | 3/10 分钟 | `POST /api/v1/research/runs` |
+| `llm-research-resume` | 10/10 分钟 | `POST /api/v1/research/runs/{id}/resume`（P2 补） |
 | `task-submit` | 20/分钟 | `POST /backtest`、`POST /optimize/{grid,batch}` |
+| `task-events` | 30/分钟 | `GET /api/v1/tasks/{id}/events`（连接桶；另有每用户 3 条并发 SSE 上限，见 §2.8） |
 
 - 拒绝契约：**429 + `Retry-After` 头**，体与全仓既有信封同形——`{"detail": <一句人话>, "kind": "rate_limited", "retry_after": <整秒>}`（E4b 实施期收敛：`detail` 这个外壳是前端 `messageFromBody` 唯一认的键，另两个结构化键与 422 带 `findings` 同一手法）。
 - **必须在开流之前拒**：chat / research 是 SSE，首字节发出就改不了状态码（与 `api/chat.py` 既有注释同源）。
 - 额度全部进 settings（`rate_limit_*`），默认取「演示友好」档。
+- **任务 SSE 的 429 在开流前**：`task-events` 桶与每用户 3 条并发上限都在 `StreamingResponse` 之前判定；连接断开/取消时计数必须释放。轮询退避见 §2.8。
 - **与 E2 配额的边界写死**：L0 管**速率**（每分钟多少，进程内、重启清零），E2 管**累计用量**（跨重启需持久化）。E4 只实现前者，桶的计数件暴露成可复用对象，E2 届时配置而不是另起一套。
 
 ### 5.5 L7 幂等键
@@ -1007,35 +1012,53 @@ CREATE TABLE IF NOT EXISTS decision_audit (
 
 ### 7.3 覆盖率门槛
 
-接 `pytest-cov`（进 dev 组，`pytest-cov==7.0.0` 精确 pin——同 ruff 的理由：新版本可能改变统计口径，等于悄悄挪动闸门），CI 里跑：
+接 `pytest-cov`（进 dev 组，`pytest-cov==7.0.0` 精确 pin——同 ruff 的理由：新版本可能改变统计口径，等于悄悄挪动闸门），CI 一次跑出分支数据，闸门由脚本按**行覆盖**判定：
 
 ```
-uv run pytest -q --cov=app --cov-fail-under=88 --cov-report=term-missing:skip-covered
+uv run pytest -q --cov=app --cov-branch --cov-report=json:coverage.json --cov-report=term-missing:skip-covered
+uv run python scripts/check_coverage.py coverage.json
 ```
 
-**门槛由实测基线决定，不拍数字**——它是会挡住后续提交的闸门，拍高了逼人写凑数测试，拍低了没意义。**两端各测一次（2026-10-15，同一份代码、同为 1487 项全绿）**：
+**当前基线（2026-10-31 P2 复测，1,918 passed / 154 deselected）**：
 
-| 层 | 语句 | 缺 | 覆盖 | 说明 |
-|---|---|---|---|---|
-| **CI（Linux，门槛的定标环境）** | 10695 | 1138 | **89.36%** | 取整下浮 ⇒ `fail_under = 88`，余量约 **145 条语句** |
-| 本机（macOS / CPython 3.12） | 10695 | 1046 | **90.22%** | 两端差 **0.86 点**，见下「平台差异」 |
-| ├ 两个子进程 worker（两端一致） | 139 | 139 | **0%** | `strategy/worker.py`（策略沙箱）、`report/pdf_worker.py`（PDF 渲染）——**结构性 0**：coverage 默认不追子进程，离线套件照跑（行为断言在，只是读数进不来） |
-| └ 其余 `app/`（本机口径） | 10556 | 907 | **91.41%** | 离线可达面 |
+| 口径 | 行覆盖 | 分支覆盖 | 综合 |
+|---|---|---|---|
+| 全局 | **88.72%**（14,032 语句 / 1,583 缺） | 79.37%（3,364 分支 / 694 缺） | 86.91% |
 
-**门槛按 CI 定标，不按本机**：Gate 在 CI 上执行，**受约束的是弱的那一端**。CI 89.36% 若配 89，余量只剩 0.36 点（约 **38 条语句**）——一两个环境差异文件就能顶穿，闸门会变成随机红。取 **88**：CI 余量约 145 条语句，本机（90.22%）余 2.22 点。**为什么不更低**：88 仍**拦得住「整个模块没测试」**（最小的非空模块 2 条语句，常规模块 20–50 条——145 条放不进一个未测模块，但一次正常重构的删改放得下）。**改这个数字等于改闸门宽度**，需在 SPEC 留痕（同 ruff 的 `line-length`）。
+- 全局闸门仍是**行覆盖 88%**，不把 88 改成 86：`--cov-branch` 用于报告与模块可见度，`check_coverage.py` 按 `covered_lines/num_statements` 判 88；当前余量约 0.72 点（约 101 条语句）。
+- 历史定标（2026-10-15，1,487 项 / 10,695 语句 / 89.36%）保留在变更记录，不作当前读数；它仍是「为什么门槛是 88 而不是 89」的依据。
 
-**两端 0.86 点的性质——不是平台差异，是「离线」的残余缺口（逐行查明，如实登记）**：两端**用例数相同（1487 全绿、零 skip）、语句数完全相同（10695）**，差的全在「哪些分支走到了」。用 CI 的 `term-missing:skip-covered` 输出与本机逐行对比（2026-10-15，两跑一致、非噪声）：**CI 独缺 221 行、本机独缺 17 行**（净差 204 行），**两个方向都有**——**这正说明「离线」没有彻底**：
-- **本机多覆盖的 221 行**（CI 缺）：`deep/roles/*` 四角色取数后的主体（policy 46-74 / fundamental 104-135 / market 73-85 / factor 50-71）、`core/db.py` 的 `init_schema` 与池管理（294-304）、`main.py` lifespan 里「库可用」的分支（115-116、128-130、142-146）……**共同点：依赖本机真实资源**（`data/` 有真语料、Postgres 在 5433 上跑着）。CI 无这些资源 ⇒ `DataNotReady` 走**降级早退**分支、连库失败走 except 分支——**测试照样全绿，因为验的是降级那一支**。
-- **本机独缺的 17 行**（CI 覆盖了）——**镜像的另一面**：`main.py` 的 `117-120、131-136`（连库**失败**的 except 分支）、`core/langfuse.py` 41-42（**未配置**时的关闭分支）、`core/db.py:1056` 等。本机服务都在跑 ⇒ 走成功路径；CI 是裸环境 ⇒ 走降级路径。
-⇒ **一句话：两端各走了一条分支，差异全部来自「本机服务齐备 vs CI 干净」**。**同一份测试代码在两种环境验的是不同的代码路径**——这是 E7a §7.10 记的「离线套件隐含依赖真实环境」的**残余**（当时修完 15 条，这几处是漏网的）。**如实登记为已知缺口**（不假装已解决）；**修复是独立一块**（相关用例显式喂合成数据/假服务），留待后续。**门槛按 CI 定标不受影响**——CI 是干净的那一端，读数反而更接近真实部署形态。
+**per-module 底线（P2 新增；先 ratchet，不冒充质量读数）**：
 
-**唯一排除项：`app/strategy/templates/`**（`backend/pyproject.toml` 的 `[tool.coverage.run] omit`，244 条语句）——**与 ruff 的 `exclude` 同一条理由**：那是沙箱注入 `Signal`/`Side` 后执行的**源码文本**，主进程从不 import 它们，算进来是六个恒 0% 的文件，**结构性误报不是覆盖率缺口**。两个子进程 worker **不排除**：它们是真实代码，纳入分母才诚实（代价是整体读数被拉低约 1.3 个点，如实呈现）。
+| 模块 | 当前行覆盖 | 底线 |
+|---|---:|---:|
+| `tasks/worker.py` | 77.41% | 75 |
+| `tasks/stream.py` | 80.30% | 78 |
+| `core/quota.py` | 85.00% | 83 |
+| `core/coord.py` | 85.71% | 83 |
+| `core/metrics.py` | 74.58% | 72 |
+| `api/tasks.py` | 92.59% | 90 |
+| `api/chat.py` | 88.95% | 87 |
+| `api/research.py` | 85.34% | 83 |
+| `core/db_tasks.py` | 42.66% | 40 |
+| `core/db_research.py` | 30.36% | 28 |
+| `core/db_paper.py` | 33.33% | 31 |
+| `core/db_chat.py` | 57.14% | 55 |
+| `memory/scheduler.py` | 26.67% | 24 |
 
-**已知的真实缺口**（离线可达但未覆盖，如实登记）：`core/db.py` 42%（真库实现，离线用例走 `FakeDatabase`）、`memory/scheduler.py` 35%、`etl/archive.py` 51%、`rag/encoder.py` 67%（懒加载真模型）、`deep/synthesize.py` 71%。其余模块全在 79% 以上，`api/` `backtest/` `strategy/` 主体普遍 90–99%。
+- **db_* 与 scheduler 低是结构性的**：离线套件走 `FakeDatabase`，真 SQL 只在定向集成里覆盖；底线是 ratchet（防再降），不是「这些模块质量达标」。T7 槽位迁移、T8 `settle_all_accounts` 会把 scheduler 拉高后再调底线；db_* 的覆盖由真库集成负责，不靠离线假测试凑。
+- 分支覆盖先只报告不设闸门；等 P2 的新测试稳定后再决定是否把分支纳入。
+- 改任何底线等于改闸门宽度，须在 SPEC 留痕。
+
+**历史对照（2026-10-15，留档）**：当时 CI 89.36% / 本机 90.22%，差 0.86 点的性质不是平台差异，而是「离线」两端各走一条分支（本机有真 Postgres/data，CI 走降级）；逐行明细见变更记录与当次报告。该结论仍成立；P2 的新门槛以当前 CI 读数为准，不拿旧 10,695 语句表当现状。
+
+**排除项（P2 调整）**：模板源码文本仍不计入（沙箱注入 `Signal`/`Side` 后执行的源码，主进程从不 import，算进来是恒 0% 的结构性误报）；但旧 `omit = ["*/templates/*"]` 把**有测试的** `templates/__init__.py` 也排除了，P2 改为逐文件模板源（保留 `__init__.py` 计入）。两个子进程 worker **不排除**：它们是真实代码，纳入分母才诚实。
+
+**已知的真实缺口**（离线可达但未覆盖，如实登记）：`core/db_*`（真库实现，离线用例走 `FakeDatabase`）、`memory/scheduler.py`、`etl/archive.py`、`rag/encoder.py`（懒加载真模型）、`deep/synthesize.py`；具体读数以当次 `coverage.json` 为准，不抄旧表。其余模块全在 79% 以上，`api/` `backtest/` `strategy/` 主体普遍 90–99%。
 
 **只覆盖 `app/`**：`tests/`、`scripts/` 不计入。`scripts/` 下的取证脚本（`drill_reliability.py` / `verify_quantsage_mcp.py` 等）本就属**非 pytest 验收轨**，不计覆盖率。
 
-**默认不加进 `addopts`**：本地日常跑测试不必每次付插桩的代价，要看覆盖率显式传 `--cov=app`。**平台前提**：本机读数与 CI(Linux) 可比——离线套件两端同为 1487 项、无平台条件跳过，且 `app/` 全仓仅一处 `sys.platform` 分支、在恒 0% 的子进程 worker 里。**CI 首跑后核对实际读数，若与本机差 >1 点再回来调门槛**。
+**默认不加进 `addopts`**：本地日常跑测试不必每次付插桩的代价，要看覆盖率显式传 `--cov=app`。**平台前提**：本机读数与 CI(Linux) 可比——离线套件当前 **1,918 项**、无平台条件跳过，且 `app/` 全仓仅一处 `sys.platform` 分支、在恒 0% 的子进程 worker 里。**CI 首跑后核对实际读数，若与本机差 >1 点再回来调门槛**。
 
 **前端覆盖率不做**：`vitest.config.ts` 的 `include` 锁死在 `lib/**/*.test.ts`，覆盖面本就很窄；且 PRD 只要求「**pytest** 覆盖率门槛」。
 
@@ -1059,13 +1082,14 @@ uv run pytest -q --cov=app --cov-fail-under=88 --cov-report=term-missing:skip-co
 
 | # | 断言 | 落点 |
 |---|---|---|
-| ① | 后端离线套件 **1487 项** | `pytest`（含 E4 的 **12 条故障注入矩阵** §5.7、PIT 单测、注入边界用例 §8.5） |
+| ① | 后端离线套件 **1,918 项** | `pytest`（含 E4 的 **12 条故障注入矩阵** §5.7、PIT 单测、注入边界用例 §8.5） |
 | ② | RAG 指标公式 | `tests/test_rag_evaluate.py`（DCG/NDCG@k/MRR/Recall 的手算样例） |
 | ③ | RAG 离线管线 | `tests/test_rag_retrieve.py`（内存向量库替身，**PIT 硬过滤是主角**） |
-| ④ | 覆盖率门槛 **`fail_under = 88`**（CI 实测基线 89.36%） | §7.3 |
-| ⑤ | 前端 vitest **466 项** + typecheck + lint + build | `frontend` job |
+| ④ | 覆盖率闸门：全局**行覆盖 88%** + per-module 底线（§7.3；P2 起 `--cov-branch` 报告、脚本判定） | §7.3 |
+| ⑤ | 前端 vitest **510 项** + typecheck + lint + build | `frontend` job |
+| ⑥ | 配额/队列定向集成（真 Postgres） | `tests/integration/test_quota_e2.py` |
 
-**不在其中的**：真语料 200 条评测集的 NDCG@10 读数（§7.0，需真索引与 2.3GB 模型）、集成套件 **114 项**（§7.8）、四幕演练（§5.7 轨二）、MCP 握手验证（§8.6）。**这四项手动跑，不假称已进 CI。**
+**不在其中的**：真语料 200 条评测集的 NDCG@10 读数（§7.0，需真索引与 2.3GB 模型）、其余集成套件（当前集成总数 **149**，§7.8）、四幕演练（§5.7 轨二）、MCP 握手验证（§8.6）。**这几项手动跑，不假称已进 CI。**
 
 ⚠ **「离线 1491」在 CI 首跑后被订正为「离线 1487 + 集成 114」**——详见 §7.10。数字变了不是测试少了，是**归类错了**。
 
@@ -1129,7 +1153,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 
 ### 7.8 已知边界（如实）
 
-- **CI 绿 ≠ 全绿**：CI 跑离线套件 + **配额/队列定向集成**（Postgres service，`tests/integration/test_quota_e2.py`）；其余集成（paper / research / 真实 `data/`）、真语料评测集读数、四幕演练、MCP 握手**仍不在 CI 里**——它们要真容器、真数据、真密钥（`/data/` 2.6GB 不进 Git）。当前集成总数 **149**（`pytest --collect-only -m integration`），CI 注释不再写死 114。这是单机形态的必然，不是遗漏。
+- **CI 绿 ≠ 全绿**：CI 跑离线套件 + **配额/队列定向集成**（Postgres service，`tests/integration/test_quota_e2.py`）+ **Prometheus 规则 promtool 检查/单测**（P2）；其余集成（paper / research / 真实 `data/`）、真语料评测集读数、四幕演练、MCP 握手**仍不在 CI 里**——它们要真容器、真数据、真密钥（`/data/` 2.6GB 不进 Git）。当前集成总数 **149**（`pytest --collect-only -m integration`），CI 注释不再写死 114。这是单机形态的必然，不是遗漏。
 - **「离线」按维度分别成立**：不连外部服务 ≠ 不读本地数据。离线轨已做到**不读 `data/`**（§7.10 的订正），但这条性质**靠纪律维持**——新写用例若在模块级或夹具外读真实数据，会立刻在 CI 上变红。
 - **「离线」仍有残余缺口（E7b 覆盖率对比查出来的，登记为已知债）**：同一份用例在本机（有 Postgres / `data/` / Langfuse）与 CI（裸环境）走的是**不同的代码路径**——本机多覆盖 221 行（角色取数主体、`init_schema`、lifespan 的「库可用」分支），CI 多覆盖 17 行（连库失败与未配置的降级分支）。**两端各自只验了半边**，全绿不等于都把两条路径验了。修复方向是把相关用例显式喂合成数据/假服务（独立一块，未排期）；在此之前，**覆盖率读数要按环境读，别当唯一事实**（§7.3 的逐行明细）。
 - **覆盖率只覆盖离线可达的 `app/`**：懒加载路径（真实编码器/精排器）、需要真库的分支测不到，会拉低数字——如实呈现，不为凑数写假测试。
@@ -1585,18 +1609,19 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 ## 10. 测试策略
 
-> 本节只登记用例落点与关键断言；逐段验收读数见 §11。集成套件不进 CI，离线套件需在无 `data/`、无 `.env` 的环境可跑。
+> 本节只登记用例落点与关键断言；逐段验收读数见 §11。除 §7.8 的配额/队列定向集成外，集成套件不进 CI；离线套件需在无 `data/`、无 `.env` 的环境可跑。
 
 | 范围 | 落点与关键断言 |
 |---|---|
-| E1 任务与接缝 | `test_tasks_api.py`（提交 202 / 轮询终态 / 404 / 同步 422 / 取消语义）、`test_task_worker.py`（FIFO 串行 / 失败不落 run / 取件前取消 / running 扫成 interrupted）、`test_tasks_stream.py`（总线三时序 / 事件流三态）、`test_optimize_api.py`（202 + 冻结材料 / 逐格进度 / 协作中止不落库）；离线不起 worker，用 `run_once(db)` 驱动；接缝用例 patch `core.llm.complete` / `ask_once` 证明单点注入。 |
-| E4 可靠性 | `test_reliability.py`（分类 / 退避与 `Retry-After` / 熔断三态 / 令牌桶，假时钟）、`test_llm_policy.py`（重试后成功 / 降级换档 / 4xx 与取消不重试 / 熔断后不碰上游 / 实际模型回执）、`test_rate_limit.py`（三桶 / SSE 未开流 429 / 分用户）、`test_idempotency.py`（同键同 body 返回同 `task_id` / 异 body 409 / 短路在闸门之前）、`test_source_policy.py`（CLI 不重试 / 熔断开路 / MCP 包装）、`test_chat_guard.py`（token/成本/墙钟到限即停且保留部分正文）；autouse `_clean_limiters`。 |
-| E7 工程化 | CI 即载体：后端离线全量 + 前端 vitest/typecheck/lint/build + ruff + 覆盖率 + 审计；不跑集成、真语料评测、演练、MCP 握手。`test_langfuse_metadata.py` 12 例（四键形状 / `TraceConfig` / 透传 / 具名壳）；`test_snapshot_window.py` 9 例（同数据同指纹 / 窗口外不影响 / 窗口内必变 / 复权轴不同 / 空窗口稳定）；`test_metrics.py` 5 例 + 真库集成 1 例。 |
-| E2 治理 | `test_quota.py` 14 例（`period_key` / 四态 / 隔离 / admin 豁免 / 幂等重放 / 拒绝落行）；集成 `test_quota_e2.py` 5 例，**并发原子性只有真库能证**；`test_admin_api.py` 16 例（401/403/200 / 三读数 / 在飞只数 `queued`+`running` / 分页搜索转义）；`test_isolation_matrix.py` 23 例（八类资源 × 两类端点，B 拿 404 且与不存在同体同文案、A 200 对照、越权后资源仍在）；真机三轨 `quota_smoke.py` / `capture-admin.mjs` / `grant_admin.py`。 |
+| E1 任务与接缝 | `test_tasks_api.py`（提交 202 / 轮询终态 / 404 / 同步 422 / 取消语义）、`test_task_worker.py`（池化启动参数 / 失败不落 run / 取件前取消 / running 扫成 interrupted）、`test_tasks_stream.py`（总线三时序 / 事件流三态 / P2 每用户第 4 条 429 / 断连释放 / 无新格退避 1→5s）、`test_optimize_api.py`（202 + 冻结材料 / 逐格进度 / 协作中止不落库）；离线不起 worker，用 `run_once(db)` 驱动；接缝用例 patch `core.llm.complete` / `ask_once` 证明单点注入。 |
+| E4 可靠性 | `test_reliability.py`（分类 / 退避与 `Retry-After` / 熔断三态 / 令牌桶，假时钟）、`test_llm_policy.py`（重试后成功 / 降级换档 / 4xx 与取消不重试 / 熔断后不碰上游 / 实际模型回执）、`test_rate_limit.py`（五桶：`llm-chat` / `llm-research` / `llm-research-resume` / `task-submit` / `task-events`；SSE 未开流 429 / 分用户）、`test_idempotency.py`（同键同 body 返回同 `task_id` / 异 body 409 / 短路在闸门之前）、`test_source_policy.py`（CLI 不重试 / 熔断开路 / MCP 包装）、`test_chat_guard.py`（token/成本/墙钟到限即停且保留部分正文）；autouse `_clean_limiters`。 |
+| E7 工程化 | CI 即载体：后端离线全量 + 配额/队列定向集成 + Prometheus 规则 promtool + 前端 vitest/typecheck/lint/build + ruff + 覆盖率（`check_coverage.py` 全局行 88 + per-module）+ 审计；其余集成、真语料评测、演练、MCP 握手不进 CI。`test_langfuse_metadata.py` 12 例（四键形状 / `TraceConfig` / 透传 / 具名壳）；`test_snapshot_window.py` 9 例（同数据同指纹 / 窗口外不影响 / 窗口内必变 / 复权轴不同 / 空窗口稳定）；`test_metrics.py` 5 例 + 真库集成 1 例。 |
+| E2 治理 | `test_quota.py` 14 例（`period_key` / 四态 / 隔离 / admin 豁免 / 幂等重放 / 拒绝落行）；集成 `test_quota_e2.py` 10 例（P1 增槽位守卫/启动压缩），**并发原子性只有真库能证**；`test_admin_api.py` 16 例（401/403/200 / 三读数 / 在飞只数 `queued`+`running` / 分页搜索转义）；`test_isolation_matrix.py` 23 例（八类资源 × 两类端点，B 拿 404 且与不存在同体同文案、A 200 对照、越权后资源仍在）；真机三轨 `quota_smoke.py` / `capture-admin.mjs` / `grant_admin.py`。 |
 | E8 安全 | `test_security_headers.py` 8 例（五头 / 错误与流式也带头）；`test_session_renewal.py` 5 例（过半程换 / 未过半不换 / 401 不续 / 真 SSE 续）；`test_auth_core.py` + `test_auth_api.py`（`ver`、登出撤销、库挂登出仍 200）；`test_strict_msgpack_is_enforced` 防回退；`test_mcp_server.py` 14 例（双时间戳 / `as_of` 回显 / `top_k` 收敛 / 错误分类 / 超长 payload 标注）；`test_injection_guard.py` 9 例（只转义分隔标签 / 块数恒 1 / 端到端注入无第二次工具调用）；真机 `verify_quantsage_mcp.py` 与 `logs/e8/audit-*` 一次性证据。 |
 | E3 数据工程 | `test_data_health.py`（X7 三态 / 阈值边界 / 缺失降 info）、`test_health_log.py` 12 例（摘要与全文分家 / 分页 / 坏行跳过 / `skipped` 无计数 / `os.replace`）、`test_bars_refresh.py` 3 例（第三路 job / 撞锁 `skipped` / 退市失败不影响落档）、`test_data_api.py` 20 例（401/403/200 / `last` 缺失 200 / `check_status` 服务端算 / 分页）、`test_snapshot_archive.py` 9 例、`test_rollback.py` 11 例（缺片整次拒 / 验证失败零写入 / 目标外分片删除 / 退路存回滚前 / 与同步互斥 / 边拷边核 sha）、`test_cache.py` 11 例（代际 / mtime 门 / 目录区分 / L1 不碰 L2 / 换代不复用 / 类型保真 / 熔断直读）；集成真 Redis 3 例（命中相等 / 代际红线 / 死端口降级）；真机 `health_smoke.py` 5 条、`rollback_smoke.py` 6 条。 |
 | E5 风控 | `test_paper_risk.py`（四闸门 / 缩量取整 / 止损成本 / 回撤峰值 / 确定性）、`test_paper_replay.py`（风控关闭平价 / 开启缩量或拦截 / 止损 T+1 / 回撤禁买与恢复 / 重放逐字段相等）、`test_paper_api.py`（创建校验 / `risk_state` / step 事件 / 旧 config 兼容）；集成 `test_paper_e5.py`（DDL / 审计同事务 / 级联删除 / 真数据重放对账）；真机 `run_paper_risk.py` 7/7 + `capture-e5.mjs` 14/14。 |
 | 收尾项 5 | 5a：`test_paper_proposal.py` / `test_agent_paper_tools.py` / `run` 409 / 集成单条插入与 `as_of` 守卫；5b：`test_rag_correct.py`（零命中才改写 / `as_of` 相等 / 失败降级 / 二次仍空）、`test_capabilities.py`（公开字段与「非 A2A」）、agent/MCP 各一例；5c：`test_report_deep_eval.py`（自动项 / PIT 违规 / judge 解析 / 聚合），手动轨 3 题冒烟不设及格线；5d：`test_strategies_api.py`（历史 / diff / 回滚 / 只改名不增版 / 409）、`test_paper_user.py`（锁版本）、前端 4 例、集成真库 2 例。 |
+| P2 资源/测试 | A8：真库并发锁（12 许可占满 → 第 13 个受控拒绝/等待；释放后可拿；`pg_stat_activity` 无泄漏）。A9：第 4 条 SSE 429、断连释放、退避到 5s、终态回放不丢。T4：`scripts/check_coverage.py` 全局行 88 + per-module 底线。T7：真库造 NULL/旧槽位 → `init_schema` → `0..n-1` + 索引存在。T8：`settle_all_accounts` 未就绪跳过 / 单账户失败隔离 / keyset 翻页 / 计数。T12：`promtool check/test rules` 进 CI。 |
 | 跨节纪律 | 离线不下载模型、不连真库、不读真实 `data/`（除明确标注的集成）；替身必须照抄关键约束；「等一个立即会为真的条件」等于没等，界面验证要等真正的数据变化；改依赖树或后端契约后先重启再走查。 |
 
 ## 11. 变更记录
@@ -1605,6 +1630,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.50 | 2026-10-31 | **审计 P2 资源/测试**：① `GET /tasks/{id}/events` 加 `task-events` 连接桶（30/分钟/用户）与每用户 3 条并发 SSE 上限（第 4 条开流前 429），协作式任务无新格时轮询 1→2→5s 退避；② `POST /research/runs/{id}/resume` 补 `llm-research-resume`（10/10 分钟），§3.7「四个无限流端点」改三个；③ 覆盖率改为一次跑 `--cov-branch --cov-report=json` + `scripts/check_coverage.py`：全局行覆盖 88 + per-module 底线（P2 基线 1,918 项 / 行 88.72% / 分支 79.37%），分支只报告不设闸门；报告 `templates/__init__.py` 不再被 omit；④ CI 加 promtool 规则检查/单测，集成总量 149；⑤ 修正 §2.8「单 worker 串行」为 S7 池化。 |
 | v2.49 | 2026-10-31 | **审计 P1 安全卫生**：访问日志改记路由模板（不再落分享/导出 token），`dev.sh`/`prod.sh` 关 uvicorn access log；`.env` 启动时 600，备份 dump/manifest 600、目录 700；token 文件 644 的 Prometheus 例外如实记录。 |
 | v2.48 | 2026-10-31 | **审计 P1 配额/CI**：① 槽位准入同语句加「在飞数 < limit」守卫，并在启动时把 active 槽位压缩为 `0..n-1` 后重建索引，修复上限调小后旧槽位 ≥ limit 不可见导致的超发（含并发）；② `QUOTA_SLOT_ATTEMPTS` 耗尽改抛 `TaskAdmissionBusy` → **503 + Retry-After**，不再冒充 429 配额满；③ 修正 §3.2「`enforce` 在五个端点各调一次」的旧口径（active_tasks 在 `create_task` 判，`enforce` 只管三个 LLM 端点）；④ CI 加 Postgres service 跑 `test_quota_e2.py` 定向集成，集成总数 114 → **149**。详见 §3.1/§3.2/§7.8。 |
 | v2.47 | 2026-10-30 | **E2 配额准入实现修订（API 契约不变）**：在飞任务配额由「每用户 advisory lock + `count(*)`」改为「`tasks.quota_slot` `0..limit-1` + 部分唯一索引」；并发提交撞槽由唯一索引判负、换槽重试（随机起点环扫），任务进终态索引项消失即释放——无锁、无计数、无对账。老库启动时补槽位再建索引。429 契约与 `QUOTA_ACTIVE_TASKS` 语义不变；拒绝路径不再额外 count，`used` 报上限。实测（20 并发 / mixed）：配额 1000 提交 p50 **3.2s → 1.1s**、配额 3 **4.9s → 2.1s**；真库并发恰好放行 limit、槽位随终态释放。 |

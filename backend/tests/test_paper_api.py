@@ -61,6 +61,8 @@ def build_dir(root: Path, days: list[date]) -> Path:
             "source": "xiaoshi-archive",
             "original_source": "华尔街见闻",
             "content_hash": "abc123",
+            # 外部链接只放行 http(s)：这条非法值必须被丢弃，不能原样进决策单
+            "source_url": "javascript:alert(1)",
         }
     ]
     root = make_backtest_dir(root, rows, events=events, symbol=SYMBOL)
@@ -143,6 +145,7 @@ def test_create_then_detail_shape(paper_env: list[date]) -> None:
     assert decision["sources"]["original_source"] == "华尔街见闻"
     assert decision["sources"]["content_hash"] == "abc123"
     assert decision["sources"]["available_at"].startswith("2026-08-03 09:10")
+    assert "source_url" not in decision["sources"]
     assert detail["account"]["rules"][SYMBOL]["limit_check"] == "on"
 
 

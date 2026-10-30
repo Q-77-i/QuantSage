@@ -11,8 +11,7 @@
  */
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { ApprovalCard } from "@/components/agent-run/approval-card";
 import { EventTimeline, RunView } from "@/components/agent-run/run-view";
@@ -24,7 +23,6 @@ import { pendingApproval, type RunStatus } from "@/lib/agent-run";
 import type { ResearchRunSummary } from "@/lib/types";
 
 export default function ResearchIndexPage() {
-  const router = useRouter();
   const [question, setQuestion] = useState("分析一下贵州茅台现在值不值得买");
   const [symbols, setSymbols] = useState("");
   const [asOf, setAsOf] = useState("");
@@ -34,12 +32,19 @@ export default function ResearchIndexPage() {
 
   const stream = useRunStream();
 
-  useEffect(() => {
-    api
-      .researchRuns()
-      .then((data) => setRuns(data.runs))
-      .catch((cause) => setListError(describeError(cause, "运行列表拉不到")));
+  const loadRuns = useCallback(async () => {
+    try {
+      const data = await api.researchRuns();
+      setRuns(data.runs);
+      setListError(null);
+    } catch (cause) {
+      setListError(describeError(cause, "运行列表拉不到"));
+    }
   }, []);
+
+  useEffect(() => {
+    void loadRuns();
+  }, [loadRuns]);
 
   const start = () => {
     void stream.start({
@@ -174,7 +179,7 @@ export default function ResearchIndexPage() {
         <button
           type="button"
           className="self-start text-xs text-ink-3 hover:underline"
-          onClick={() => router.refresh()}
+          onClick={() => void loadRuns()}
         >
           刷新
         </button>

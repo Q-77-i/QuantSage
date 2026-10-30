@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.tasks import bus
-from app.tasks.stream import task_frames
+from app.tasks.stream import next_poll_interval, task_frames
 from tests.fakes import FakeDatabase
 
 USER_ID = 1
@@ -101,6 +101,15 @@ def test_release_drops_the_buffer() -> None:
     bus.publish("t4", "cell", {"index": 1})
     assert len(bus._buffers["t4"]) == 1
     bus.release("t4")
+
+
+def test_poll_interval_backs_off_without_new_cells_and_resets_on_new() -> None:
+    """协作式任务没有新格时 1→2→4→5s 退避；一有新格立即回到 1s。"""
+    assert next_poll_interval(1.0, new_cells=False) == 2.0
+    assert next_poll_interval(2.0, new_cells=False) == 4.0
+    assert next_poll_interval(4.0, new_cells=False) == 5.0
+    assert next_poll_interval(5.0, new_cells=False) == 5.0
+    assert next_poll_interval(5.0, new_cells=True) == 1.0
 
 
 # ── 事件流 ──────────────────────────────────────────────────

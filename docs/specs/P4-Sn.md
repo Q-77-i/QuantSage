@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.16** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（8 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）、P1 租约 claim token（v3.15，见 §3.3）与 P1 备份/告警（v3.16，见 §9.3）。
+> 版本 **v3.17** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（9 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）、P1 租约 claim token（v3.15，见 §3.3）、P1 备份/告警（v3.16，见 §9.3）与 P2 chat 锁连接上限/磁盘指标/日志轮转/observability 资源上限/备份清理（v3.17，见 §5.3/§5.4/§6.2/§7.3/§9.3）。
 >
 > 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8，已交付）、P4-S8 可观测性与缓存（§9，已交付）与 P4-S9 数据层热点优化（§10，已交付）**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
 > 实测基线：S1–S6 见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；S7 基线见 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -399,8 +399,9 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 - Redis cache：`maxmemory 512MB`、`volatile-lru`、关闭 RDB/AOF；缓存键必须带 TTL；不把限流/进度等协调键放进 cache 实例。
 - **Redis coord 不在 S4 建**：S4 的限流/熔断仍进程内，建一个没有消费者的实例只会白占内存；S5 Go 后已与共享限流一起加入（128MB `noeviction`、`mem_limit 192m`，见 §6.3）。
-- PG：`max_connections=120`（连接预算 ≤80 + Langfuse ~20 + 余量）、`shared_buffers=512MB`、`shm_size=256MB`；连接预算：API 2×(8 业务 + 8 checkpointer) + worker/scheduler 共用业务池 + Chat advisory ≤24 + 余量，控制在 80 以内。
+- PG：`max_connections=120`（连接预算 ≤80 + Langfuse ~20 + 余量）、`shared_buffers=512MB`、`shm_size=256MB`；连接预算：API 2×(8 业务 + 8 checkpointer) + worker/scheduler 共用业务池 + Chat advisory 上限 24（每进程 `CHAT_LOCK_MAX_CONNECTIONS=12`，2 worker 合计 24；advisory 连接不占业务池槽位，但受该信号量约束）+ 余量，控制在 80 以内。
 - 业务池 `statement_timeout=5s`；checkpointer 池 `30s`（LangGraph 写入可能比业务查询大）。worker 与 API 同进程、共用业务池，其 PG 语句（取件/心跳/进度/终态）均为亚秒级，共用 5s；**不为 worker 单开 30s 池**。Chat 的 advisory lock 走独立连接，不受池 `options` 影响（`pool.conninfo` 不含 kwargs）。
+- **Chat 锁连接上限（P2，2026-10-31）**：每条 chat 的池外锁连接受进程级 `asyncio.Semaphore(CHAT_LOCK_MAX_CONNECTIONS=12)` 约束；`connect` 与许可获取都设 5s 超时。**实现选“开流前拿许可、拿不到直接 503 + `Retry-After: 1`”**（不退化为开流后的 error 帧）；许可由 pump 任务的 done callback 释放，断连后图继续跑时仍计入，任务结束才归还。连接带 `application_name='quantsage-chat-lock'`，`pg_stat_activity` 可归因。锁仍持有到整轮图结束（最长 `chat_max_seconds=180`），同一 thread 继续排队；**不把锁连接塞回业务池**（会长期占池槽位）。
 - `init_checkpoint_db.py` 的建表连接不加超时（`setup()` 可能跑 `CREATE INDEX CONCURRENTLY`）；只有应用运行期池加。
 
 ### 5.4 进程与停机
@@ -409,6 +410,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - 健康检查：`/health`、`/health/ready`、RAG `/health`；启动顺序 infra → migrate → RAG → API/worker → 前端。
 - 优雅停机：API 用 `uvicorn --timeout-graceful-shutdown 15` 停接新请求、drain 在飞/SSE（上限 15s）；worker 停止取件，**不 await 在飞任务**，退出前对 `_RUNNING` 里的任务调用 `release_task`——回 `queued`、`attempts = greatest(attempts-1, 0)`（优雅停机不算一次失败）、清租约；已请求取消的收成 `cancelled`。旧进程的迟到写入仍由 `worker_id` 栅栏挡住；下次启动的全量扫尾继续兜底（S2）。scheduler `shutdown(wait=False)` 不变。
 - 日志轮转：prod 模式每 30min 做一次 copytruncate（20MB 阈值、保留 3 份，`PROD_LOG_*` 可调）；几行丢失窗口如实记录，不假装是 logrotate。不把密钥写进 plist/命令行。
+- **日志上限（P2，2026-10-31）**：compose 所有服务统一 `logging: {max-size: 50m, max-file: 3}`；dev 模式也做同族轮转（阈值可低于 prod）；`alert_hook` 改 `RotatingFileHandler`。此前只有 prod 的应用日志有轮转，Docker json-file 与 dev/alert 日志是无上限追加。
 - 迁移：S2 加列用幂等 DDL；`schema_migrations` 作为 S6 可延项，不阻塞本轮。
 
 ### 5.5 验收
@@ -447,7 +449,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - 后台主实例仍由 Postgres advisory lock 只选一个：只有持锁进程跑 task worker/scheduler；另一个只服务 HTTP。主实例被 kill 后，uvicorn 重启的新进程在启动时**重新竞选**；不做运行中晋升。抢锁在 `API_WORKERS>1` 时重试 3×0.25s，避免旧连接未释放时新进程永远不跑后台。
 - 每个 API worker 不加载 RAG 模型（S3 已剥离）。`langchain-mcp-adapters 0.3.2` 是**每次工具调用新建会话**，不是常驻每 worker 一份；内存成本按瞬时子进程记录，必要时再懒加载。
 - `init_schema` 加跨进程 `pg_advisory_xact_lock`，两个 worker 同时启动时串行建表。
-- Chat 同 thread 的跨进程串行仍靠 PG advisory lock；池预算见 §5.3。
+- Chat 同 thread 的跨进程串行仍靠 PG advisory lock；池预算见 §5.3。锁连接由每进程 `CHAT_LOCK_MAX_CONNECTIONS=12` 信号量约束（2 worker 合计 24），满时 503/`error` 帧；**不允许**把外部连接数变成无上限。
 
 ### 6.3 共享限流
 
@@ -529,8 +531,9 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - **脚本**：`scripts/backup.sh` / `scripts/restore.sh` / `scripts/install_backup_job.sh`（launchd 03:30，**安装器提供但不自动安装**，由用户执行）。
 - **落点**：参数化 `--target DIR`，默认 `~/QuantSageBackups`；外置盘用 `--target /Volumes/...`。目标不可写/未挂载 → 非零退出并明确报错，不静默跳过。`QS_BACKUP_DIR` 与安装器的 `--target` 必须指向同一目录（安装器校验并在不一致时失败）；`~` 由配置层展开，不当作字面目录。
 - **PG**：`quantsage` + `langfuse`，`pg_dump -Fc --no-owner`；排除 `quantsage_loadtest_*` 等测试库。每日；保留 7 日 + 4 周。
-- **Qdrant**：`POST /collections/cn_events_v1/snapshots`；`data/_meta/embeddings.json` 未变则复用上一份（`reused: true`），变更后必做；快照用 `docker compose cp` 从容器 `/qdrant/snapshots/` 拷到宿主。
-- **data**：`rsync -a --link-dest=<上一份>/ --exclude='_tmp/' data/ <target>/data/<date>/`；生成 `<date>.data.sha256`；目标 FS 不支持硬链接时回退普通复制并 warning（空间预检）。
+- **Qdrant**：`POST /collections/cn_events_v1/snapshots`；`data/_meta/embeddings.json` 未变则复用上一份（`reused: true`），变更后必做；快照用 `docker compose cp` 从容器 `/qdrant/snapshots/` 拷到宿主。**恢复上传成功后删除容器内快照**（成功与失败路径的 `finally` 都要清），否则每次恢复都在容器层留一份 1.7GB 级文件。
+- **data**：`rsync -a --link-dest=<上一份>/ --exclude='_tmp/' data/ <target>/data/<date>/`；生成 `<date>.data.sha256`；目标 FS 不支持硬链接时回退普通复制并 warning（空间预检）。**同日重跑先清空目标或加 `--delete`**，manifest 记**源端** digest；只对目标端自校验会把「回滚后已删的文件」重新记成正确。
+- **Langfuse 备份范围（P2 文档化）**：只含 PG 元数据；trace 在 ClickHouse + MinIO，不在备份范围。需要 trace 可恢复时再评估，不假装全量。
 - **恢复**：默认恢复到 scratch 目标（新库/新集合/临时目录），不覆盖 `quantsage` / `cn_events_v1` / `data/`；覆盖需 `--force` + 二次确认。**`--force` 只解除存在性保护，不等于确认**：TTY 必须输入 `yes`；非 TTY 必须显式 `--yes`。覆盖线上库 `quantsage`、线上集合 `cn_events_v1` 或仓库 `data/` 还需 `--allow-live`；缺任一门槛即拒绝，且不执行任何删除/覆盖。`--dry-run` 不触发确认。
 - **空环境演练**：scratch PG DB + 临时 Qdrant 容器/集合 + 临时 `data` 目录；校验表数/关键行数、`points_count`、全量 sha256；E2E（scratch API 接恢复目标）可延。
 - **RPO/RTO**：本地演练口径 RPO 24h / RTO ≤1h（以实测墙钟为准）；**不是 SLA**。
@@ -768,7 +771,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ### 9.1 目标与范围
 
 1. **缓存命中率与冷查询**：命中率可算、可查；冷查询先测后治；热标预热可选。
-2. **监控与告警**：Prometheus + Alertmanager（compose `monitoring` profile，默认不启动）；8 条告警（P1 增 BackupPartial/ServiceDown）；备份年龄与 launchd。
+2. **监控与告警**：Prometheus + Alertmanager（compose `monitoring` profile，默认不启动）；9 条告警（P1 增 BackupPartial/ServiceDown，P2 增 DiskPressure）；备份年龄与 launchd。
 
 **范围边界**：只做可观测性/缓存，不改 S7 的 RAG/worker 行为；不做 API/worker/RAG 角色拆分、反向代理、多 API 实例（P4-S10 及以后）；不承诺多机 HA 或 SLA。
 
@@ -788,9 +791,10 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - `quantsage_task_queue_seconds{kind}` Histogram：取件后观察 `started_at - created_at`；buckets 0.25/0.5/1/2.5/5/10/30/60。
 - `quantsage_pg_connections` Gauge：`/metrics` handler 查 `pg_stat_activity`（或池统计），一次一值。
 - `quantsage_host_available_bytes` / `quantsage_host_swap_used_bytes` Gauge：`psutil` 现查，一次一值。
+- `quantsage_disk_free_bytes{path}` / `quantsage_disk_total_bytes{path}` Gauge（P2）：`psutil.disk_usage` 现查，`path` 至少覆盖 `data` 与备份目标；一次 scrape 每个 path 各一条。磁盘写满时 PG/DuckDB/日志会各自零散失败，必须能直接归因。
 - `quantsage_backup_age_seconds` Gauge：取 `~/QuantSageBackups/manifests/20*.json` 中最新一份，年龄按 **mtime** 算（文件名日期只用于选最新；按文件名算会在每日 03:30 备份前固定假报一次）；无备份返回一个大值（如 1e9）触发告警。
 - `rag_rerank_requests_total{class}` Counter（RAG 服务）：`/v1/rerank` 入口计数（成功与过载都算），作为告警降级率的分母；分子只用 `rag_rerank_degraded_total` 的 queue_full/timeout，`unavailable` 由 API 侧记，不进这个比率。
-- **多进程口径**：PG / host / backup **三个 Gauge** 用 **scrape 时自定义 collector**（与 `TaskCountsCollector` 同模式：handler 现查 → 设模块值 → `render()` 注册），**不注册进 prometheus multiprocess mmap**；否则 2 个 API worker 会各报一条，或留下死进程的陈旧值。**queue 直方图例外**：它在**持锁进程**取件时 observe（只有一个写入者），正常注册 mmap，不做 scrape 时现查——每次 scrape 重算分桶既无数据来源也无意义。
+- **多进程口径**：PG / host / disk / backup **四个 Gauge** 用 **scrape 时自定义 collector**（与 `TaskCountsCollector` 同模式：handler 现查 → 设模块值 → `render()` 注册），**不注册进 prometheus multiprocess mmap**；否则 2 个 API worker 会各报一条，或留下死进程的陈旧值。**queue 直方图例外**：它在**持锁进程**取件时 observe（只有一个写入者），正常注册 mmap，不做 scrape 时现查——每次 scrape 重算分桶既无数据来源也无意义。
 - RAG 侧沿用 `rag_rerank_degraded_total` / `rag_rerank_wait_seconds` / `rag_rerank_queue_depth`，另加 `rag_rerank_requests_total`；Prometheus 单独 scrape RAG `:8200/metrics`。
 
 #### 9.3.2 鉴权（容器 scrape 的前提）
@@ -804,8 +808,9 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 #### 9.3.3 compose 与告警规则
 
 - `docker-compose.yml` 新增 `monitoring` profile：`prometheus`（约 150–250MB）+ `alertmanager`（约 30MB）；**默认不启动**，需要时 `docker compose --profile monitoring up -d`；镜像按仓库惯例 pin digest（与 PG/Redis/Qdrant 同）。宿主端口用 **9092（Prometheus）/ 9093（Alertmanager）**——9090/9091 已被 `observability` profile 的 MinIO 占用。
-- `docker/prometheus/prometheus.yml`：scrape API `host.docker.internal:8000/metrics` 与 RAG `:8200/metrics`；`evaluation_interval: 15s`。
-- 8 条规则（起始值，压测后可调；用实际指标名）：
+- **observability 资源上限（P2）**：langfuse-redis / clickhouse / minio / langfuse-web / langfuse-worker 全部加 `mem_limit`/`cpus`；langfuse-redis 加 `--maxmemory`（与 `noeviction` 配套）。默认四件约 5.1GB，Langfuse 整套再开需 ≥16GB 内存；不够就**不要**同时启用 observability + monitoring。
+- `docker/prometheus/prometheus.yml`：scrape API `host.docker.internal:8000/metrics` 与 RAG `:8200/metrics`；`evaluation_interval: 15s`；`--storage.tsdb.retention.size` 设上限，避免 TSDB 单调增长。
+- 9 条规则（起始值，压测后可调；用实际指标名）：
   1. `histogram_quantile(0.95, sum by (le, kind) (rate(quantsage_task_queue_seconds_bucket[5m]))) > 5` for 10m；
   2. `sum(rate(rag_rerank_degraded_total[5m])) / sum(rate(rag_rerank_requests_total[5m])) > 0.5` for 10m；
   3. `quantsage_pg_connections > 80` for 5m；
@@ -814,6 +819,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
   6. `quantsage_backup_age_seconds > 93600`（26h）for 10m；
   7. `quantsage_backup_partial > 0 or quantsage_backup_failures > 0` for 5m（P1：partial manifest 不能因为 mtime 新就当成健康备份）。
   8. `up{job=~"quantsage-.*"} == 0` for 2m（P1：API/RAG 整体不可达时，PG/宿主/备份指标会一起消失，必须有存活告警）。
+  9. `quantsage_disk_free_bytes / quantsage_disk_total_bytes < 0.10` by `path` for 10m（P2：磁盘余量 <10% 告警；`path` 至少覆盖 data 与备份目标）。
 - 告警的降级率用**服务端** `degraded_total/requests_total`；SLO 验收用 **harness 客户端**的 `degraded_reason` 口径，两者不混写成同一个数。
 - 规则文件要过 `promtool check rules`；能跑 `promtool test rules` 就加一条规则单测；不能跑则在 `scripts/alert_hook.py` 的单测里覆盖阈值计算。
 
@@ -841,7 +847,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 |---|---|---|---|
 | 缓存命中率 | L1 常开 / L2 默认 false，无看板 | L1/L2/合计可算；`CACHE_ENABLED=true` 验收一轮 | 不新增限流 |
 | 冷查询 | 50 标的顺序读约 38 req/s（S1） | 记录 before/after；有证据才加限流/调闸门 | 不先加限制 |
-| 监控 | 无 Prometheus/告警 | 4 组新指标（queue/PG/host/backup）+ 8 条规则 + 本地 receiver | scrape 一次一值 |
+| 监控 | 无 Prometheus/告警 | 5 组新指标（queue/PG/host/disk/backup）+ 9 条规则 + 本地 receiver | scrape 一次一值 |
 | 备份 | 手动 4.6GB / 36.3s | launchd 每日 + 年龄告警 | 需用户确认安装 |
 | 回归 | 离线/集成/前端/ruff | 全绿 | CI 三 job |
 
@@ -1072,6 +1078,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-31 | v3.17 | **审计 P2 资源/运维**：① Chat 池外 advisory 锁连接加每进程 `CHAT_LOCK_MAX_CONNECTIONS=12` 信号量（2 worker 合计 24）、connect/许可 5s 超时；满时开流前 **503 + `Retry-After: 1`**，同 thread 继续排队；许可跟 pump 任务走，断连后仍计入；② `/metrics` 新增 `quantsage_disk_free_bytes` / `quantsage_disk_total_bytes{path}`，Prometheus 增 `DiskPressure`（free/total <10%，for 10m，共 **9 条规则**），TSDB 加 retention.size；③ observability 各服务加 mem/cpus、langfuse-redis 加 maxmemory，文档写明 ≥16GB 前提；④ compose/dev/alert_hook 日志加轮转上限；⑤ Qdrant 恢复后清容器内快照，data 同日重跑加 `--delete`/源端 digest，Langfuse 备份范围文档化。 |
 | 2026-10-31 | v3.16 | **审计 P1 备份/告警**：`/metrics` 新增 `quantsage_backup_partial` / `quantsage_backup_failures`（读最新 manifest，年龄仍按 mtime）；`BackupPartial` + `ServiceDown` 告警（8 条规则）；`backup.py` 有失败项时 `partial=true` 并跳过 prune，避免写坏 manifest 后删最老完好日备；`QS_BACKUP_DIR` 展开 `~`，安装器校验它与 `--target` 同源。promtool 规则单测通过。 |
 | 2026-10-31 | v3.15 | **审计 P1 租约 claim token**：`tasks` 增 `claim_token UUID`，每次 `claim_next_task` 生成新 token；心跳 / 进度 / 逐格 / finish / fail / cancelled / requeue / release 的栅栏从进程级 `worker_id` 改为 `claim_token`（`worker_id` 仅诊断）。租约丢失后同进程重取也不会让旧执行迟到写入命中；心跳失败必须置停止标志，不能只停续租。 |
 | 2026-10-31 | v3.14 | **审计 P0 恢复门槛修复**：`restore.sh` / `backup.py restore` 补 `--yes`（非 TTY 必填）与 `--allow-live`（线上库 `quantsage` / 线上集合 `cn_events_v1` / 仓库 `data/` 必填）；`--force` 只解除存在性保护，不等于确认；拒绝发生在任何 `dropdb` / `rmtree` 之前；`--dry-run` 不触发确认。`backup.sh` / 定时备份不受影响。 |

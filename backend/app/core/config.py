@@ -256,7 +256,7 @@ class Settings(BaseSettings):
     # 辩论轮数：默认 2（省钱且仍能演示），硬上限 3（PRD 要求 ≤3）
     research_debate_rounds: int = 2
 
-    # ── 限流（E4b / L0）：进程内令牌桶，三桶各一对「容量 / 窗口秒」──
+    # ── 限流（E4b / L0）：进程内令牌桶，各桶一对「容量 / 窗口秒」──
     # 默认取「演示友好」档：正常用不会碰到，连打才拦得住（演练第三幕要的正是这个）
     # S5：多 API worker 时额度会按进程复制，故提供共享限流（redis-coord + Lua）。
     # `rate_limit_shared=false` 是回退口；coord 不可用时自动降级为进程内 floor(capacity/N)。
@@ -266,8 +266,14 @@ class Settings(BaseSettings):
     rate_limit_chat_window: float = 60.0
     rate_limit_research: int = 3
     rate_limit_research_window: float = 600.0
+    # HITL resume 与 create 分开：resume 是人工审批后的续跑，不能被 create 的 3/10 分钟误伤。
+    rate_limit_research_resume: int = 10
+    rate_limit_research_resume_window: float = 600.0
     rate_limit_task_submit: int = 20
     rate_limit_task_submit_window: float = 60.0
+    # 任务事件订阅：防重连风暴；真正的资源闸门是每用户并发连接数（见下）。
+    rate_limit_task_events: int = 30
+    rate_limit_task_events_window: float = 60.0
 
     # ── 任务队列 v2（P4-S2）：崩溃/租约过期后的有限次重排 ──
     # `max_attempts` 在**建任务时快照**，之后改配置不影响已在队列里的任务；
@@ -284,6 +290,9 @@ class Settings(BaseSettings):
     task_workers_backtest: int = 3
     task_workers_grid: int = 1
     task_workers_batch: int = 1
+    # 每用户同时打开的 `GET /tasks/{id}/events` 上限（按进程计数）。与默认
+    # `QUOTA_ACTIVE_TASKS=3` 对齐：最多 3 件在飞任务，不需要更多条订阅。
+    task_events_max_connections: int = 3
     # 模拟盘推进/创建会跑整段 replay（用户策略还要 spawn 子进程），单独一桶
     rate_limit_paper: int = 60
     rate_limit_paper_window: float = 60.0
@@ -315,6 +324,10 @@ class Settings(BaseSettings):
     chat_max_tokens: int = 120_000
     chat_max_seconds: float = 180.0
     chat_max_cost_usd: float = 0.20
+    # Chat 的池外 advisory 锁连接上限（P2）：锁要持有到整轮结束，不能占业务池槽位，
+    # 但也不能无上限建连接。每进程 12 条，2 worker 合计 24，与 P4-Sn §5.3 的预算一致。
+    chat_lock_max_connections: int = 12
+    chat_lock_acquire_timeout_seconds: float = 5.0
 
     # ── Langfuse（默认 Cloud；自托管时把 base_url 指向 http://127.0.0.1:3000）──
     langfuse_base_url: str = "https://cloud.langfuse.com"
