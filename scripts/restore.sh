@@ -5,10 +5,12 @@
 #   ./scripts/restore.sh --source YYYYMMDD [--target DIR]
 #                        [--pg-db 新库名] [--pg-source quantsage]
 #                        [--qdrant-collection 新集合名]
-#                        [--data-target 临时目录] [--force]
+#                        [--data-target 临时目录] [--force [--yes] [--allow-live]]
+#                        [--dry-run]
 #
-# 默认恢复到 scratch 目标，不覆盖 quantsage / cn_events_v1 / data/；
-# 覆盖需 --force。实现见 scripts/backup.py。
+# 默认恢复到 scratch 目标，不覆盖 quantsage / cn_events_v1 / data/。
+# 覆盖需 --force **再加确认**：TTY 输入 yes，非 TTY 用 --yes；
+# 覆盖线上库/集合/仓库 data/ 还要 --allow-live。实现见 scripts/backup.py。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

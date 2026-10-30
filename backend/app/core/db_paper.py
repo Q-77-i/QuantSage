@@ -154,12 +154,29 @@ class PaperMixin:
         )
 
     async def paper_decisions(self, account_id: str, limit: int) -> list[dict[str, Any]]:
-        """决策流水（新的在前）。`limit` 只是防呆——池子 ≤20、区间 ≤250 个交易日，
-        信号本来就稀（M6 规划期实测：20 标的 × 181 个交易日约 110 条）。"""
+        """决策流水（新的在前）。`limit` 只是展示防呆，**不得用于重放**。
+
+        重放要的是完整历史（见 `paper_decisions_all`）：截断会让最早那批决策从日志里消失，
+        策略输出会按同 id 重新生成并覆盖旧行。池子 ≤20、区间 ≤250 个交易日，信号本来就稀
+        （M6 规划期实测：20 标的 × 181 个交易日约 110 条），但用户策略可以远超 500。
+        """
         return await self._all(
             "SELECT * FROM paper_decisions WHERE account_id = %s::uuid "
             "ORDER BY trade_date DESC, symbol, side LIMIT %s",
             (account_id, limit),
+        )
+
+    async def paper_decisions_all(self, account_id: str) -> list[dict[str, Any]]:
+        """重放用的**全量**决策日志（不截断）。排序与 `paper_decisions` 一致。
+
+        上界是账户配置的理论最大值（20 标的 × 250 交易日 = 5,000 条）；单次重放多读
+        几 MB 是一次性成本，远小于“旧决策被重生成覆盖”的数据损坏。`API` 的展示列表
+        仍用 `paper_decisions(limit)`，两者不得混用（SPEC §7.6）。
+        """
+        return await self._all(
+            "SELECT * FROM paper_decisions WHERE account_id = %s::uuid "
+            "ORDER BY trade_date DESC, symbol, side",
+            (account_id,),
         )
 
     async def paper_equity(self, account_id: str) -> list[dict[str, Any]]:
@@ -205,8 +222,12 @@ class PaperMixin:
     async def set_paper_decisions_bulk(self, account_id: str, status: str) -> int:
         """一键全批 / 全驳：把该会话所有**策略**待审批决策改成 `status`。
 
-        `origin='agent'` 的提案**排除在外**（收尾项 5a 拍板：Agent 提案必须逐条人工裁决）；
-        `run_account` 在调用前还会显式检查 pending Agent 数量并 409，这里是双保险。
+        `origin='agent'` 的提案**排除在外**（收尾项 5a 拍板：Agent 提案必须逐条人工裁决）。
+
+        ⚠ **`run` 不再调用它**（P0 修复）：批量裁决必须与推进同事务，`run_account` 在
+        内存里把 pending 改成 approved/rejected，随 `paper_advance` 一次写回。本方法保留
+        为 DB 原语（集成用例用它验 agent 排除语义），**不要在请求路径单独调用**——先写库
+        再重放会在失败时留下已批准的决策。
         """
         rows = await self._all(
             "UPDATE paper_decisions SET status = %s, decided_at = now() "

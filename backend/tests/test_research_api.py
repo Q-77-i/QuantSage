@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -287,3 +288,65 @@ def test_run_list_is_scoped_to_the_owner(env: dict[str, Any]) -> None:
     listed = client.get("/api/v1/research/runs").json()["runs"]
     assert [row["id"] for row in listed] == [run_id]
     assert "events" not in listed[0]  # 摘要列表不带事件（动辄上百条）
+
+
+def test_report_save_failure_marks_the_run_failed(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """报告落库失败必须把 run 标 failed；随后的 done 帧不得把它覆盖成 done。
+
+    修复前 `_drive` 只发一帧 SSE error，done 分支又把 status 改回 done，
+    `GET /research/runs/{id}` 变成 done + report=null，事后无痕。
+    """
+    db = env["db"]
+    run_id = str(uuid.uuid4())
+    asyncio.run(
+        db.create_research_run(
+            run_id=run_id,
+            user_id=1,
+            question="落库失败测试",
+            subject={},
+        )
+    )
+
+    async def fake_stream(**kwargs: Any):
+        yield "report", {"status": "done", "report": {"blocks": []}}
+        yield "done", {"run_id": run_id, "status": "done", "events": [], "budget": {}}
+
+    async def boom(**kwargs: Any) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(research_api, "astream_deep_run", fake_stream)
+    monkeypatch.setattr(research_api, "deep_snapshot", lambda: {"bars": {}})
+    monkeypatch.setattr(db, "create_research_report", boom)
+
+    brief = research_api.Brief(
+        question="落库失败测试",
+        symbols=(SYMBOL,),
+        as_of=datetime.fromisoformat(f"{AS_OF}T15:00:00+08:00"),
+    )
+
+    async def collect() -> list[tuple[str, dict[str, Any]]]:
+        return [
+            frame
+            async for frame in research_api._drive(
+                db=db,
+                checkpointer=None,
+                user_id=1,
+                run_id=run_id,
+                question=brief.question,
+                brief=brief,
+                resume=None,
+            )
+        ]
+
+    frames = asyncio.run(collect())
+    done = next(payload for name, payload in frames if name == "done")
+
+    assert done["status"] == "failed"
+    assert "报告落库失败" in done.get("error", "")
+    stored = asyncio.run(db.get_research_run(1, run_id))
+    assert stored is not None
+    assert stored["status"] == "failed"
+    assert stored["report_id"] is None
+    assert stored["error"]

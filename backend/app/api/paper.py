@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, Literal, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -66,8 +66,10 @@ router = APIRouter(prefix="/api/v1/paper", tags=["paper"])
 
 SYMBOL_PATTERN = r"^\d{6}$"
 
-#: 决策流水的返回上限。池子 ≤20、区间 ≤250 个交易日，实测一轮 20 标的 × 181 个交易日
-#: 只有约 110 条信号——这个上限是防呆，不是分页。
+#: **只用于详情展示**的决策流水的返回上限。池子 ≤20、区间 ≤250 个交易日，内置策略实测
+#: 一轮 20 标的 × 181 个交易日只有约 110 条信号；但用户策略可以远超 500。
+#: ⚠ **重放不得使用它**：截断会让最早那批决策从日志里消失，策略输出会按同 id 重生成并
+#: 覆盖旧行。重放走 `Database.paper_decisions_all`（SPEC §7.6）。
 DECISION_LIMIT = 500
 
 #: 风控审计的展示上限（与决策同量级；完整台账在库里，按账户级联删除）。
@@ -490,7 +492,7 @@ async def step_account(
         raise PaperConflict("已经到区间末端了")
 
     source = await _source_for_account(request, user_id, row)
-    before = tuple(decision_from_row(r) for r in await db.paper_decisions(normalized, DECISION_LIMIT))
+    before = tuple(decision_from_row(r) for r in await db.paper_decisions_all(normalized))
     result = await _run_replay(
         source=source, config=config, account_id=normalized, decisions=before, through=nxt
     )
@@ -555,17 +557,25 @@ async def run_account(
     if row["status"] != ACTIVE:
         raise PaperConflict("会话已跑到区间末端")
     # Agent 提案必须逐条裁决（收尾项 5a 拍板）：批量路径直接拒绝，避免「一键全批」
-    # 把模型提的单子悄悄放过去；`set_paper_decisions_bulk` 也排除了 origin='agent'（双保险）。
+    # 把模型提的单子悄悄放过去。
     if await db.paper_pending_agent_count(normalized) > 0:
         raise PaperConflict("有 Agent 提案待审批——请逐条批准/驳回后再一键跑到底")
 
     auto = DecisionStatus.APPROVED if body.approve == "all" else DecisionStatus.REJECTED
-    # 手上这批待审批的先按同一口径定掉——它们已经生成，只等一个裁决
-    await db.set_paper_decisions_bulk(normalized, auto.value)
 
     config = config_from_payload(row["config"])
     source = await _source_for_account(request, user_id, row)
-    before = tuple(decision_from_row(r) for r in await db.paper_decisions(normalized, DECISION_LIMIT))
+    before = tuple(decision_from_row(r) for r in await db.paper_decisions_all(normalized))
+    # **批量裁决不单独落库**（P0）：在内存应用到日志，随 `paper_advance` 同一事务写回。
+    # 先写库再重放，一旦重放失败/乐观锁 409，用户会看到失败但决策已经变成 approved。
+    # `origin='agent'` 仍排除（入口已 409，这里是双保险）。
+    decided_at = datetime.now(UTC)
+    before = tuple(
+        d.replace(status=auto, decided_at=decided_at)
+        if d.status is DecisionStatus.PENDING and d.origin != "agent"
+        else d
+        for d in before
+    )
     result = await _run_replay(
         source=source, config=config, account_id=normalized, decisions=before,
         through=config.end, auto=auto,

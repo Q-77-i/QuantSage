@@ -125,7 +125,7 @@ bash scripts/restore.sh --source 20261029 --pg-db quantsage_restore_20261029 \
 bash scripts/install_backup_job.sh             # 可选：launchd 每日 03:30（不会自动安装）
 ```
 
-PG 用 `pg_dump -Fc`（`quantsage` + `langfuse`，排除测试库），Qdrant 用 collection snapshot（`embeddings.json` 未变则复用上一份），`data/` 用 `rsync --link-dest` 硬链接快照；保留 **7 日 + 4 周**。恢复默认进 scratch 目标（新库/新集合/临时目录），覆盖线上需 `--force`。RPO 24h / RTO ≤1h 是**本地演练口径**，不是 SLA；`.env`、`logs/`、Redis 不在备份范围。**备份含用户表（密码哈希）与业务数据：只放本机/受控外置盘，不进仓库、不上传公共云盘。**
+PG 用 `pg_dump -Fc`（`quantsage` + `langfuse`，排除测试库），Qdrant 用 collection snapshot（`embeddings.json` 未变则复用上一份），`data/` 用 `rsync --link-dest` 硬链接快照；保留 **7 日 + 4 周**。恢复默认进 scratch 目标（新库/新集合/临时目录）。覆盖已存在的目标需 `--force` **再加二次确认**：TTY 下输入 `yes`，非 TTY（脚本/CI）显式 `--yes`；覆盖线上库 `quantsage`、线上集合 `cn_events_v1` 或仓库 `data/` 还要 `--allow-live`。`--force` 单独不等于确认，拒绝发生在任何删除之前。RPO 24h / RTO ≤1h 是**本地演练口径**，不是 SLA；`.env`、`logs/`、Redis 不在备份范围。**备份含用户表（密码哈希）与业务数据：只放本机/受控外置盘，不进仓库、不上传公共云盘。**
 
 提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
 
@@ -307,6 +307,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 ### 回测与模拟盘
 
 - **深路径是回放式的、不是实时的**：模拟盘只能回放到**本地行情末端**；深研报锁 `as_of`，可重放但不能「分析此刻」
+- **模拟盘重放读全量决策日志**：`step` / 跑到末尾都从会话起点重放该账户的**全部**决策（上限 20 标的 × 250 交易日 ⇒ 至多 5,000 条）；详情页的决策流水仍最多显示 500 条。两者不是同一个查询，展示截断不会影响账本
 - **回测引擎不含组合与实盘**：模拟盘是**单账户多标的等额配额**，不是组合优化；样本不足时年化与夏普会被放大，UI 常驻提示。**风控开启的会话不再与回测逐笔平价**——上限是硬顶不是目标（单标的上限在 5 只以上池子里通常不触发），止损按收盘价判定、次日开盘成交，跳空可能成交在更差价位
 - **网格/批量与回测一样是任务**：`POST /api/v1/optimize/{grid,batch}` 回 202 + 任务号，进度订阅 `GET /api/v1/tasks/{id}/events`。**断开订阅不影响执行**——关掉页面/刷新，任务照跑完并落库（`?task=` 刷新后自动接回）。「停止」是真取消（协作式），**中止的结果不落库**
 - **回测是异步任务，但不是提速**：提交只回 202 + 任务号，执行由**单 worker 串行**消费 `tasks` 表（进程内，不引 Celery/Redis Streams）。实测端到端比旧的同步路径**多 0.6–0.9s**（闸门里那次行情读 + 取件轮询 200ms）——换来的是统一的任务契约与随时可查的状态。**单实例契约**：同一业务库只允许一个进程承担后台任务；启动时用 advisory lock 竞选后台主实例，只有持锁者跑 task worker / ETL / 结算调度器，非持锁进程只服务 HTTP（`POST /etl/run` 与 `POST /data/rollback` 返回 409）。API 层可条件跑 2 个 worker（S5），任务 worker 仍单实例；主实例退出后不做运行中晋升，uvicorn 补进程后由新进程在启动时重新竞选（`API_WORKERS>1` 时锁重试 3×0.25s）；被重启/崩溃打断的任务**有限次自动重排**（租约 + 心跳 + reaper，默认最多执行 2 次；确定性错误不重试），结果按 `task_id` 幂等，重排不产生重复记录

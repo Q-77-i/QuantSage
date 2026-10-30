@@ -211,3 +211,35 @@ def test_advance_guards_on_as_of_and_rolls_back_on_failure(real_stack: TestClien
         _run(_with_db(scenario))
     finally:
         purge_rows(emails, [])
+
+
+def test_replay_query_reads_beyond_the_display_limit(real_stack: TestClient) -> None:
+    """真库：`paper_decisions_all` 不截断，展示用的 `paper_decisions(500)` 仍截断。
+
+    这是 A1 的 SQL 层证据——API 层已由离线用例钉住“重放走全量”，这里验两条 SQL 的分工。
+    """
+    emails = fresh_emails("alllog", 1)
+    try:
+        client = sign_up(emails[0])
+        detail = _create(client, "全量日志会话").json()
+        account_id = detail["account"]["id"]
+
+        async def seed_and_count(db: Database) -> tuple[int, int]:
+            before = len(await db.paper_decisions_all(account_id))
+            await db._exec(
+                "INSERT INTO paper_decisions "
+                "(id, account_id, trade_date, symbol, side, est_qty, est_price, status) "
+                "SELECT gen_random_uuid(), %s::uuid, DATE '2020-01-01' + i, %s, 'buy', "
+                "100, 100.0, 'pending' FROM generate_series(0, 519) AS i",
+                (account_id, SYMBOL),
+            )
+            return before, len(await db.paper_decisions_all(account_id))
+
+        before, after = _run(_with_db(seed_and_count))
+        assert after == before + 520
+        limited = _run(
+            _with_db(lambda db: db.paper_decisions(account_id, 500))
+        )
+        assert len(limited) == 500
+    finally:
+        purge_rows(emails, [])

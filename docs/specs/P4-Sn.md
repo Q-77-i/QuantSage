@@ -1,8 +1,8 @@
 # QuantSage SPEC · P4-Sn（单机工程化）
 
-> 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.18）→ 本文（技术规格）→ 代码
+> 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.13** ｜ 2026-10-30 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（6 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）。
+> 版本 **v3.14** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（6 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）。
 >
 > 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8，已交付）、P4-S8 可观测性与缓存（§9，已交付）与 P4-S9 数据层热点优化（§10，已交付）**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
 > 实测基线：S1–S6 见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；S7 基线见 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -528,7 +528,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - **PG**：`quantsage` + `langfuse`，`pg_dump -Fc --no-owner`；排除 `quantsage_loadtest_*` 等测试库。每日；保留 7 日 + 4 周。
 - **Qdrant**：`POST /collections/cn_events_v1/snapshots`；`data/_meta/embeddings.json` 未变则复用上一份（`reused: true`），变更后必做；快照用 `docker compose cp` 从容器 `/qdrant/snapshots/` 拷到宿主。
 - **data**：`rsync -a --link-dest=<上一份>/ --exclude='_tmp/' data/ <target>/data/<date>/`；生成 `<date>.data.sha256`；目标 FS 不支持硬链接时回退普通复制并 warning（空间预检）。
-- **恢复**：默认恢复到 scratch 目标（新库/新集合/临时目录），不覆盖 `quantsage` / `cn_events_v1` / `data/`；覆盖需 `--force` + 二次确认。
+- **恢复**：默认恢复到 scratch 目标（新库/新集合/临时目录），不覆盖 `quantsage` / `cn_events_v1` / `data/`；覆盖需 `--force` + 二次确认。**`--force` 只解除存在性保护，不等于确认**：TTY 必须输入 `yes`；非 TTY 必须显式 `--yes`。覆盖线上库 `quantsage`、线上集合 `cn_events_v1` 或仓库 `data/` 还需 `--allow-live`；缺任一门槛即拒绝，且不执行任何删除/覆盖。`--dry-run` 不触发确认。
 - **空环境演练**：scratch PG DB + 临时 Qdrant 容器/集合 + 临时 `data` 目录；校验表数/关键行数、`points_count`、全量 sha256；E2E（scratch API 接恢复目标）可延。
 - **RPO/RTO**：本地演练口径 RPO 24h / RTO ≤1h（以实测墙钟为准）；**不是 SLA**。
 - **不在范围**：`.env`/密钥、`logs/`、Redis（cache/coord 可丢）、测试库；manifest 只记非敏感配置指纹。
@@ -1067,6 +1067,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-31 | v3.14 | **审计 P0 恢复门槛修复**：`restore.sh` / `backup.py restore` 补 `--yes`（非 TTY 必填）与 `--allow-live`（线上库 `quantsage` / 线上集合 `cn_events_v1` / 仓库 `data/` 必填）；`--force` 只解除存在性保护，不等于确认；拒绝发生在任何 `dropdb` / `rmtree` 之前；`--dry-run` 不触发确认。`backup.sh` / 定时备份不受影响。 |
 | 2026-10-30 | v3.13 | S8 交付并验收：新增队列 p95 直方图、PG 连接 / 宿主内存 / swap / 备份年龄三个 scrape 快照 Gauge（2 worker 各一条）、`rag_rerank_requests_total` 分母、`/metrics` Bearer、`QS_BACKUP_DIR`；`monitoring` profile（Prometheus :9092 + Alertmanager :9093）+ 6 条规则 + 本地 `alert_hook`；备份 launchd 已装并 kickstart。实测：缓存 L1 385 / L2 13 / miss 2（**99.5%**）、`qs:cache_hit_ratio:5m` 0.969、bars c300 cache on/off 1,656/1,714 req/s、冷查询 39.97 req/s（不新增限流）；RAG 过载 / PG 105 / 旧备份三条真实告警 firing→resolved。修复 RAG `/metrics` 配 token 后 401、Prometheus 缺 `alerting` 目标、SIGHUP 热加载清空 scrape 目标。 |
 | 2026-10-30 | v3.12 | S8 执行前订正 5 处口径：①「停 RAG → 降级告警」不成立（服务端比率停采集后 0/0，`unavailable` 按 §9.3.3 不进比率）→ 改为 RAG 过载注入验收，停 RAG 只记录 `up{job="rag"}=0`；②queue 直方图在持锁进程取件时 observe、正常走 mmap，只有 PG/host/backup 三个 Gauge 用 scrape 时 collector；③备份年龄取最新 manifest 的 mtime（文件名只用于选最新），避免每日备份前假报；④API/RAG 用 `logs/metrics_token` 与 `logs/rag_token` 两个文件（`METRICS_TOKEN` ≠ `RAG_SERVICE_TOKEN`）；⑤Prometheus/Alertmanager 宿主端口 9092/9093（9090/9091 被 MinIO 占用），规则 5 基线字面量 `1.06e10`（实测 9.61GB + 1GB）。保持 6 条规则；备份 launchd 本次安装并 kickstart。 |
 | 2026-10-30 | v3.11 | S9 交付并验收：`cached_st_symbols`（复用 `cached_primary_names` 的文件戳+代际缓存）、`market_benchmark._daily_rows` 与 `window_digest` 走 `cache.through`（digest 键额外带窗口分片文件戳）、`BT_DATA_CACHE_ENABLED`（默认 true）、执行体 `progress+finish` 合并。实测（2 API workers，harness :8100）：20 回测 queue p95 **503ms**（3 轮中位；5 轮 505ms；S7 1,312ms）、run p50 **86ms**、bars **1,660 req/s / p95 240ms**（3 次中位）；真数据黄金对照 metrics/digest/equity/trades 四项全等。**S9 达标，S7 的 ≤1s 复验成立**。测试：新增 5 个缓存用例 + finish 进度合并单测/真库用例；离线/集成定向绿。 |
