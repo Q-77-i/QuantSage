@@ -16,7 +16,7 @@
 
 把「平台首次可用时刻」（`available_at`）作为信息可见性的唯一闸门——回测时，Agent 与策略只能看到那个时点之前真正拿得到的信息。绝大多数「LLM + 量化」项目用抓取时间戳或无过滤地检索全量语料，回测结果在无意识地穿越未来；本项目把这条约束压进数据模型、检索与回测引擎，并把它做成可量化的对比。
 
-> **进度**：P1-Tn / P2-Mn / P3-En / P4-Sn 全部交付并验收（`m-p1` / `m-p2` / `m-p3` / `m-p4`；P4-Sn S1–S9 于 2026-10-30 收口，含 S8 可观测性与提交配额优化）。浏览器内可走完一条完整链路——对话取证 → 写策略 → 回测 → 网格与过拟合检验 → 模拟盘 → 绩效研报 → 多 Agent 深度研究；企业级部分补齐了任务队列、多用户治理、数据工程、可靠性、风控、安全与可观测；P4-Sn 补了单机压测/故障演练/备份恢复与真实 Agent 链路实测。**范围冻结暂缓（2026-10-30）**：先收口遗留问题（提交配额串行、端到端延迟等），冻结草案见 [ROADMAP.md](ROADMAP.md)。逐段状态见 [ROADMAP.md](ROADMAP.md)，里程碑交付见 [CHANGELOG.md](CHANGELOG.md)。
+> **进度**：P1-Tn / P2-Mn / P3-En / P4-Sn 全部交付并验收（`m-p1` / `m-p2` / `m-p3` / `m-p4`；P4-Sn S1–S9 于 2026-10-30 收口，含 S8 可观测性与提交配额优化）。浏览器内可走完一条完整链路——对话取证 → 写策略 → 回测 → 网格与过拟合检验 → 模拟盘 → 绩效研报 → 多 Agent 深度研究；企业级部分补齐了任务队列、多用户治理、数据工程、可靠性、风控、安全与可观测；P4-Sn 补了单机压测/故障演练/备份恢复与真实 Agent 链路实测。**范围冻结暂缓（2026-10-30）**：先收口遗留问题（系统性遗留审计未清零、端到端延迟等），冻结草案见 [ROADMAP.md](ROADMAP.md)。逐段状态见 [ROADMAP.md](ROADMAP.md)，里程碑交付见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -113,7 +113,7 @@ memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_M
 
 **P4-S7 / S9（2026-10-30）**：task worker 单进程内按 kind 池化（backtest×3 + grid/batch 各 1，`TASK_WORKER_POOL_ENABLED=false` 回退）；RAG 合批经原型门禁否决，按 A 不做。数据层热点缓存（ST 名单 / 全市场等权日表 / 窗口指纹，`BT_DATA_CACHE_ENABLED=false` 回退）：20 回测 queue p95 **2.4s → 1,312ms → 503ms**、run p50 **86ms**；2w bars c=300 **1,660 req/s / p95 240ms** 不回归；metrics / `data_digest` 逐键相等。
 
-**P4-S8 可观测性与缓存（2026-10-30）**：可选 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，**默认不启动**）+ 8 条规则（P1 增 BackupPartial/ServiceDown）+ 本地 `alert_hook`；`/metrics` 新增队列 p95 / PG 连接 / 宿主内存/swap / 备份年龄与 `qs:cache_hit_ratio:5m`。验收：L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，Redis 2 键含数据代际）；冷查询 50 个不同标的 **39.97 req/s**（S1 38.1）→ 不新增限流；bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**；RAG 过载 / PG 105 连接 / 旧备份三条真实告警 firing→resolved；备份 launchd 每日 03:30，kickstart 后年龄 **432s**。
+**P4-S8 可观测性与缓存（2026-10-30）**：可选 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，**默认不启动**）+ 9 条规则（P1 增 BackupPartial/ServiceDown，P2 增 DiskPressure）+ 本地 `alert_hook`；`/metrics` 新增队列 p95 / PG 连接 / 宿主内存/swap / 磁盘余量 / 备份年龄与 `qs:cache_hit_ratio:5m`。验收：L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，Redis 2 键含数据代际）；冷查询 50 个不同标的 **39.97 req/s**（S1 38.1）→ 不新增限流；bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**；RAG 过载 / PG 105 连接 / 旧备份三条真实告警 firing→resolved；备份 launchd 每日 03:30，kickstart 后年龄 **432s**。
 
 **备份与恢复（S6，本地演练口径，不是 SLA）**：
 
@@ -129,7 +129,7 @@ bash scripts/install_backup_job.sh             # 可选：launchd 每日 03:30�
 
 PG 用 `pg_dump -Fc`（`quantsage` + `langfuse`，排除测试库），Qdrant 用 collection snapshot（`embeddings.json` 未变则复用上一份），`data/` 用 `rsync --link-dest` 硬链接快照；保留 **7 日 + 4 周**。恢复默认进 scratch 目标（新库/新集合/临时目录）。覆盖已存在的目标需 `--force` **再加二次确认**：TTY 下输入 `yes`，非 TTY（脚本/CI）显式 `--yes`；覆盖线上库 `quantsage`、线上集合 `cn_events_v1` 或仓库 `data/` 还要 `--allow-live`。`--force` 单独不等于确认，拒绝发生在任何删除之前。RPO 24h / RTO ≤1h 是**本地演练口径**，不是 SLA；`.env`、`logs/`、Redis 不在备份范围。**备份含用户表（密码哈希）与业务数据：只放本机/受控外置盘，不进仓库、不上传公共云盘。**
 
-提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与集成套件留给 CI，不进钩子。
+提交前闸门（可选，一次设置）：`git config core.hooksPath .githooks` —— 提交时自动跑一遍后端 `ruff check`（亚秒级，与 CI 的 lint 步骤同源）；`git commit --no-verify` 可跳过。离线套件与配额/队列定向集成留给 CI；其余集成手动跑，不进钩子。
 
 没有小石密钥也能跑通回测与前端——行情与事件已在本地落盘；只有「对话页调小石实时工具」这一步需要授权密钥。
 
@@ -146,9 +146,9 @@ cd backend && uv run python scripts/build_deep_eval.py --limit 3   # 深研报 r
 
 > 本机 `.env` 若处于 S5 压力形态（`API_WORKERS=2` + `RATE_LIMIT_SHARED=true`），离线全量会因共享限流跨用例 429；先覆盖：`API_WORKERS=1 RATE_LIMIT_SHARED=false CACHE_ENABLED=false RAG_SERVICE_URL= uv run pytest`。CI 没有 `.env`，按默认值跑。
 
-CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + 两端的依赖审计**。集成那一行不在 CI 里——
+CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + 两端的依赖审计 + Prometheus 规则**。其余集成那一行不在 CI 里——
 它要真容器、真密钥与真实行情语料（`data/` 不入库），所以**徽章变绿不等于全部测试通过**。
-覆盖率门槛是 **88%**（E7b 按当时 CI 基线 89.36% 定标；E9 收口时离线 **1797 passed**，2026-10-20；S6 收口时 **1,867 passed**，2026-10-29；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
+覆盖率门槛是 **88%**（E7b 按当时 CI 基线 89.36% 定标；E9 收口时离线 **1797 passed**，2026-10-20；P2 收口时 **1,932 passed**，2026-10-31；两端差异的来源与排除依据见 [P3 SPEC](docs/specs/P3-En.md) §7.3）。
 
 命令行跑一次回测、复现教程里的数字，命令见[示例策略教程](docs/tutorials/ma_cross.md#3-复现)。
 
@@ -165,7 +165,7 @@ CI（GitHub Actions，见徽章）跑的是**上面前五条 + 前端四条 + �
 | **分析输出** | 总收益 / 年化 / 最大回撤 / 夏普 / 胜率 / 交易次数，基准可选买入持有或**全市场等权代理**；`pit_comparison` 量化两口径差异；参数网格 + 热力图 + **过拟合检验（Deflated Sharpe）**；因子分析（RankIC / 分层 / 多空价差），读数落在噪声区间就如实说 |
 | **模拟盘与研报** | 回放式纸上交易：策略出信号 → **你逐条裁决** → 按次日开盘价成交 → 每日收盘结算；可选 **E5 风控**（总仓位 / 单标的集中度 / 止损 / 回撤，止损单自动批准且不可驳回）；**Agent 也能提案，但只能创建待审批决策**——逐条人工裁决，有待审批提案时「一键跑到底」直接拒绝；**风控关闭时全部批准 ⇔ 一次回测（逐笔相等）**，风控开启会缩量 / 拦截，不再承诺逐笔相等。绩效研报容器含归因、逐笔复盘（含到期结算后的教训）、**证据追溯**、分享给未登录的人、一键导出 PDF（服务端渲染） |
 | **深度研究（多 Agent）** | 意图路由 → 五角色**并行取证**（取数是代码、解读是 LLM）→ 证据归并 → Bull⇄Bear 辩论（≤3 轮硬上限）→ 单点综合 → **代码化风控闸门** → 超限 `interrupt()` 人工审批；过程可视化与 Langfuse trace 同源 |
-| **账户与工作台** | 注册登录与**数据隔离**（越权与不存在同返 404）；自选股与分组；个人空间四页签；我的回测重开；在线策略工作台（Monaco **本地资源、零 CDN**）+ **版本历史 / diff / 回滚**（回滚 = 追加新版本；只改名不增版）；回测页的策略下拉可选**内置或「我的策略」**（跑的是库里那条源码，先保存才能跑；回测记录绑定当次 `strategy_version`） |
+| **账户与工作台** | 注册登录与**数据隔离**（越权与不存在同返 404）；自选股与分组；个人空间七页签（自选 / 回测 / 会话 / 策略 / 优化 / 模拟盘 / 深研）；我的回测重开；在线策略工作台（Monaco **本地资源、零 CDN**）+ **版本历史 / diff / 回滚**（回滚 = 追加新版本；只改名不增版）；回测页的策略下拉可选**内置或「我的策略」**（跑的是库里那条源码，先保存才能跑；回测记录绑定当次 `strategy_version`） |
 
 ---
 
@@ -329,7 +329,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 
 - **消息队列 / 容器化 / 多 worker 的边界**：不引 MQ（`tasks` 表即队列）、全量容器化暂缓、API 可条件跑 2 个 worker（S5；任务 worker / 调度器仍单实例）；四句话的触发判据见 [企业级文档 · 已知边界与未来触发](docs/enterprise/architecture.md#9-已知边界与未来触发)
 - **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流默认进程内；多 worker 时 `RATE_LIMIT_SHARED=true` 走 redis-coord 共享令牌桶，coord 挂了降级为进程内 `floor(capacity/N)`；熔断仍进程内。调度器与 task worker 已收口到后台主实例（E 批）
-- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。**P4-S8 起**有可选的 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，默认不启动；8 条规则 + 本地 `alert_hook`），指标另含队列 p95、PG 连接、宿主内存/swap 与备份年龄；**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
+- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。**P4-S8 起**有可选的 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，默认不启动；9 条规则 + 本地 `alert_hook`），指标另含队列 p95、PG 连接、宿主内存/swap、磁盘余量与备份年龄；**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
 
 ### 展示与前端
 
@@ -366,7 +366,7 @@ uv run python scripts/audit_calendar.py                # 交易日历 × 行情�
 | 文档 | 内容 |
 |---|---|
 | [docs/PRD.md](docs/PRD.md) | 需求、功能清单、验收标准、排期 |
-| [docs/specs/](docs/specs/) | 技术规格与变更记录（P1-Tn / P2-Mn / P3-En，逐阶段滚动） |
+| [docs/specs/](docs/specs/) | 技术规格与变更记录（P1-Tn / P2-Mn / P3-En / P4-Sn，逐阶段滚动） |
 | [docs/enterprise/](docs/enterprise/) | **企业级文档**：架构设计 · 风控专题 · 代码评审记录 · 事故复盘 + 索引 |
 | [docs/tutorials/getting-started.md](docs/tutorials/getting-started.md) | **使用教程**：从注册到出一份研报，假定你只有一个浏览器 |
 | [docs/tutorials/faq.md](docs/tutorials/faq.md) | **常见问题**：按症状查（提示语为界面原文，可直接对上） |

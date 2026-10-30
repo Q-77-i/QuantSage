@@ -136,10 +136,10 @@ def test_gauge_counts_in_flight_only(real_stack: TestClient) -> None:
 
 
 def test_gauge_admits_exactly_the_limit_under_concurrency(real_stack: TestClient) -> None:
-    """并发提交：**恰好**放行 `limit` 个（try-lock 重试路径的真库证据）。
+    """并发提交：**恰好**放行 `limit` 个（槽位唯一索引 + count 守卫的真库证据）。
 
-    抢不到锁的请求先归还连接再退避，count+insert 仍在同一事务里——配额不会因为并发
-    而超发，也不会因为重试而多建行。
+    撞槽由部分唯一索引判负、换槽重试；同一条 INSERT 还校验在飞数 < limit——
+    配额不会因为并发而超发，也不会因为重试而多建行。
     """
     address = email("gauge-atomic")
     sign_up(address)
@@ -397,5 +397,52 @@ def test_startup_compaction_closes_the_concurrent_out_of_range_hole(
                 (uid,),
             ).fetchone()[0]
         assert total == 3
+    finally:
+        purge_rows([address], [])
+
+
+def test_startup_backfills_null_slots_for_existing_active_tasks(
+    real_stack: TestClient,
+) -> None:
+    """P2 T7：老库有 NULL 槽位时，启动压缩把它们编号成 0..n-1，终态行不动。"""
+    address = email("slot-null")
+    sign_up(address)
+    uid = user_id_of(address)
+
+    try:
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            for status in ("queued", "running", "done"):
+                conn.execute(
+                    "INSERT INTO tasks (id, user_id, kind, status, request, quota_slot) "
+                    "VALUES (%s::uuid, %s, 'quota-probe', %s, '{}'::jsonb, NULL)",
+                    (str(uuid.uuid4()), uid, status),
+                )
+            conn.commit()
+
+        async def compact() -> None:
+            async with open_pool(get_settings().postgres_dsn) as pool:
+                await init_schema(pool)
+
+        asyncio.run(compact())
+
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            active = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT quota_slot FROM tasks WHERE user_id = %s "
+                    "AND status IN ('queued', 'running') ORDER BY quota_slot",
+                    (uid,),
+                )
+            ]
+            done_slot = conn.execute(
+                "SELECT quota_slot FROM tasks WHERE user_id = %s AND status = 'done'",
+                (uid,),
+            ).fetchone()[0]
+            index = conn.execute(
+                "SELECT indexname FROM pg_indexes WHERE indexname = 'tasks_active_slot_idx'"
+            ).fetchone()
+        assert active == [0, 1]
+        assert done_slot is None
+        assert index is not None
     finally:
         purge_rows([address], [])

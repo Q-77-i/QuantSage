@@ -45,3 +45,6 @@ tmp/
 # IDE
 .idea/
 *.swp
+
+# P2 覆盖率闸门在 CI/本地生成的 JSON
+backend/coverage.json

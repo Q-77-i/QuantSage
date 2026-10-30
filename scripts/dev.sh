@@ -23,7 +23,7 @@
 # - 前端 dev 用 pnpm dev、prod 用 pnpm start；next dev 会改名为 next-server，
 #   stop 按 PID 树递归杀
 # - 日志 logs/$QS_MODE/{backend,frontend,rag}.log；PID 同目录
-# - prod 日志轮转：copytruncate（20MB × 3 份，30min 检查）；dev 不轮转
+# - 日志轮转：copytruncate（20MB × 3 份，30min 检查）；dev/prod 同族，prod 日志另在 logs/prod
 # - 不自动安装依赖；缺 .env / .venv / node_modules 时给出明确命令
 set -euo pipefail
 
@@ -60,7 +60,7 @@ ALERT_LOG="$LOG_DIR/alert_hook.log"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3001}"
 RAG_PORT="${RAG_PORT:-8200}"
-# prod 日志轮转：超过阈值就 copytruncate，保留 N 份；检查间隔（秒）。
+# 日志轮转：超过阈值就 copytruncate，保留 N 份；检查间隔（秒）。
 LOG_MAX_BYTES="${PROD_LOG_MAX_BYTES:-20971520}"
 LOG_KEEP="${PROD_LOG_KEEP:-3}"
 LOG_CHECK_SECONDS="${PROD_LOG_CHECK_SECONDS:-1800}"
@@ -372,7 +372,6 @@ rotate_logs() {
 }
 
 start_rotator() {
-  [[ "$MODE" == "prod" ]] || return 0
   local pid
   pid="$(read_pid "$ROTATE_PID")"
   pid_alive "$pid" && return 0
@@ -456,9 +455,9 @@ start_all() {
   mkdir -p "$LOG_DIR"
   if [[ "$MODE" == "prod" ]]; then
     say "→ prod 模式：前端 build+start、API 15s 优雅停机、日志轮转（${LOG_DIR}）"
-    rotate_logs
-    start_rotator
   fi
+  rotate_logs
+  start_rotator
   start_infra
   init_checkpoint
   # 顺序：infra → checkpoint → RAG → 后端 → 前端（后端起时 RAG 已在，首个检索不用等进程）

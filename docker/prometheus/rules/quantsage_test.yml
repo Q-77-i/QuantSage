@@ -63,6 +63,24 @@ tests:
               summary: "备份有失败项（partial manifest）"
               description: "当天至少一个段失败；检查 logs/backup-agent.log，修好后重跑备份；有失败时 prune 已跳过。"
 
+  # P2：磁盘余量 5/100 = 5% ⇒ DiskPressure 触发
+  - interval: 1m
+    input_series:
+      - series: 'quantsage_disk_free_bytes{path="/data"}'
+        values: '5+0x20'
+      - series: 'quantsage_disk_total_bytes{path="/data"}'
+        values: '100+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DiskPressure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              path: /data
+            exp_annotations:
+              summary: "磁盘余量低于 10%（/data）"
+              description: "检查 data/备份目标/日志增长；磁盘写满时 PG、DuckDB 与日志会零散失败。"
+
   # P1：抓取不到 job ⇒ ServiceDown（for 2m）
   - interval: 1m
     input_series:

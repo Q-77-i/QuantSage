@@ -113,7 +113,13 @@ extend-ignore = [
 # 付插桩的代价，要看覆盖率显式传 `--cov=app`。
 [tool.coverage.run]
 # 被测范围由命令行 `--cov=app` 指定（CI 与本地用同一条），配置里不再重复声明 source。
-# 「模板是数据不是模块」（同上面 ruff 的 exclude）：`templates/` 下五份源码文本由沙箱
-# 子进程执行、靠运行时注入 `Signal`/`Side`，主进程从不 import 它们——算进来就是六个
-# 恒 0% 的文件（244 条语句），结构性拉低读数，不是覆盖率缺口。
-omit = ["*/templates/*"]
+# 「模板是数据不是模块」（同上面 ruff 的 exclude）：五份源码文本由沙箱子进程执行、
+# 靠运行时注入 `Signal`/`Side`，主进程从不 import 它们——算进来就是恒 0% 的结构性
+# 误报。P2 起改为逐文件 omit，保留有测试的 `templates/__init__.py` 计入分母。
+omit = [
+    "*/templates/donchian_breakout.py",
+    "*/templates/event_driven.py",
+    "*/templates/ma_cross.py",
+    "*/templates/rsi_reversal.py",
+    "*/templates/volume_breakout.py",
+]

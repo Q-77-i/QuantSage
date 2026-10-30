@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import chat as chat_api
 from app.core import db_base
 from app.core.db_base import ChatLockBusy
 from app.main import app
@@ -53,3 +54,35 @@ def test_chat_returns_503_before_stream_when_slots_are_full(
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
     assert "会话并发已满" in response.json()["detail"]
+
+
+def test_chat_releases_the_slot_after_the_graph_finishes(
+    signed_in: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """成功路径：许可在开流前拿、图跑完后由 done callback 释放。"""
+    acquired: list[int] = []
+    released: list[int] = []
+
+    async def acquire() -> None:
+        acquired.append(1)
+
+    def release() -> None:
+        released.append(1)
+
+    async def fake_stream(_agent: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
+        yield ("token", {"text": "好"})
+        yield ("done", {"thread_id": "00000000-0000-0000-0000-000000000001"})
+
+    monkeypatch.setattr(signed_in, "acquire_chat_lock_slot", acquire, raising=False)
+    monkeypatch.setattr(signed_in, "release_chat_lock_slot", release, raising=False)
+    monkeypatch.setattr(chat_api, "astream_chat", fake_stream)
+    app.state.agent = object()
+    try:
+        with TestClient(app).stream("POST", "/api/v1/chat", json={"message": "你好"}) as response:
+            assert response.status_code == 200
+            assert "event: done" in "".join(response.iter_text())
+    finally:
+        app.state.agent = None
+
+    assert acquired == [1]
+    assert released == [1]

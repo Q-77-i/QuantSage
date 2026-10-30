@@ -10,6 +10,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,6 +55,32 @@ def test_metrics_endpoint_exposes_http_request_id_and_counters() -> None:
     assert 'quantsage_tasks{status="queued"} 2.0' in text
     # 自定义 collector 每个状态只产出一行（多进程聚合时也不能翻倍）
     assert text.count('quantsage_tasks{status="queued"}') == 1
+
+
+def test_disk_metrics_are_labeled_per_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2：data 与备份目标各一条；路径不存在时不产出（不把读不到写成 0）。"""
+    data = tmp_path / "data"
+    backups = tmp_path / "backups"
+    data.mkdir()
+    backups.mkdir()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "data_dir", data, raising=False)
+    monkeypatch.setattr(settings, "qs_backup_dir", backups, raising=False)
+
+    def fake_usage(path: str) -> SimpleNamespace:
+        values = {str(data): (100, 1000), str(backups): (20, 500)}
+        free, total = values[path]
+        return SimpleNamespace(free=free, total=total)
+
+    monkeypatch.setattr("psutil.disk_usage", fake_usage)
+    text = metrics.render().decode()
+
+    assert f'quantsage_disk_free_bytes{{path="{data}"}} 100.0' in text
+    assert f'quantsage_disk_total_bytes{{path="{data}"}} 1000.0' in text
+    assert f'quantsage_disk_free_bytes{{path="{backups}"}} 20.0' in text
+    assert f'quantsage_disk_total_bytes{{path="{backups}"}} 500.0' in text
 
 
 def test_request_id_is_echoed_when_it_looks_safe() -> None:
