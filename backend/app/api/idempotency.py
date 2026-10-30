@@ -104,8 +104,8 @@ async def create_task(
     """建任务行（带幂等语义 + 在飞任务配额），返回 `{task_id, status}`。
 
     冲突判定交给唯一索引（见 `db.create_task`），这里只管三件事：把指纹写进 `request`、
-    **撞上了就是重放**、以及把「配额已满」翻成 429。配额判断与插入在
-    `db.create_task` 的同一事务里完成——先 count 再 insert 的竞态由那里的 advisory lock 堵住。
+    **撞上了就是重放**、以及把「配额已满」翻成 429。准入由 `db.create_task` 的槽位
+    唯一索引判（没有空槽即满）；这里不再额外 count——突发下那一次读约 0.9s。
     """
     if key is not None:
         request = {**request, FINGERPRINT_KEY: fingerprint}
@@ -122,7 +122,9 @@ async def create_task(
     if row is None:
         if active_limit is None:
             raise RuntimeError("create_task 返回空行，但没有设置在飞任务上限")
-        used = await db.count_active_tasks(user_id)
+        # 槽位判满 = 已占满 0..limit-1，`used` 报上限；精确的在飞数仍可从
+        # admin 用量视图的 gauge（count(*)）查，不在拒绝路径上再读一次。
+        used = active_limit
         await db.record_quota_rejection(
             user_id, quota.METRIC_ACTIVE_TASKS, used, active_limit
         )

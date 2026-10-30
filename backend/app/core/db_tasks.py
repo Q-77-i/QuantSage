@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import random
-import time
 from datetime import datetime
 from typing import Any
 
+from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 
 
@@ -81,13 +80,9 @@ MAX_PROGRESS_CELLS = 1000
 #: 取件/重排/释放时把进度归零并丢掉上一次的 `cells`（保留 `total`）。
 _PROGRESS_RESET = "jsonb_set(progress - 'cells', '{done}', '0'::jsonb)"
 
-#: 配额锁的等待预算（S8 实验 D）：抢不到锁就**先归还业务池连接**、退避再试。
-#: 旧写法在 `pg_advisory_xact_lock` 上阻塞，20 个并发提交会把 8 槽业务池全部占住
-#: （实测 30.7% 的请求排队、排队者平均 148ms）；等待不该占用连接。
-#: 预算内一直抢不到（极端争用），才退回旧的阻塞等锁——语义不变，只是兜底。
-QUOTA_LOCK_BUDGET_SECONDS = 2.0
-QUOTA_LOCK_BACKOFF_START_SECONDS = 0.005
-QUOTA_LOCK_BACKOFF_MAX_SECONDS = 0.05
+#: 槽位撞车的重试次数。只发生在「两个并发提交同时选中同一个空槽」——
+#: 唯一索引判负的一方换槽重试；没有空槽时语句直接返回 0 行，不消耗重试。
+QUOTA_SLOT_ATTEMPTS = 5
 
 
 class TasksMixin:
@@ -113,13 +108,10 @@ class TasksMixin:
         调用方凭 `row["id"] != task_id` 判断这是不是一次重放。冲突判定交给唯一索引而不是
         「先查后插」——两次调用之间的窗口正是要防的那个窗口。
 
-        **在飞任务配额也在这一条语句里判**（`active_limit` 非 None 时）：用
-        `pg_try_advisory_xact_lock(user)` 串行化同一用户的并发提交，抢到后执行
-        `INSERT … SELECT … WHERE count < limit`；**抢不到先归还连接**、退避再试
-        （S8 实验 D：旧写法在锁上阻塞，20 个并发提交把 8 槽业务池占满）。
-        count 与 insert 仍是两次语句，必须在同一事务 + 同一把锁下（READ COMMITTED
-        下后一条语句能看到前一条已提交的行）。预算内一直抢不到才退回阻塞等锁。
-
+        **在飞任务配额用「槽位」判**（`active_limit` 非 None 时）：每次提交占一个
+        `0..limit-1` 的空槽，部分唯一索引 `tasks_active_slot_idx` 保证同一用户同一时刻
+        最多 `limit` 个 `queued/running` 行。并发提交撞到同一个空槽时由唯一索引判负、
+        换槽重试；任务进终态后索引项自动消失，槽位随即释放——**不需要锁、计数或对账**。
         返回 `None` = 配额已满且不是幂等重放（调用方翻 429）；其它情况返回任务行。
         """
         progress = Jsonb({"done": 0, "total": total})
@@ -135,7 +127,7 @@ class TasksMixin:
             max_attempts,
         )
         if active_limit is None:
-            async with self.pool.connection() as conn, conn.transaction():
+            async with self.pool.connection() as conn:
                 row = await self._insert_task(
                     conn, params, user_id=user_id, active_limit=None
                 )
@@ -155,10 +147,13 @@ class TasksMixin:
         user_id: int,
         active_limit: int | None,
     ) -> dict[str, Any] | None:
-        """插入任务行；带配额时同一条语句里判 `count(*) < limit`。
+        """插入任务行；带配额时**占一个空槽**。
 
-        **配额分支必须在持有 `active_tasks:{user_id}` 锁的事务里调用**：count 与 insert
-        虽在同一条语句，但 READ COMMITTED 下并发事务仍会各自看到旧计数。
+        槽位从 `0..limit-1` 里**随机起点、按环扫描**取第一个空槽：从 0 开始扫会让并发
+        提交全都撞在同一个槽上（每个都要重试一轮），全随机排序又会在 limit=1000 时
+        每次扫满 1000 个槽。随机起点 + 遇到空槽即停，两个问题都避开。
+        并发仍选中同一槽时由 `tasks_active_slot_idx` 判负（抛 `UniqueViolation`，
+        由调用方换槽重试）。没有空槽 = SELECT 不出行 = 返回 None（配额满）。
         """
         if active_limit is None:
             cursor = await conn.execute(
@@ -172,17 +167,26 @@ class TasksMixin:
                 params,
             )
         else:
+            # 随机起点、按环扫描：limit=1000 时也只扫到第一个空槽就停
+            offset = random.randrange(active_limit)
             cursor = await conn.execute(
                 "INSERT INTO tasks "
                 "(id, user_id, kind, status, request, progress, idempotency_key, "
-                " priority, max_attempts) "
-                "SELECT %s::uuid, %s, %s, 'queued', %s, %s, %s, %s, %s "
-                "WHERE (SELECT count(*) FROM tasks WHERE user_id = %s "
-                "       AND status IN ('queued', 'running')) < %s "
+                " priority, max_attempts, quota_slot) "
+                "SELECT %s::uuid, %s, %s, 'queued', %s, %s, %s, %s, %s, s.slot "
+                "FROM generate_series(0, %s::int - 1) AS i "
+                "CROSS JOIN LATERAL ("
+                "  SELECT (i + %s::int) %% %s::int AS slot"
+                ") AS s "
+                "WHERE NOT EXISTS ("
+                "  SELECT 1 FROM tasks WHERE user_id = %s AND quota_slot = s.slot "
+                "  AND status IN ('queued', 'running')"
+                ") "
+                "ORDER BY i LIMIT 1 "
                 "ON CONFLICT (user_id, idempotency_key) "
                 "WHERE idempotency_key IS NOT NULL DO NOTHING "
                 f"RETURNING {_TASK_COLUMNS}",
-                (*params, user_id, active_limit),
+                (*params, active_limit, offset, active_limit, user_id),
             )
         return await cursor.fetchone()
 
@@ -212,45 +216,32 @@ class TasksMixin:
         idempotency_key: str | None,
         active_limit: int,
     ) -> dict[str, Any] | None:
-        """带配额的建任务：**try-lock 不阻塞等**，抢不到就归还连接再退避重试。
+        """带配额的建任务：**槽位唯一索引 + 撞槽重试**，没有锁也没有等待。
 
-        `pg_try_advisory_xact_lock` 失败时事务立即结束、连接回到池里——等待期间不占
-        业务池槽位（这正是旧写法把 8 槽池占满的原因）。抢到锁后 count+insert 仍在同一
-        事务里，配额语义与旧写法逐字一致。
+        两个并发提交同时选中同一个空槽时，后到者被唯一索引判负；换一个槽重试即可。
+        没有空槽时语句直接返回 0 行（配额满），不消耗重试次数。任务进终态后
+        部分索引项消失，槽位自动释放——不需要任何减计数/对账。
         """
-        lock_key = f"active_tasks:{user_id}"
-        deadline = time.monotonic() + QUOTA_LOCK_BUDGET_SECONDS
-        delay = QUOTA_LOCK_BACKOFF_START_SECONDS
-        while True:
-            async with self.pool.connection() as conn, conn.transaction():
-                cursor = await conn.execute(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS locked",
-                    (lock_key,),
-                )
-                held = await cursor.fetchone()
-                if held and held.get("locked"):
+        async with self.pool.connection() as conn:
+            for _ in range(QUOTA_SLOT_ATTEMPTS):
+                try:
                     row = await self._insert_task(
                         conn, params, user_id=user_id, active_limit=active_limit
                     )
+                except pg_errors.UniqueViolation:
+                    # 同一空槽被别的提交抢先占用：换槽再试
+                    continue
+                if row is not None:
+                    return row
+                if idempotency_key is not None:
                     return await self._row_or_replay(
-                        conn, row, user_id, idempotency_key
+                        conn, None, user_id, idempotency_key
                     )
-            if time.monotonic() >= deadline:
-                break
-            # 抖动覆盖整个区间：20 个等待者同时醒来会形成惊群
-            await asyncio.sleep(delay * (0.5 + random.random()))
-            delay = min(delay * 1.5, QUOTA_LOCK_BACKOFF_MAX_SECONDS)
-
-        # 兜底：预算内一直抢不到（极端争用）→ 退回旧的阻塞等锁。
-        # 这条路径才是「占着连接等」的；正常情况下不会走到。
-        async with self.pool.connection() as conn, conn.transaction():
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,)
-            )
-            row = await self._insert_task(
-                conn, params, user_id=user_id, active_limit=active_limit
-            )
-            return await self._row_or_replay(conn, row, user_id, idempotency_key)
+                return None
+            # 连续撞槽用尽重试：仍按「重放优先」回查一次，避免把重放误判成配额满
+            if idempotency_key is not None:
+                return await self._row_or_replay(conn, None, user_id, idempotency_key)
+            return None
 
     async def task_by_idempotency_key(self, user_id: int, key: str) -> dict[str, Any] | None:
         """按幂等键回查（E4b / L7）。闸门**之前**的短路用它，重复提交不再走一遍闸门。"""

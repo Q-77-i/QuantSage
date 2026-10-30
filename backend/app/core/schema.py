@@ -324,6 +324,32 @@ SCHEMA = (
     "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     "CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_idx "
     "ON tasks (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL",
+    # ── 在飞任务配额：槽位而不是锁（2026-10-30）──
+    # 配额从「advisory lock + count(*)」改成「占一个 0..limit-1 的空槽」：并发提交
+    # 各插各的，撞槽由部分唯一索引判负、重试换槽；任务进终态后索引项自动消失，
+    # 槽位释放，不需要任何减计数/对账。老库的正在飞任务在下面先补槽位再建索引。
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS quota_slot SMALLINT",
+    """
+    WITH ranked AS (
+        SELECT t.id,
+               coalesce(
+                   (SELECT max(x.quota_slot) FROM tasks x
+                    WHERE x.user_id = t.user_id
+                      AND x.status IN ('queued', 'running')
+                      AND x.quota_slot IS NOT NULL),
+                   -1
+               ) + row_number() OVER (
+                   PARTITION BY t.user_id ORDER BY t.created_at, t.id
+               ) AS slot
+        FROM tasks t
+        WHERE t.status IN ('queued', 'running') AND t.quota_slot IS NULL
+    )
+    UPDATE tasks t SET quota_slot = ranked.slot
+    FROM ranked WHERE t.id = ranked.id
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_slot_idx "
+    "ON tasks (user_id, quota_slot) "
+    "WHERE status IN ('queued', 'running') AND quota_slot IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS tasks_user_created_idx "
     "ON tasks (user_id, created_at DESC)",
     # worker 取件与启动扫尾都按 status 过滤，且任务表是**热表**（每次回测一行）

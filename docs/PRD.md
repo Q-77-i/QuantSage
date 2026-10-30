@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ 本文（需求）→ SPEC（逐阶段滚动；P1/P2/P3/P4-Sn 已交付，P4-S7/S8/S9 见 P4-Sn SPEC）→ 代码
 >
-> 版本 v0.20 ｜ 2026-10-30 ｜ 状态：P3 已通过；P4-Sn S1–S9 已交付；**功能与架构范围于 2026-10-30 冻结**（只做缺陷修复/安全/依赖/文档；解冻条件见 [ROADMAP](../ROADMAP.md)）。版本变更逐条见 §8。
+> 版本 v0.21 ｜ 2026-10-30 ｜ 状态：P3 已通过；P4-Sn S1–S9 已交付；**范围冻结暂缓**——先收口遗留问题（配额串行等），冻结草案见 [ROADMAP](../ROADMAP.md)。版本变更逐条见 §8。
 >
 > **本文只回答「做什么、为什么、验收标准」。** 技术实现、实测读数与口径订正的依据见 [SPEC](specs/)；当前状态见 [ROADMAP](../ROADMAP.md)。
 
@@ -374,6 +374,7 @@
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-30 | v0.21 | **配额准入改槽位 + 范围冻结暂缓**：在飞任务配额由「advisory lock + `count(*)`」改为 `tasks.quota_slot`（`0..limit-1`）+ 部分唯一索引（随机起点环扫、撞槽重试；终态自动释放）；429 契约与 `QUOTA_ACTIVE_TASKS` 语义不变。20 并发 mixed：配额 1000 提交 p50 **3.2s → 1.1s**、配额 3 **4.9s → 2.1s**；真库并发恰好放行 limit。原计划的范围冻结**暂缓生效**（先收口遗留问题），草案保留在 ROADMAP。 |
 | 2026-10-30 | v0.20 | **范围冻结 + 提交锁优化**：功能与架构范围冻结（允许缺陷修复/安全/依赖/文档；不允许新功能、技术栈替换、架构重构；解冻条件见 ROADMAP）。任务提交配额路径由阻塞 advisory lock 改为 `pg_try_advisory_xact_lock` + 归还连接再退避（2s 预算，兜底阻塞），配额语义不变；同一 mixed 负载 DB 执行 **14.22s → 0.30s**、>50ms 慢查询 **18 → 0**、池等待均值 **45.5 → 30.5ms**，submit p50 3.43→3.10s / p95 4.39→5.14s（同量级）。S8 补测（资源/真实 Agent/RAG 质量/DB 内部/数字闸门/报告一致性）与数据基线见 ROADMAP 与 `BASELINE-FROZEN-20261030.md`。 |
 | 2026-10-30 | v0.19 | **P4-S8 可观测性与缓存交付**：`/metrics` 新增队列 p95、PG 连接、宿主内存/swap、备份年龄（2 worker 下每指标一条值）；缓存 L1/L2/合计命中率可算（验收 L1 385 / L2 13 / miss 2，合计 **99.5%**），`qs:cache_hit_ratio:5m` 记录规则；冷查询 39.97 req/s 不新增限流；`monitoring` profile（Prometheus :9092 + Alertmanager :9093，默认不启动）+ 6 条规则 + 本地 `alert_hook`，RAG 过载 / PG 105 连接 / 旧备份三条真实告警 firing→resolved；备份 launchd 每日 03:30 并 kickstart（年龄 432s）。修复 RAG `/metrics` 配 token 后 401、Prometheus 缺 alerting 目标。详见 [P4-Sn SPEC](specs/P4-Sn.md) §9（v3.13）。 |
 | 2026-10-30 | v0.18 | **P4-S7 与 P4-S9 交付**：S7 worker 池 3+1+1 queue p95 1,312ms（S6 2,423ms）、bars 1,583/236ms；RAG 合批门禁未过，按 A 不做。S9 数据层缓存（ST 名单/全市场等权日表/窗口指纹 + `BT_DATA_CACHE_ENABLED` + `progress+finish` 合并）后 queue p95 **503ms**、run p50 86ms、bars **1,660/240ms**，metrics/digest 逐键相等；S7 的 ≤1s 复验成立。P4-S8 规格已定，待执行；角色拆分等顺延 P4-S10 及以后。详见 [P4-Sn SPEC](specs/P4-Sn.md) §8/§9/§10（v3.11）。 |
