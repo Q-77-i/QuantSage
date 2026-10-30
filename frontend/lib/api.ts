@@ -78,6 +78,20 @@ export function apiBase(): string {
   return `${protocol}//${hostname}:${API_PORT}`;
 }
 
+/** 普通 REST 的默认上限（P2）：后端假死/网络黑洞时不再无限悬挂。 */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** 同步长请求（生成研报、因子全市场扫描、模拟盘跑到末端）的上限。 */
+export const LONG_REQUEST_TIMEOUT_MS = 120_000;
+
+/** 超时信号与调用方 signal 合并；任一 abort 都让 fetch 结束。 */
+export function requestSignal(
+  signal?: AbortSignal,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -173,10 +187,28 @@ export function bounceToLogin(status: number, path: string): void {
   if (target) window.location.assign(target);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
   // credentials 必须带：会话是 httpOnly cookie，JS 读不到也放不进去，只能让浏览器带上。
   // 前后端同 site（127.0.0.1 的 3001 ↔ 8000），SameSite=Lax 不影响这条请求。
-  const response = await fetch(`${apiBase()}${path}`, { credentials: "include", ...init });
+  const signal = requestSignal(init?.signal ?? undefined, timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase()}${path}`, {
+      credentials: "include",
+      ...init,
+      signal,
+    });
+  } catch (cause) {
+    // 调用方主动 abort 原样抛出；只有超时才翻成可读错误
+    if (cause instanceof DOMException && cause.name === "TimeoutError") {
+      throw new ApiError(0, "请求超时，请稍后重试");
+    }
+    throw cause;
+  }
   if (!response.ok) {
     // 体只读一次：文案与 payload 从同一份解析结果出，别两次 json()（流只能读一次）
     let body: unknown = null;
@@ -275,8 +307,8 @@ export const api = {
   tasks: (limit = 20) => request<TaskSummary[]>(`/api/v1/tasks${query({ limit })}`),
 
   /** 轮询与回看都走它：`status` / `progress` / `result.run_id` / `error` */
-  task: (taskId: string) =>
-    request<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(taskId)}`),
+  task: (taskId: string, signal?: AbortSignal) =>
+    request<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { signal }),
 
   /** 取消排队中的任务；已在跑或已结束是 409（后端如实拒绝，不假装能停） */
   cancelTask: (taskId: string) =>
@@ -405,7 +437,11 @@ export const api = {
   // ── 因子分析（M5c）─────────────────────────────────────────────────────
   /** 因子报告：**同步一次返回**（公开端点、不落库）；`costs=false` 时净曲线为 null */
   factorReport: (params: FactorQueryInput) =>
-    request<FactorReport>(`/api/v1/factor/report${factorQuery(params)}`),
+    request<FactorReport>(
+      `/api/v1/factor/report${factorQuery(params)}`,
+      undefined,
+      LONG_REQUEST_TIMEOUT_MS,
+    ),
 
   // ── 标的浏览（M10c）────────────────────────────────────────────────────
   /**
@@ -495,15 +531,19 @@ export const api = {
 
   /** 推进**一个**交易日：成交上一日的批准单 → 结算 → 生成本日决策 */
   stepPaperAccount: (id: string) =>
-    request<PaperAccountDetail>(`/api/v1/paper/accounts/${encodeURIComponent(id)}/step`, {
-      method: "POST",
-    }),
+    request<PaperAccountDetail>(
+      `/api/v1/paper/accounts/${encodeURIComponent(id)}/step`,
+      { method: "POST" },
+      LONG_REQUEST_TIMEOUT_MS,
+    ),
 
   /** 跑到区间末端（不可逆）。`approve` 决定这一路上新生成的决策怎么处理 */
   runPaperAccount: (id: string, approve: "all" | "none") =>
-    request<PaperAccountDetail>(`/api/v1/paper/accounts/${encodeURIComponent(id)}/run`, {
-      ...jsonInit("POST", { approve }),
-    }),
+    request<PaperAccountDetail>(
+      `/api/v1/paper/accounts/${encodeURIComponent(id)}/run`,
+      { ...jsonInit("POST", { approve }) },
+      LONG_REQUEST_TIMEOUT_MS,
+    ),
 
   /** 批准 / 驳回一张待审批的决策：**只改状态**，推进后才成交 */
   decidePaper: (decisionId: string, action: "approve" | "reject") =>
@@ -516,7 +556,11 @@ export const api = {
 
   /** 生成并冻结一份报告（同 (账户, 快照) **幂等复用**：`reused=true` 时没新建、也没再花钱） */
   createReport: (accountId: string) =>
-    request<ReportEnvelope>("/api/v1/reports", jsonInit("POST", { account_id: accountId })),
+    request<ReportEnvelope>(
+      "/api/v1/reports",
+      jsonInit("POST", { account_id: accountId }),
+      LONG_REQUEST_TIMEOUT_MS,
+    ),
 
   /** 某账户已出的报告摘要（`/paper` 的入口状态用） */
   reports: (accountId: string) =>

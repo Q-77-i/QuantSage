@@ -339,6 +339,7 @@ async def resume_run(
     body: ResumeRequest,
     user: dict[str, Any] = Depends(require_user),
     db: Any = Depends(require_db),
+    _: None = Depends(limit("llm-research-resume")),
 ) -> Any:
     """HITL 恢复。只有 `awaiting_approval` 的运行可恢复（其余 409）。"""
     normalized = normalize_run_id(run_id)

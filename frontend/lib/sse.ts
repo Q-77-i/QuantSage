@@ -15,6 +15,35 @@ export interface SseFrame {
   data: string;
 }
 
+/** SSE 空闲上限（P2）：服务端每 15s 发保活；30s 没有任何分片就认为连接死了。 */
+export const SSE_IDLE_TIMEOUT_MS = 30_000;
+
+export interface IdleWatchdog {
+  signal: AbortSignal;
+  /** 每收到一个网络分片调用一次，重置计时 */
+  touch: () => void;
+  dispose: () => void;
+}
+
+/** 纯计时器（单测用假时钟）：超时后 abort 内部 controller。 */
+export function idleWatchdog(timeoutMs: number = SSE_IDLE_TIMEOUT_MS): IdleWatchdog {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const touch = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
+  touch();
+  return {
+    signal: controller.signal,
+    touch,
+    dispose: () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
 /**
  * 从缓冲区里切出完整帧，返回剩余的半截。
  *
@@ -71,36 +100,50 @@ export interface PostStreamOptions {
  * 错误语义；本项目所有 SSE 都走 fetch + 手解帧这一条（`streamPost` / `streamChat` 同族）。
  */
 export async function streamGet(path: string, options: PostStreamOptions): Promise<void> {
-  const response = await fetch(`${apiBase()}${path}`, {
-    method: "GET",
-    headers: { Accept: "text/event-stream" },
-    signal: options.signal,
-    credentials: "include",
-  });
-
-  if (!response.ok) {
-    bounceToLogin(response.status, path); // 会话中途失效就送去登录页（E8a）
-    throw new ApiError(response.status, await errorMessage(response));
-  }
-  if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
-
-  options.onResponse?.(response);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
+  const idle = idleWatchdog();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, idle.signal])
+    : idle.signal;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    const response = await fetch(`${apiBase()}${path}`, {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      signal,
+      credentials: "include",
+    });
 
-      const { frames, rest } = parseFrames(buffer);
-      buffer = rest;
-      for (const frame of frames) options.onFrame(frame);
+    if (!response.ok) {
+      bounceToLogin(response.status, path); // 会话中途失效就送去登录页（E8a）
+      throw new ApiError(response.status, await errorMessage(response));
     }
+    if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
+
+    options.onResponse?.(response);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        idle.touch();
+        buffer += decoder.decode(value, { stream: true });
+
+        const { frames, rest } = parseFrames(buffer);
+        buffer = rest;
+        for (const frame of frames) options.onFrame(frame);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } catch (cause) {
+    if (idle.signal.aborted && !options.signal?.aborted) {
+      throw new ApiError(0, "流长时间没有数据，已断开");
+    }
+    throw cause;
   } finally {
-    reader.releaseLock();
+    idle.dispose();
   }
 }
 
@@ -116,38 +159,52 @@ export async function streamPost(
   body: unknown,
   options: PostStreamOptions,
 ): Promise<void> {
-  const response = await fetch(`${apiBase()}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: options.signal,
-    credentials: "include",
-  });
-
-  if (!response.ok) {
-    // 后端在**开流之前**判死的请求级错误都走这条路（422 / 404），detail 才是可行动的
-    bounceToLogin(response.status, path); // 会话中途失效就送去登录页（E8a）
-    throw new ApiError(response.status, await errorMessage(response));
-  }
-  if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
-
-  options.onResponse?.(response);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
+  const idle = idleWatchdog();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, idle.signal])
+    : idle.signal;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    const response = await fetch(`${apiBase()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+      credentials: "include",
+    });
 
-      const { frames, rest } = parseFrames(buffer);
-      buffer = rest;
-      for (const frame of frames) options.onFrame(frame);
+    if (!response.ok) {
+      // 后端在**开流之前**判死的请求级错误都走这条路（422 / 404），detail 才是可行动的
+      bounceToLogin(response.status, path); // 会话中途失效就送去登录页（E8a）
+      throw new ApiError(response.status, await errorMessage(response));
     }
+    if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
+
+    options.onResponse?.(response);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        idle.touch();
+        buffer += decoder.decode(value, { stream: true });
+
+        const { frames, rest } = parseFrames(buffer);
+        buffer = rest;
+        for (const frame of frames) options.onFrame(frame);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } catch (cause) {
+    if (idle.signal.aborted && !options.signal?.aborted) {
+      throw new ApiError(0, "流长时间没有数据，已断开");
+    }
+    throw cause;
   } finally {
-    reader.releaseLock();
+    idle.dispose();
   }
 }
 
@@ -162,40 +219,54 @@ export interface ChatStreamOptions {
 
 /** 发起一次对话并逐帧回调，直到流结束。 */
 export async function streamChat(options: ChatStreamOptions): Promise<void> {
-  const response = await fetch(`${apiBase()}/api/v1/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: options.message, thread_id: options.threadId ?? null }),
-    signal: options.signal,
-    // 会话 cookie（M1）：与 lib/api.ts 同因——httpOnly，只能由浏览器自动带上
-    credentials: "include",
-  });
-
-  if (!response.ok) {
-    // 后端的 detail 才是可行动的（如「Agent 未就绪」），裸状态码只会让用户干瞪眼
-    bounceToLogin(response.status, "/api/v1/chat"); // 会话中途失效就送去登录页（E8a）
-    throw new ApiError(response.status, await errorMessage(response));
-  }
-  if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
-
-  const headerThreadId = response.headers.get("X-Thread-Id");
-  if (headerThreadId) options.onThreadId?.(headerThreadId);
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
+  const idle = idleWatchdog();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, idle.signal])
+    : idle.signal;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    const response = await fetch(`${apiBase()}/api/v1/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: options.message, thread_id: options.threadId ?? null }),
+      signal,
+      // 会话 cookie（M1）：与 lib/api.ts 同因——httpOnly，只能由浏览器自动带上
+      credentials: "include",
+    });
 
-      const { frames, rest } = parseFrames(buffer);
-      buffer = rest;
-      for (const frame of frames) options.onFrame(frame);
+    if (!response.ok) {
+      // 后端的 detail 才是可行动的（如「Agent 未就绪」），裸状态码只会让用户干瞪眼
+      bounceToLogin(response.status, "/api/v1/chat"); // 会话中途失效就送去登录页（E8a）
+      throw new ApiError(response.status, await errorMessage(response));
     }
+    if (!response.body) throw new ApiError(response.status, "响应没有流式主体");
+
+    const headerThreadId = response.headers.get("X-Thread-Id");
+    if (headerThreadId) options.onThreadId?.(headerThreadId);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        idle.touch();
+        buffer += decoder.decode(value, { stream: true });
+
+        const { frames, rest } = parseFrames(buffer);
+        buffer = rest;
+        for (const frame of frames) options.onFrame(frame);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } catch (cause) {
+    if (idle.signal.aborted && !options.signal?.aborted) {
+      throw new ApiError(0, "流长时间没有数据，已断开");
+    }
+    throw cause;
   } finally {
-    reader.releaseLock();
+    idle.dispose();
   }
 }

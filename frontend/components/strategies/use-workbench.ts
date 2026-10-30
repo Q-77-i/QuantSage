@@ -59,6 +59,13 @@ def on_bar(ctx, p):
 
 export function useWorkbench() {
   const router = useRouter();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const [strategies, setStrategies] = useState<StrategySummary[] | null>(null);
   const [templates, setTemplates] = useState<StrategyTemplate[]>([]);
@@ -83,6 +90,8 @@ export function useWorkbench() {
 
   /** 当前文档「库里存着的参数」：切换文档时用它播种表单（用户改动优先于它） */
   const savedParams = useRef<Record<string, number | boolean>>({});
+  /** 检查请求序号（P2）：防抖后的旧响应晚到，覆盖新代码的 findings/meta */
+  const checkSeq = useRef(0);
   /**
    * 最近一次**主动打开**的策略 id。
    *
@@ -111,6 +120,7 @@ export function useWorkbench() {
 
   // 编辑器内容 → 检查（防抖）。失败静默：检查是辅助信息，不该打断写代码
   useEffect(() => {
+    const seq = ++checkSeq.current;
     if (!code) {
       setCheck(null);
       return;
@@ -118,7 +128,9 @@ export function useWorkbench() {
     const timer = setTimeout(() => {
       api
         .checkStrategy(code)
-        .then((next) => setCheck(next))
+        .then((next) => {
+          if (seq === checkSeq.current) setCheck(next);
+        })
         .catch(() => undefined);
     }, CHECK_DEBOUNCE_MS);
     return () => clearTimeout(timer);
@@ -303,7 +315,7 @@ export function useWorkbench() {
         setFailure(outcome.failure);
         return;
       }
-      router.push(`/backtest?run=${outcome.runId}`);
+      if (mountedRef.current) router.push(`/backtest?run=${outcome.runId}`);
     } catch (cause) {
       // `save()` 的落库失败走这里（`task.submit` 自己吞掉了它的失败，不会抛）
       if (cause instanceof ApiError) {

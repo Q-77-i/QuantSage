@@ -108,6 +108,17 @@ describe("pollTask", () => {
     ).rejects.toThrow(/仍未结束/);
   });
 
+  it("signal 已 abort 时不再取数（P2 卸载即停）", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchTask = vi.fn();
+
+    await expect(
+      pollTask("t1", { fetchTask, sleep: noSleep, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchTask).not.toHaveBeenCalled();
+  });
+
   it("首轮比其后快（首轮 400ms / 其后 1s）：单次回测常见情形一次就拿到", async () => {
     const sleeps: number[] = [];
     const fetchTask = vi

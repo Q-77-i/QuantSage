@@ -51,7 +51,7 @@ function text(value: unknown): string {
 }
 
 /** 外部链接只认 http(s)：React 会挡 `javascript:`，但那是框架兜底，不是契约。 */
-function safeHref(value: string | null | undefined): string | undefined {
+export function safeHref(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);

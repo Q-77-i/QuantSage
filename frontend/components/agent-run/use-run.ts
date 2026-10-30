@@ -15,13 +15,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, describeError } from "@/lib/api";
+import { shouldPollRun } from "@/lib/agent-run";
 import type { ApprovalPayload, RunDetail, RunNodeEvent, RunStatus } from "@/lib/agent-run";
 import { streamPost } from "@/lib/sse";
 
 const POLL_MS = 2000;
-
-/** 终态：不再轮询 */
-const TERMINAL: RunStatus[] = ["done", "degraded", "failed"];
 
 export function useRunDetail(id: string | null) {
   const [detail, setDetail] = useState<RunDetail | null>(null);
@@ -50,7 +48,7 @@ export function useRunDetail(id: string | null) {
 
   // 只在「还在跑」时轮询；到终态立刻停（报告是冻结产物，反复拉只会让人怀疑数在变）
   useEffect(() => {
-    if (!detail || TERMINAL.includes(detail.status)) return;
+    if (!detail || !shouldPollRun(detail.status)) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
   }, [detail, load]);
@@ -83,6 +81,15 @@ export function useRunStream() {
     route: null,
   });
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   /** 帧 → 状态。创建与恢复**共用同一条**（帧载荷同形，两处各写一遍必然漂移）。 */
   const applyFrame = useCallback((frame: { event: string; data: string }) => {
@@ -93,6 +100,7 @@ export function useRunStream() {
             return;
           }
           setState((prev) => {
+            if (!mountedRef.current) return prev;
             if (frame.event === "node_start" || frame.event === "node_end") {
               // 帧载荷与落库事件同形（服务端刻意如此）——直接累积即可
               return { ...prev, events: [...prev.events, payload as unknown as RunNodeEvent] };
@@ -112,6 +120,7 @@ export function useRunStream() {
             if (frame.event === "route") {
               return {
                 ...prev,
+                runId: null,
                 route: {
                   path: String(payload.path ?? ""),
                   reason: String(payload.reason ?? ""),
@@ -148,14 +157,18 @@ export function useRunStream() {
           signal: controller.signal,
           onResponse: (response) => {
             const runId = response.headers.get("X-Run-Id");
-            if (runId) setState((prev) => ({ ...prev, runId }));
+            if (runId && mountedRef.current) setState((prev) => ({ ...prev, runId }));
           },
           onFrame: applyFrame,
         });
       } catch (cause) {
-        setState((prev) => ({ ...prev, error: describeError(cause, "这条流断了"), running: false }));
+        if (!controller.signal.aborted && mountedRef.current) {
+          setState((prev) => ({ ...prev, error: describeError(cause, "这条流断了"), running: false }));
+        }
       } finally {
-        setState((prev) => (prev.running ? { ...prev, running: false } : prev));
+        if (mountedRef.current) {
+          setState((prev) => (prev.running ? { ...prev, running: false } : prev));
+        }
       }
     },
     [applyFrame],
@@ -164,7 +177,7 @@ export function useRunStream() {
   const start = useCallback(
     async (body: Record<string, unknown>) => {
       setState((prev) => ({
-        ...prev, events: [], status: "running", error: null, running: true, reportId: null, route: null,
+        ...prev, events: [], status: "running", error: null, running: true, reportId: null, route: null, runId: null,
       }));
       await drive("/api/v1/research/runs", body);
     },
@@ -176,6 +189,7 @@ export function useRunStream() {
     async (runId: string, choice: "continue" | "stop") => {
       setState((prev) => ({
         ...prev,
+        runId,
         status: "running",
         running: true,
         error: null,

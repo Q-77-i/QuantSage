@@ -35,6 +35,22 @@ KEEPALIVE_SECONDS = 15.0
 #: 跨进程逐格轮询间隔（S5，SPEC §6.6）。只对 grid/batch 生效。
 POLL_SECONDS = 1.0
 
+#: 无新格时的退避上限（P2 A9）：1→2→4→5s，有新帧/新格立即回 1s。
+POLL_MAX_SECONDS = 5.0
+
+
+def next_poll_interval(
+    current: float,
+    *,
+    new_cells: bool,
+    base: float = POLL_SECONDS,
+    maximum: float = POLL_MAX_SECONDS,
+) -> float:
+    """协作式任务的轮询间隔。纯函数，便于用假时钟/直接断言测退避。"""
+    if new_cells:
+        return base
+    return min(maximum, max(base, current * 2))
+
 #: 任务状态机的终态（与 `api/tasks.py` 的 409 判据同一套取值）
 TERMINAL = frozenset({"done", "failed", "cancelled"})
 
@@ -99,8 +115,12 @@ async def task_frames(
                         async for replay in _replay(db, user_id, latest, skip=seen):
                             yield replay
                         return
-                    for progress_frame in _db_cells(latest, seen):
+                    new_cells = _db_cells(latest, seen)
+                    for progress_frame in new_cells:
                         yield progress_frame
+                    interval = next_poll_interval(
+                        interval, new_cells=bool(new_cells), base=poll_seconds
+                    )
                     if time.monotonic() - last_keepalive >= keepalive_seconds:
                         last_keepalive = time.monotonic()
                         yield None
@@ -118,6 +138,9 @@ async def task_frames(
                 continue
             if _is_duplicate_cell(frame, seen):
                 continue
+            if cooperative:
+                # 有新帧说明任务还在动，回到最密的轮询间隔
+                interval = poll_seconds
             _mark_seen(frame, seen)
             yield frame
             if frame[0] in _CLOSING:

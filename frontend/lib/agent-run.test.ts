@@ -13,6 +13,7 @@ import {
   buildWaterfall,
   pendingApproval,
   runGaps,
+  shouldPollRun,
   statusTone,
   waterfallSpan,
   type RunNodeEvent,
@@ -45,6 +46,15 @@ const EVENTS: RunNodeEvent[] = [
   { phase: "start", node: "risk_gate", at: 40.6 },
   { phase: "end", node: "risk_gate", at: 40.6, seconds: 0.0, status: "ok" },
 ];
+
+describe("shouldPollRun", () => {
+  it("只有 running 继续轮询；审批是持久态，终态不再拉", () => {
+    expect(shouldPollRun("running")).toBe(true);
+    for (const status of ["awaiting_approval", "done", "degraded", "failed"] as const) {
+      expect(shouldPollRun(status)).toBe(false);
+    }
+  });
+});
 
 describe("buildStages", () => {
   it("按固定顺序给出全部阶段，并带上各自耗时", () => {

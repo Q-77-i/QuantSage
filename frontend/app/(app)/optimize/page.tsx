@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Section } from "@/components/backtest/chart-frame";
 import { BatchTable } from "@/components/optimize/batch-table";
@@ -54,6 +54,13 @@ export default function OptimizePage() {
 function OptimizeView() {
   const params = useSearchParams();
   const router = useRouter();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const mode = params.get("mode") === "batch" ? "batch" : "grid";
 
   const [grid, setGrid] = useState<GridFormState>(defaultGrid);
@@ -179,10 +186,10 @@ function OptimizeView() {
         const outcome = await pickTask.submit(backtestBodyOf(cell));
         if (!outcome.ok) {
           setPickError(outcome.failure.message);
-        } else {
+        } else if (mountedRef.current) {
           router.push(`/backtest?run=${outcome.runId}`);
         }
-        setPicking(null);
+        if (mountedRef.current) setPicking(null);
       })();
     },
     [cells, pickTask, reopened, router],

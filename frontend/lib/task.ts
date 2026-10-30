@@ -54,11 +54,32 @@ export interface PollTaskOptions {
   /** 每次拿到新状态回调一次（用来更新「排队中/执行中」） */
   onTick?: (task: TaskDetail) => void;
   /** 取数（测试注入） */
-  fetchTask?: (taskId: string) => Promise<TaskDetail>;
+  fetchTask?: (taskId: string, signal?: AbortSignal) => Promise<TaskDetail>;
   /** 等待（测试注入成立即返回，免去真 sleep） */
   sleep?: (ms: number) => Promise<void>;
   /** 单次轮询的上限（测试注入小值） */
   maxWaitMs?: number;
+  /** 卸载/切换时中止：不再取数，也不再把状态写回 */
+  signal?: AbortSignal;
+}
+
+function abortError(): DOMException {
+  return new DOMException("任务轮询已取消", "AbortError");
+}
+
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -68,15 +89,19 @@ export async function pollTask(
   taskId: string,
   options: PollTaskOptions = {},
 ): Promise<TaskDetail> {
-  const fetchTask = options.fetchTask ?? ((id: string) => api.task(id));
-  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const fetchTask =
+    options.fetchTask ?? ((id: string, signal?: AbortSignal) => api.task(id, signal));
+  const sleep =
+    options.sleep ?? ((ms: number) => sleepWithSignal(ms, options.signal));
   const maxWaitMs = options.maxWaitMs ?? MAX_WAIT_MS;
 
   let waited = 0;
   for (let attempt = 0; ; attempt += 1) {
+    if (options.signal?.aborted) throw abortError();
     await sleep(attempt === 0 ? FIRST_DELAY_MS : POLL_MS);
     waited += attempt === 0 ? FIRST_DELAY_MS : POLL_MS;
-    const task = await fetchTask(taskId);
+    if (options.signal?.aborted) throw abortError();
+    const task = await fetchTask(taskId, options.signal);
     options.onTick?.(task);
     if (isTerminal(task.status)) return task;
     if (waited >= maxWaitMs) {

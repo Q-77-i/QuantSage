@@ -253,6 +253,11 @@ export function statusLabel(status: RunStatus): string {
   return STATUS_LABELS[status] ?? status;
 }
 
+/** 回看页是否还需要按 2s 轮询（P2）：审批是持久状态，等人工动作，不该空转。 */
+export function shouldPollRun(status: RunStatus): boolean {
+  return status !== "done" && status !== "degraded" && status !== "failed" && status !== "awaiting_approval";
+}
+
 export function statusTone(status: RunStatus): "brand" | "warn" | "danger" | "muted" {
   if (status === "done") return "brand";
   if (status === "degraded" || status === "awaiting_approval") return "warn";

@@ -46,17 +46,28 @@ export function useBacktest() {
 
   /** 报告落定后补上配套的行情与事件。作废的流水线一律不落状态 */
   const fill = useCallback(async (next: BacktestReport, seq: number) => {
+    if (seq !== seqRef.current) return;
+    // 报告是主结果，先落状态；K 线与事件只是辅助视图，失败不应连带藏掉报告。
+    setReport(next);
     const window = { start: next.meta.start ?? undefined, end: next.meta.end ?? undefined };
-    const [barsResponse, eventsResponse] = await Promise.all([
+    const [barsResult, eventsResult] = await Promise.allSettled([
       api.bars(next.meta.symbol, { ...window, adjust: next.meta.adjust }),
       api.events(next.meta.symbol, window),
     ]);
 
     if (seq !== seqRef.current) return;
-    setReport(next);
-    setBars(barsResponse.bars);
-    setEvents(eventsResponse.events);
-    setEventsMeta({ limit: eventsResponse.limit, truncated: eventsResponse.truncated });
+    if (barsResult.status === "fulfilled") setBars(barsResult.value.bars);
+    else setBars([]);
+    if (eventsResult.status === "fulfilled") {
+      setEvents(eventsResult.value.events);
+      setEventsMeta({
+        limit: eventsResult.value.limit,
+        truncated: eventsResult.value.truncated,
+      });
+    } else {
+      setEvents([]);
+      setEventsMeta(null);
+    }
   }, []);
 
   const run = useCallback(
@@ -65,6 +76,11 @@ export function useBacktest() {
       setLoading(true);
       setError(null);
       setFailure(null);
+      setReport(null);
+      setBars([]);
+      setEvents([]);
+      setEventsMeta(null);
+      setRunId(null);
 
       void (async () => {
         // 提交 → 轮询到终态 → 取 run_id（失败原因由返回值带出，含运行期错误）
@@ -101,6 +117,11 @@ export function useBacktest() {
       const seq = ++seqRef.current;
       setLoading(true);
       setError(null);
+      setReport(null);
+      setBars([]);
+      setEvents([]);
+      setEventsMeta(null);
+      setRunId(null);
 
       return (async () => {
         try {

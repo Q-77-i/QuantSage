@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { loginRedirectTarget } from "./api";
+import { loginRedirectTarget, requestSignal } from "./api";
 
 /**
  * 会话中途失效该跳哪（P3-E8a）。
@@ -38,4 +38,17 @@ describe("loginRedirectTarget", () => {
   it("服务端渲染阶段（没有 window）不跳", () => {
     expect(loginRedirectTarget(401, "/api/v1/tasks", "/backtest", false)).toBeNull();
   });
+});
+
+
+describe("requestSignal", () => {
+  it("合并调用方 signal：任一方 abort 都生效", () => {
+    const controller = new AbortController();
+    const signal = requestSignal(controller.signal, 60_000);
+
+    controller.abort();
+
+    expect(signal.aborted).toBe(true);
+  });
+
 });

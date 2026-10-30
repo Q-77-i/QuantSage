@@ -19,20 +19,65 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.backtest import normalize_run_id
+from app.api.limits import RateLimitedError, limit
 from app.api.optimize import streaming_headers
 from app.api.sse import sse_from, sse_response
 from app.core.auth import require_db, require_user
+from app.core.config import get_settings
 from app.tasks import worker as task_worker
 from app.tasks.kinds import COOPERATIVE_KINDS
 from app.tasks.stream import task_frames
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+
+#: 每用户当前打开的 SSE 连接数（P2 A9）。按进程计数；用线程锁而不是 asyncio.Lock——
+#: 同步依赖会在线程池里执行，而字典操作本身不需要 await。
+_ACTIVE_TASK_STREAMS: dict[int, int] = {}
+_ACTIVE_TASK_STREAMS_LOCK = threading.Lock()
+
+
+def _acquire_task_stream_slot(user_id: int) -> None:
+    maximum = max(1, int(get_settings().task_events_max_connections))
+    with _ACTIVE_TASK_STREAMS_LOCK:
+        active = _ACTIVE_TASK_STREAMS.get(user_id, 0)
+        if active >= maximum:
+            raise RateLimitedError(
+                "task-events",
+                f"同时订阅的任务过多（上限 {maximum} 条），请先关闭其他任务页",
+                1,
+            )
+        _ACTIVE_TASK_STREAMS[user_id] = active + 1
+
+
+def _release_task_stream_slot(user_id: int) -> None:
+    with _ACTIVE_TASK_STREAMS_LOCK:
+        active = _ACTIVE_TASK_STREAMS.get(user_id, 0)
+        if active <= 1:
+            _ACTIVE_TASK_STREAMS.pop(user_id, None)
+        else:
+            _ACTIVE_TASK_STREAMS[user_id] = active - 1
+
+
+def _task_stream_slot(
+    _: None = Depends(limit("task-events")),
+    user: dict[str, Any] = Depends(require_user),
+) -> int:
+    """先过重连桶，再占用一条订阅连接；返回 user_id，由流生成器的 finally 释放。
+
+    普通依赖而不是 yield 依赖：连接计数与流生命周期分开，释放点只有一个
+    （生成器的 finally），不会出现依赖清理与流关闭各释放一次的双重计数。
+    """
+    user_id = int(user["id"])
+    _acquire_task_stream_slot(user_id)
+    return user_id
 
 
 @router.get("")
@@ -59,7 +104,10 @@ async def get_task(
 
 @router.get("/{task_id}/events")
 async def task_events(
-    request: Request, task_id: str, user: dict[str, Any] = Depends(require_user)
+    request: Request,
+    task_id: str,
+    user: dict[str, Any] = Depends(require_user),
+    stream_user: int = Depends(_task_stream_slot),
 ) -> StreamingResponse:
     """订阅任务的事件流（E1b）：发起时的流与重连都用同一份帧。
 
@@ -67,10 +115,28 @@ async def task_events(
     """
     db = require_db(request)
     user_id = int(user["id"])
-    normalized = normalize_run_id(task_id)
-    if await db.get_task(user_id, normalized) is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return sse_response(sse_from(task_frames(db, user_id, normalized)), headers=streaming_headers())
+    try:
+        normalized = normalize_run_id(task_id)
+        if await db.get_task(user_id, normalized) is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+    except Exception:
+        _release_task_stream_slot(stream_user)
+        raise
+
+    async def frames() -> AsyncIterator[tuple[str, object] | None]:
+        # 先送一帧保活：让响应头/首字节立即落地，客户端不必等到第一次轮询。
+        yield None
+        try:
+            async for frame in task_frames(db, user_id, normalized):
+                yield frame
+        finally:
+            _release_task_stream_slot(stream_user)
+
+    try:
+        return sse_response(sse_from(frames()), headers=streaming_headers())
+    except Exception:
+        _release_task_stream_slot(stream_user)
+        raise
 
 
 @router.post("/{task_id}/cancel")

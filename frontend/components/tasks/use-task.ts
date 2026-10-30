@@ -14,7 +14,7 @@
  * 两者都收进 `failure`，调用方不必分情况渲染。
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api, describeError } from "@/lib/api";
 import { SubmissionKey } from "@/lib/idempotency";
@@ -50,11 +50,23 @@ export function useBacktestTask() {
   const keyRef = useRef(new SubmissionKey());
   /** 上一次提交落定了没有。它决定下一次提交是「同一次动作的重试」还是「新动作」 */
   const inFlightRef = useRef(false);
+  /** 卸载/新提交时中止上一次轮询（P2）：离开页面后不再取数、不再写状态 */
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      seqRef.current += 1; // 让在飞的 submit 认为自己是过期的那一次
+    };
+  }, []);
 
   /** 提交并等到终态：成功给 `run_id`，失败给 `failure`（提交期与执行期两类都收好了）。 */
   const submit = useCallback(async (body: BacktestRequest): Promise<TaskSubmitResult> => {
     const seq = ++seqRef.current;
     const current = () => seq === seqRef.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     const inFlight = inFlightRef.current; // 取键之前先记下：这一次是不是「同一个动作的重试」
     inFlightRef.current = true;
     setState({ running: true, phase: "排队中" });
@@ -62,12 +74,13 @@ export function useBacktestTask() {
     try {
       const { task_id } = await api.submitBacktest(body, keyRef.current.current(inFlight));
       const task = await pollTask(task_id, {
+        signal: controller.signal,
         onTick: (tick: TaskDetail) => {
           if (current()) setState((prev) => ({ ...prev, phase: taskPhaseLabel(tick) || null }));
         },
       });
       const runId = taskRunId(task);
-      inFlightRef.current = false; // 落定了：下一次提交是新动作，换键
+      if (current()) inFlightRef.current = false; // 落定了：下一次提交是新动作，换键
       if (runId !== null) {
         if (current()) setState(IDLE);
         return { ok: true, runId };
@@ -76,7 +89,7 @@ export function useBacktestTask() {
       if (current()) setState(IDLE);
       return { ok: false, failure: taskFailure(task) };
     } catch (cause) {
-      inFlightRef.current = false;
+      if (current()) inFlightRef.current = false;
       if (current()) setState(IDLE);
       return { ok: false, failure: failureOf(cause) };
     }
