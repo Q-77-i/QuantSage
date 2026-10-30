@@ -135,6 +135,91 @@ def test_gauge_counts_in_flight_only(real_stack: TestClient) -> None:
         purge_rows([address], [])
 
 
+def test_gauge_admits_exactly_the_limit_under_concurrency(real_stack: TestClient) -> None:
+    """并发提交：**恰好**放行 `limit` 个（try-lock 重试路径的真库证据）。
+
+    抢不到锁的请求先归还连接再退避，count+insert 仍在同一事务里——配额不会因为并发
+    而超发，也不会因为重试而多建行。
+    """
+    address = email("gauge-atomic")
+    sign_up(address)
+    uid = user_id_of(address)
+    limit, shots = 3, 12
+
+    async def hammer() -> list[dict | None]:
+        async with open_pool(get_settings().postgres_dsn) as pool:
+            db = Database(pool)
+            return list(
+                await asyncio.gather(
+                    *(
+                        db.create_task(
+                            str(uuid.uuid4()),
+                            uid,
+                            # worker 只认 backtest/grid/batch；这个 kind 不会被取件，
+                            # 保证「在飞」计数在整个用例里稳定
+                            "quota-probe",
+                            {"symbol": "600519"},
+                            active_limit=limit,
+                        )
+                        for _ in range(shots)
+                    )
+                )
+            )
+
+    try:
+        results = asyncio.run(hammer())
+        granted = [row for row in results if row is not None]
+        assert len(granted) == limit, results
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            total = conn.execute(
+                "SELECT count(*) FROM tasks WHERE user_id = %s", (uid,)
+            ).fetchone()[0]
+        assert total == limit
+    finally:
+        purge_rows([address], [])
+
+
+def test_idempotent_replay_returns_the_same_row_under_quota_contention(
+    real_stack: TestClient,
+) -> None:
+    """同一幂等键并发重放：两个请求拿到**同一行**、只建一行（配额只剩 1 个也放行）。"""
+    address = email("gauge-replay")
+    sign_up(address)
+    uid = user_id_of(address)
+    key = f"same-{uuid.uuid4().hex[:8]}"
+
+    async def hammer() -> list[dict | None]:
+        async with open_pool(get_settings().postgres_dsn) as pool:
+            db = Database(pool)
+            return list(
+                await asyncio.gather(
+                    *(
+                        db.create_task(
+                            str(uuid.uuid4()),
+                            uid,
+                            "quota-probe",
+                            {"symbol": "600519"},
+                            idempotency_key=key,
+                            active_limit=1,
+                        )
+                        for _ in range(2)
+                    )
+                )
+            )
+
+    try:
+        results = asyncio.run(hammer())
+        assert all(row is not None for row in results), results
+        assert results[0]["id"] == results[1]["id"]
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            total = conn.execute(
+                "SELECT count(*) FROM tasks WHERE user_id = %s", (uid,)
+            ).fetchone()[0]
+        assert total == 1
+    finally:
+        purge_rows([address], [])
+
+
 def test_rejection_lands_on_the_real_table(real_stack: TestClient) -> None:
     """拒绝记录进真表——admin 的拒绝事件列表与验收证据都读它。"""
     address = email("reject")

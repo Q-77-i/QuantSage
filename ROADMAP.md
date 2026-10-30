@@ -2,13 +2,15 @@
 
 > 状态图例：✅ 已完成 · 🚧 进行中 · ⬜ 未开始 · ✂️ 已砍（后置）
 >
+> **范围冻结（2026-10-30）**：功能与架构范围自此冻结——只接受缺陷修复、安全/依赖升级、文档订正；不新增功能、不更换技术栈、不做架构重构。解冻需单独立项评审（条件见「范围冻结」节）。
+>
 > **本文只回答「做到哪了、下一步是什么」。** 功能定义与验收见 [PRD](docs/PRD.md)，技术规格见 [specs](docs/specs/)，里程碑级交付见 [CHANGELOG](CHANGELOG.md)，逐次交付过程见各 SPEC 的变更记录。
 
 ## 当前焦点
 
 **阶段**：P1-Tn / P2-Mn / P3-En / P4-Sn 全部交付（`m-p1` / `m-p2` / `m-p3` / `m-p4`；P4-Sn S1–S6 于 2026-10-29 收口）；**P4-S7（承压）、P4-S8（可观测性与缓存）与 P4-S9（数据层热点）已交付（2026-10-30）**；后续愿景仍不排期。
 
-**进行中**：无。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）。
+**进行中**：无。**范围已冻结（2026-10-30）**，见文末「范围冻结」节。**待办**：全量容器化（阻塞在 linux/arm64 的 CPU-only torch 方案）——冻结后仅在解冻或修复需要时处理。
 
 **下一个动作**：无活跃工作包，后续按触发条件评估。S8 见下（6 条规则、3 条真实告警 firing/resolved、缓存命中率可算、备份 launchd）；S7 复测（20 回测 queue p95 1,312ms、bars 1,583/236ms）；S9 数据层缓存后 queue p95 **503ms**、run p50 86ms、bars 1,660/240ms；S6 最终复测（2w bars 1,710 req/s / p95 280ms、health 11,599；8 行故障演练通过；备份 4.6GB / 恢复 36.3s）。后续愿景（角色拆分顺延 P4-S10 及以后）仍按触发条件评估。
 
@@ -97,8 +99,22 @@
 
 **S8 复验（2026-10-30，同机）**：`/metrics` 新增队列 p95、PG 连接、宿主内存/swap、备份年龄；2 worker 下每指标**一条值**；`qs:cache_hit_ratio:5m` 压测后 **0.969**。缓存：dev 栈 2 worker + `CACHE_ENABLED=true` 一轮 L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，L2 占 L1 未命中 **86.7%**），Redis 2 键 / 1.51MB、键含代际；harness bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**（0 失败、无回归）。冷查询 50 个不同标的顺序读 **39.97 req/s**（p50 18.7ms / p95 37.4ms；S1 38.1 / 24.3 / 38.2）→ **不新增限流**。告警：`monitoring` profile（Prometheus :9092 + Alertmanager :9093）默认不启动；6 条规则 promtool 全过；真实演练 **RAG 过载 / PG 105 连接 / 伪造旧备份** 三条 firing → resolved 全落 `logs/alerts.log`。备份 launchd 已装并 kickstart，manifest `20261030.json`、年龄 432s。修复：RAG `/metrics` 配 token 后永远 401、Prometheus 缺 `alerting.alertmanagers`、SIGHUP 热加载会清空 scrape 目标。规格 v3.13（§9）。
 
+**提交锁优化（2026-10-30，范围冻结前最后一项代码改动）**：`create_task` 的配额路径由「占着业务池连接阻塞在 `pg_advisory_xact_lock`」改为 `pg_try_advisory_xact_lock` + 抢不到先归还连接再退避（预算 2s，兜底一次阻塞等锁）；count+insert 仍在同一事务/同一把锁下，配额语义不变。同一 mixed 负载（bars c100 + 20 回测 + SSE 20×3）：DB 执行 **14.22s → 0.30s**、>50ms 慢查询 **18 → 0**、池等待均值 **45.5 → 30.5ms**；submit p50 **3.43 → 3.10s**、p95 **4.39 → 5.14s**（同量级波动，串行化仍在）。证据：`docs/private/Pn-n/P4-Sn/baseline/s8-db-20261030-212105/`（前）与 `.../s8-db-20261030-215824/`（后）；数据基线见 `BASELINE-FROZEN-20261030.md`。
+
 **不做**：Redis Streams 全量改造、**多进程** Worker 池扩容、K8s、Qdrant 集群、多机 HA、Vault、Kafka/Celery、把 agent/backtest/report 拆成独立 HTTP 服务。P4-S7 的「单进程内按 kind 多协程」见 SPEC §8；P4-S8 的监控/缓存见 §9；P4-S9 的数据层缓存见 §10。
 
 ## P4-Sn 后续愿景（不排期）
 
 多租户 / 分布式回测 / 策略市场 / 商业化——见 [PRD §2.4](docs/PRD.md#24-p4-sn--单机工程化与愿景)。触发条件（满足任一才启动）：出现真实多用户流量 / 商业化诉求 / 团队扩张。**本轮 S1–S9 不改变这条触发条件。** 角色拆分等原「P4-S8」事项顺延为 **P4-S10 及以后**。
+
+## 范围冻结（2026-10-30）
+
+**冻结依据**：P1–P3 全部交付；P4-Sn S1–S9 交付；S8 补测（资源 / 真实 Agent / RAG 质量 / DB 内部 / 数字闸门 / 报告一致性）完成；提交锁优化完成；数据基线冻结于 `docs/private/Pn-n/P4-Sn/baseline/BASELINE-FROZEN-20261030.md`。
+
+**允许的变更**：缺陷修复、安全加固、依赖升级、文档/注释订正、为修复引入的必要测试。
+
+**不允许的变更**：新功能/新页面/新端点、技术栈替换、模块拆分或重写、新外部服务依赖、改变既有 API 语义或配额。
+
+**明确不做**（沿用原清单并在冻结时确认）：Redis Streams 全量改造、多进程 worker 池扩容、K8s、Qdrant 集群、多机 HA、Vault、Kafka/Celery、独立微服务拆分、GraphRAG、A2A 协议、多租户 / 分布式回测 / 策略市场 / 商业化。
+
+**解冻条件**（满足任一，且需单独立项评审）：真实多用户流量、商业化诉求、团队扩张、安全漏洞修复确需架构变更。解冻后新建 `BASELINE-<日期>` 做 before/after，不修改已冻结基线。

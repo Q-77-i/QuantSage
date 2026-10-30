@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import random
+import time
 from datetime import datetime
 from typing import Any
 
@@ -78,6 +81,14 @@ MAX_PROGRESS_CELLS = 1000
 #: 取件/重排/释放时把进度归零并丢掉上一次的 `cells`（保留 `total`）。
 _PROGRESS_RESET = "jsonb_set(progress - 'cells', '{done}', '0'::jsonb)"
 
+#: 配额锁的等待预算（S8 实验 D）：抢不到锁就**先归还业务池连接**、退避再试。
+#: 旧写法在 `pg_advisory_xact_lock` 上阻塞，20 个并发提交会把 8 槽业务池全部占住
+#: （实测 30.7% 的请求排队、排队者平均 148ms）；等待不该占用连接。
+#: 预算内一直抢不到（极端争用），才退回旧的阻塞等锁——语义不变，只是兜底。
+QUOTA_LOCK_BUDGET_SECONDS = 2.0
+QUOTA_LOCK_BACKOFF_START_SECONDS = 0.005
+QUOTA_LOCK_BACKOFF_MAX_SECONDS = 0.05
+
 
 class TasksMixin:
     # ── 异步任务（P3-E1a）────────────────────────────────────
@@ -102,76 +113,144 @@ class TasksMixin:
         调用方凭 `row["id"] != task_id` 判断这是不是一次重放。冲突判定交给唯一索引而不是
         「先查后插」——两次调用之间的窗口正是要防的那个窗口。
 
-        **在飞任务配额也在这一条语句里判**（`active_limit` 非 None 时）：先取
-        `pg_advisory_xact_lock(user)` 再 `INSERT … SELECT … WHERE count < limit`。
-        先 `count` 再 `insert` 是两次语句，并发提交会一起越过上限；计数与插入必须在
-        同一事务里，且用 advisory lock 把同一用户的并发提交串起来（READ COMMITTED 下
-        后一条语句能看到前一条已提交的行）。
+        **在飞任务配额也在这一条语句里判**（`active_limit` 非 None 时）：用
+        `pg_try_advisory_xact_lock(user)` 串行化同一用户的并发提交，抢到后执行
+        `INSERT … SELECT … WHERE count < limit`；**抢不到先归还连接**、退避再试
+        （S8 实验 D：旧写法在锁上阻塞，20 个并发提交把 8 槽业务池占满）。
+        count 与 insert 仍是两次语句，必须在同一事务 + 同一把锁下（READ COMMITTED
+        下后一条语句能看到前一条已提交的行）。预算内一直抢不到才退回阻塞等锁。
 
         返回 `None` = 配额已满且不是幂等重放（调用方翻 429）；其它情况返回任务行。
         """
         progress = Jsonb({"done": 0, "total": total})
         priority = KIND_PRIORITY.get(kind, 0)
-        async with self.pool.connection() as conn, conn.transaction():
-            if active_limit is not None:
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"active_tasks:{user_id}",),
+        params = (
+            task_id,
+            user_id,
+            kind,
+            Jsonb(request),
+            progress,
+            idempotency_key,
+            priority,
+            max_attempts,
+        )
+        if active_limit is None:
+            async with self.pool.connection() as conn, conn.transaction():
+                row = await self._insert_task(
+                    conn, params, user_id=user_id, active_limit=None
                 )
-                cursor = await conn.execute(
-                    "INSERT INTO tasks "
-                    "(id, user_id, kind, status, request, progress, idempotency_key, "
-                    " priority, max_attempts) "
-                    "SELECT %s::uuid, %s, %s, 'queued', %s, %s, %s, %s, %s "
-                    "WHERE (SELECT count(*) FROM tasks WHERE user_id = %s "
-                    "       AND status IN ('queued', 'running')) < %s "
-                    "ON CONFLICT (user_id, idempotency_key) "
-                    "WHERE idempotency_key IS NOT NULL DO NOTHING "
-                    f"RETURNING {_TASK_COLUMNS}",
-                    (
-                        task_id,
-                        user_id,
-                        kind,
-                        Jsonb(request),
-                        progress,
-                        idempotency_key,
-                        priority,
-                        max_attempts,
-                        user_id,
-                        active_limit,
-                    ),
-                )
-            else:
-                cursor = await conn.execute(
-                    "INSERT INTO tasks "
-                    "(id, user_id, kind, status, request, progress, idempotency_key, "
-                    " priority, max_attempts) "
-                    "VALUES (%s::uuid, %s, %s, 'queued', %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (user_id, idempotency_key) "
-                    "WHERE idempotency_key IS NOT NULL DO NOTHING "
-                    f"RETURNING {_TASK_COLUMNS}",
-                    (
-                        task_id,
-                        user_id,
-                        kind,
-                        Jsonb(request),
-                        progress,
-                        idempotency_key,
-                        priority,
-                        max_attempts,
-                    ),
-                )
-            row = await cursor.fetchone()
-            if row is not None:
-                return row
-            if idempotency_key is None:
-                return None
-            # 幂等重放优先于配额：同一个键已经代表过一件事，不该被额度挡回去
+                return await self._row_or_replay(conn, row, user_id, idempotency_key)
+        return await self._create_task_with_quota(
+            params=params,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+            active_limit=active_limit,
+        )
+
+    async def _insert_task(
+        self,
+        conn: Any,
+        params: tuple[Any, ...],
+        *,
+        user_id: int,
+        active_limit: int | None,
+    ) -> dict[str, Any] | None:
+        """插入任务行；带配额时同一条语句里判 `count(*) < limit`。
+
+        **配额分支必须在持有 `active_tasks:{user_id}` 锁的事务里调用**：count 与 insert
+        虽在同一条语句，但 READ COMMITTED 下并发事务仍会各自看到旧计数。
+        """
+        if active_limit is None:
             cursor = await conn.execute(
-                f"SELECT {_TASK_COLUMNS} FROM tasks WHERE user_id = %s AND idempotency_key = %s",
-                (user_id, idempotency_key),
+                "INSERT INTO tasks "
+                "(id, user_id, kind, status, request, progress, idempotency_key, "
+                " priority, max_attempts) "
+                "VALUES (%s::uuid, %s, %s, 'queued', %s, %s, %s, %s, %s) "
+                "ON CONFLICT (user_id, idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL DO NOTHING "
+                f"RETURNING {_TASK_COLUMNS}",
+                params,
             )
-            return await cursor.fetchone()
+        else:
+            cursor = await conn.execute(
+                "INSERT INTO tasks "
+                "(id, user_id, kind, status, request, progress, idempotency_key, "
+                " priority, max_attempts) "
+                "SELECT %s::uuid, %s, %s, 'queued', %s, %s, %s, %s, %s "
+                "WHERE (SELECT count(*) FROM tasks WHERE user_id = %s "
+                "       AND status IN ('queued', 'running')) < %s "
+                "ON CONFLICT (user_id, idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL DO NOTHING "
+                f"RETURNING {_TASK_COLUMNS}",
+                (*params, user_id, active_limit),
+            )
+        return await cursor.fetchone()
+
+    async def _row_or_replay(
+        self,
+        conn: Any,
+        row: dict[str, Any] | None,
+        user_id: int,
+        idempotency_key: str | None,
+    ) -> dict[str, Any] | None:
+        if row is not None:
+            return row
+        if idempotency_key is None:
+            return None
+        # 幂等重放优先于配额：同一个键已经代表过一件事，不该被额度挡回去
+        cursor = await conn.execute(
+            f"SELECT {_TASK_COLUMNS} FROM tasks WHERE user_id = %s AND idempotency_key = %s",
+            (user_id, idempotency_key),
+        )
+        return await cursor.fetchone()
+
+    async def _create_task_with_quota(
+        self,
+        *,
+        params: tuple[Any, ...],
+        user_id: int,
+        idempotency_key: str | None,
+        active_limit: int,
+    ) -> dict[str, Any] | None:
+        """带配额的建任务：**try-lock 不阻塞等**，抢不到就归还连接再退避重试。
+
+        `pg_try_advisory_xact_lock` 失败时事务立即结束、连接回到池里——等待期间不占
+        业务池槽位（这正是旧写法把 8 槽池占满的原因）。抢到锁后 count+insert 仍在同一
+        事务里，配额语义与旧写法逐字一致。
+        """
+        lock_key = f"active_tasks:{user_id}"
+        deadline = time.monotonic() + QUOTA_LOCK_BUDGET_SECONDS
+        delay = QUOTA_LOCK_BACKOFF_START_SECONDS
+        while True:
+            async with self.pool.connection() as conn, conn.transaction():
+                cursor = await conn.execute(
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS locked",
+                    (lock_key,),
+                )
+                held = await cursor.fetchone()
+                if held and held.get("locked"):
+                    row = await self._insert_task(
+                        conn, params, user_id=user_id, active_limit=active_limit
+                    )
+                    return await self._row_or_replay(
+                        conn, row, user_id, idempotency_key
+                    )
+            if time.monotonic() >= deadline:
+                break
+            # 抖动覆盖整个区间：20 个等待者同时醒来会形成惊群
+            await asyncio.sleep(delay * (0.5 + random.random()))
+            delay = min(delay * 1.5, QUOTA_LOCK_BACKOFF_MAX_SECONDS)
+
+        # 兜底：预算内一直抢不到（极端争用）→ 退回旧的阻塞等锁。
+        # 这条路径才是「占着连接等」的；正常情况下不会走到。
+        async with self.pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,)
+            )
+            row = await self._insert_task(
+                conn, params, user_id=user_id, active_limit=active_limit
+            )
+            return await self._row_or_replay(conn, row, user_id, idempotency_key)
 
     async def task_by_idempotency_key(self, user_id: int, key: str) -> dict[str, Any] | None:
         """按幂等键回查（E4b / L7）。闸门**之前**的短路用它，重复提交不再走一遍闸门。"""

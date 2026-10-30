@@ -43,6 +43,7 @@
 12. **策略版本**（5d）：append-only `strategy_versions` + `strategies.version`；内容变才 +1（只改名不增版）；diff / 回滚（回滚 = 追加新版本，保留当前名字）；模拟盘创建时锁定 `strategy_id + version`，回测记录 `strategy_version`
 13. **能力卡是静态元数据**（5b）：`/.well-known/agent-card.json` 只描述能力与边界，不实现 A2A；MCP 仍是 stdio 单工具 `search_events`
 14. **监控是可选单机 profile**（S8）：`monitoring` 提供 Prometheus/Alertmanager + 6 条规则 + 本地 `alert_hook`，默认不启动；不承诺 HA/SLA，不引入 OTel
+15. **功能与架构范围冻结**（2026-10-30）：只接受缺陷修复、安全/依赖升级、文档订正；不新增功能、不换技术栈、不做架构重构。解冻需单独立项评审（条件见 ROADMAP）。数据基线冻结于 `docs/private/Pn-n/P4-Sn/baseline/BASELINE-FROZEN-20261030.md`；后续性能改动另起 before/after 基线
 
 ## 四、数据源（小石）
 
@@ -70,6 +71,8 @@
 | P4-S8 可观测 | 可观测性与缓存（已交付） | 命中率可算（99.5%）；4 组指标 + 6 条规则 + 本地 receiver；备份年龄 432s | 0.5 / 1 |
 | P4-S9 数据层 | 数据层热点缓存（已交付） | queue p95 ≤1s → 实测 **503ms**；run p50 86ms；bars 1,660/240ms；metrics/digest 逐键相等 | 2–3.5 天 / 1 |
 | P4-S10+ 后续 | 角色拆分 / 多租户 / 分布式 / 商业化 | 愿景，不排期 | — |
+
+> **2026-10-30 范围冻结**：P1–P3、P4-S1–S9 与提交锁优化交付后，功能与架构范围冻结；只做缺陷修复/安全/依赖/文档。详见 ROADMAP「范围冻结」。
 
 ## 七、协作规则
 
