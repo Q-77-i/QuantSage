@@ -20,11 +20,13 @@ import socket
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from app.backtest.batch import error_of
 from app.core.config import get_settings
 from app.core.db_tasks import RETRY_BACKOFF_SECONDS
+from app.core.metrics import TASK_QUEUE_SECONDS
 from app.tasks import bus
 from app.tasks.executors import EXECUTORS, RunContext
 from app.tasks.kinds import COOPERATIVE_KINDS
@@ -171,6 +173,21 @@ async def _reaper_loop(db: Any) -> None:
             log.warning("reaper 回收 running 任务：%s", counts)
 
 
+def _observe_queue_wait(task: dict[str, Any]) -> None:
+    """S8：取件后记排队时长（`started_at - created_at`）。
+
+    替身缺列、或 naive/aware 混用时只跳过——**指标不能拖垮任务执行**。
+    """
+    created, started = task.get("created_at"), task.get("started_at")
+    if not isinstance(created, datetime) or not isinstance(started, datetime):
+        return
+    try:
+        seconds = max(0.0, (started - created).total_seconds())
+    except TypeError:  # naive vs aware：口径不成立，宁可不记
+        return
+    TASK_QUEUE_SECONDS.labels(kind=str(task.get("kind"))).observe(seconds)
+
+
 async def run_once(
     db: Any,
     *,
@@ -191,6 +208,7 @@ async def run_once(
         return False
 
     task_id = str(task["id"])
+    _observe_queue_wait(task)
     executor = EXECUTORS.get(str(task["kind"]))
     if executor is None:  # pragma: no cover - 端点只建已注册的 kind
         message = f"未知任务类型 {task['kind']!r}"

@@ -54,6 +54,7 @@ QuantSage/
 ├── scripts/                      # 跨端运维脚本：dev.sh 一键起停；prod.sh 生产形态（S4：
 │                                 #   前端 build+start、15s drain、日志轮转；委派 dev.sh）
 │                                 #   + S6：backup.sh / restore.sh（Python 实现）、install_backup_job.sh
+│                                 #   + S8：alert_hook.py（Alertmanager 本地接收端）；dev.sh monitoring 子命令
 ├── docs/
 │   ├── PRD.md                    # 需求与验收
 │   ├── PROJECT_STRUCTURE.md      # 本文（结构导航）
@@ -62,7 +63,9 @@ QuantSage/
 │   └── images/                   # README 用截图（由 frontend/scripts/capture-*.mjs 生成）
 ├── .mcp.json.example             # MCP 客户端配置模板（本地 .mcp.json 是绝对路径，不入库）
 ├── docker/postgres/init/
-└── docker-compose.yml
+├── docker/prometheus/            # S8：prometheus.yml + rules（6 条告警 / 1 条记录规则 / promtool 测试）
+├── docker/alertmanager/          # S8：告警路由到宿主 alert_hook
+└── docker-compose.yml            # 默认基础设施 + observability（Langfuse）+ monitoring（S8）profile
 ```
 
 `data/`（行情分片与事件语料）与 `.tools/`（小石 CLI/MCP）**不入 Git**——量大且可重新下载，

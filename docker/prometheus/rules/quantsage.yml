@@ -1,0 +1,91 @@
+# QuantSage 告警与记录规则（P4-S8，6 条告警 + 1 条记录规则）。
+#
+# 口径（SPEC §9.3）：
+#  * 降级率用**服务端** rag_rerank_degraded_total / rag_rerank_requests_total；
+#    停 RAG 不会触发它（分母在服务端，停采集后是 0/0），那只在 Prometheus 里看 up=0。
+#  * swap 基线 9.61GB 是 2026-10-30 本机实测，+1GB 作为告警线；换机器需重定。
+#  * 备份年龄取 manifest mtime（不是文件名日期），26h 阈值给每日 03:30 备份留 2h 余量。
+groups:
+  - name: quantsage-recording
+    interval: 15s
+    rules:
+      - record: qs:cache_hit_ratio:5m
+        expr: |
+          sum(rate(quantsage_cache_hits_total[5m]))
+          /
+          clamp_min(
+            sum(rate(quantsage_cache_hits_total[5m]))
+            + sum(rate(quantsage_cache_misses_total[5m])),
+            1e-9
+          )
+
+  - name: quantsage-alerts
+    rules:
+      - alert: TaskQueueLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, kind) (rate(quantsage_task_queue_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "任务排队 p95 超过 5s（kind={{ $labels.kind }}）"
+          description: "检查 task worker 池与执行体；重排任务的 created_at 会放大排队时长。"
+
+      - alert: RagRerankDegradedHigh
+        expr: |
+          sum(rate(rag_rerank_degraded_total{reason=~"queue_full|timeout"}[5m]))
+          /
+          clamp_min(sum(rate(rag_rerank_requests_total[5m])), 1e-9)
+          > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG 精排降级率超过 50%"
+          description: "服务端 degraded/requests；停 RAG 不产生本告警，只会在 up{job=\"quantsage-rag\"}=0 里看到。"
+
+      - alert: PgConnectionsHigh
+        expr: quantsage_pg_connections > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PG 客户端连接数超过 80"
+          description: "max_connections=120；检查连接泄漏或 Langfuse 占用。"
+
+      - alert: Http5xxRateHigh
+        expr: |
+          sum(rate(quantsage_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(quantsage_http_requests_total[5m])), 1e-9)
+          > 0.005
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx 比率超过 0.5%"
+          description: "按 S6 故障演练口径排查依赖（PG / Qdrant / Redis / LLM）。"
+
+      - alert: HostResourcePressure
+        expr: |
+          quantsage_host_available_bytes < 2e9
+          or
+          quantsage_host_swap_used_bytes > 1.06e10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "宿主内存或 swap 压力"
+          description: "available < 2GB 或 swap used > 1.06e10（2026-10-30 基线 9.61GB + 1GB）。"
+
+      - alert: BackupStale
+        expr: quantsage_backup_age_seconds > 93600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "备份超过 26 小时未更新"
+          description: "检查 launchd 任务与备份目标；无 manifest 时指标为 1e9。"

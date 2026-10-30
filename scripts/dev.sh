@@ -9,7 +9,8 @@
 #   ./scripts/dev.sh status           # 基础设施 / 应用端口 / 健康检查
 #   ./scripts/dev.sh health           # 只做健康检查；任一依赖失败退出非 0
 #   ./scripts/dev.sh logs [backend|frontend|rag]
-#   ./scripts/dev.sh down             # 停应用 + 全部 compose 服务（含 observability profile）
+#   ./scripts/dev.sh monitoring start|stop|status  # Prometheus + Alertmanager + alert_hook（默认不启）
+#   ./scripts/dev.sh down             # 停应用 + 全部 compose 服务（含 observability / monitoring profile）
 #
 # prod 形态（S4）：用 bash scripts/prod.sh；它设 QS_MODE=prod 后委派本脚本，差别只有
 # 前端 build+start、uvicorn 15s 优雅停机、日志 copytruncate 轮转、prod 独立日志/PID 目录。
@@ -46,9 +47,11 @@ BACKEND_PID="$LOG_DIR/backend.pid"
 FRONTEND_PID="$LOG_DIR/frontend.pid"
 RAG_PID="$LOG_DIR/rag.pid"
 ROTATE_PID="$LOG_DIR/rotate.pid"
+ALERT_PID="$LOG_DIR/alert_hook.pid"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 RAG_LOG="$LOG_DIR/rag.log"
+ALERT_LOG="$LOG_DIR/alert_hook.log"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3001}"
 RAG_PORT="${RAG_PORT:-8200}"
@@ -83,6 +86,103 @@ force_flag() { [[ "${1:-}" == "--force" || "${1:-}" == "true" ]] && echo true ||
 rag_enabled() {
   [[ -n "${RAG_SERVICE_URL:-}" ]] && return 0
   grep -Eq '^[[:space:]]*RAG_SERVICE_URL=.+' "$ROOT/.env" 2>/dev/null
+}
+
+# 按键名取环境变量：shell 环境优先，没有才读 .env。**只返回值给调用方**，
+# 不打印——token 走这条路径进文件，回显就破了红线。
+env_value() {
+  local key="$1" value
+  value="$(printenv "$key" 2>/dev/null || true)"
+  if [[ -z "$value" && -f "$ROOT/.env" ]]; then
+    value="$(grep -E "^[[:space:]]*${key}=" "$ROOT/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+  fi
+  printf '%s' "$value"
+}
+
+# token 文件给容器只读挂载。644 而非 600：Prometheus 以 nobody 运行，
+# 600 在 Docker Desktop 的绑定挂载下可能读不到；logs/ 已 gitignore。
+write_token() {
+  local key="$1" path="$2" value
+  value="$(env_value "$key")"
+  [[ -n "$value" ]] || die "monitoring 需要 ${key}：在 .env 或当前 shell 设置（不会回显值）"
+  (umask 022; printf '%s' "$value" >"$path") || die "写入 ${path} 失败"
+}
+
+start_alert_hook() {
+  local pid
+  pid="$(read_pid "$ALERT_PID")"
+  if pid_alive "$pid"; then
+    say "alert_hook 已在运行（PID ${pid}）"
+    return 0
+  fi
+  if port_busy 9099; then
+    warn "端口 9099 已被占用（不是本脚本启动的？）；跳过 alert_hook"
+    return 0
+  fi
+  say "→ 启动 alert_hook :9099（告警写 ${ALERT_LOG}）"
+  (
+    cd "$ROOT"
+    nohup python3 scripts/alert_hook.py >>"$ALERT_LOG" 2>&1 &
+    echo $! >"$ALERT_PID"
+  )
+  if ! wait_http "http://127.0.0.1:9099/health" 10; then
+    warn "alert_hook 未在 10s 内就绪；日志尾部："
+    tail -n 20 "$ALERT_LOG" >&2 || true
+    return 1
+  fi
+}
+
+stop_alert_hook() {
+  local pid
+  pid="$(read_pid "$ALERT_PID")"
+  if pid_alive "$pid"; then
+    say "→ 停止 alert_hook（PID ${pid}）"
+    kill_tree "$pid" TERM
+  fi
+  rm -f "$ALERT_PID"
+}
+
+start_monitoring() {
+  command -v docker >/dev/null 2>&1 || die "未找到 docker"
+  mkdir -p "$ROOT/logs" "$LOG_DIR"
+  write_token METRICS_TOKEN "$ROOT/logs/metrics_token"
+  write_token RAG_SERVICE_TOKEN "$ROOT/logs/rag_token"
+  say "→ 启动 monitoring profile（Prometheus :9092 / Alertmanager :9093）"
+  (cd "$ROOT" && docker compose --profile monitoring up -d --wait) || return 1
+  if [[ "$(env_value ALERT_HOOK_ENABLED)" == "true" ]]; then
+    start_alert_hook || return 1
+  else
+    warn "ALERT_HOOK_ENABLED 不为 true：未启动 alert_hook（告警仍可在 Alertmanager UI 查看）"
+  fi
+  say "Prometheus   http://127.0.0.1:9092"
+  say "Alertmanager http://127.0.0.1:9093"
+}
+
+stop_monitoring() {
+  stop_alert_hook
+  say "→ 停止 Prometheus / Alertmanager（不动 postgres/redis/qdrant）"
+  # 只停这两个服务：`docker compose down` 会把整个项目的容器都停掉
+  (cd "$ROOT" && docker compose stop prometheus alertmanager) || true
+}
+
+monitoring_status() {
+  say "== 监控 =="
+  (cd "$ROOT" && docker compose ps prometheus alertmanager) || true
+  if curl -fsS --max-time 2 http://127.0.0.1:9092/-/ready >/dev/null 2>&1; then
+    say "Prometheus：就绪 http://127.0.0.1:9092"
+  else
+    warn "Prometheus 未就绪"
+  fi
+  if curl -fsS --max-time 2 http://127.0.0.1:9093/-/ready >/dev/null 2>&1; then
+    say "Alertmanager：就绪 http://127.0.0.1:9093"
+  else
+    warn "Alertmanager 未就绪"
+  fi
+  if curl -fsS --max-time 2 http://127.0.0.1:9099/health >/dev/null 2>&1; then
+    say "alert_hook：运行中"
+  else
+    warn "alert_hook 未运行（ALERT_HOOK_ENABLED=$(env_value ALERT_HOOK_ENABLED)）"
+  fi
 }
 
 wait_http() {
@@ -451,13 +551,22 @@ case "${1:-start}" in
       *) tail -n 50 -f "$BACKEND_LOG" "$FRONTEND_LOG" "$RAG_LOG" ;;
     esac
     ;;
+  monitoring)
+    case "${2:-status}" in
+      start) start_monitoring ;;
+      stop) stop_monitoring ;;
+      status) monitoring_status ;;
+      *) die "未知 monitoring 子命令：${2:-}（start|stop|status）" ;;
+    esac
+    ;;
   down)
     stop_apps true
-    say "→ docker compose --profile observability down（含 Langfuse）"
-    (cd "$ROOT" && docker compose --profile observability down)
+    stop_alert_hook
+    say "→ docker compose --profile observability --profile monitoring down（含 Langfuse / 监控）"
+    (cd "$ROOT" && docker compose --profile observability --profile monitoring down)
     ;;
   help | -h | --help)
-    sed -n '2,26p' "$0"
+    sed -n '2,27p' "$0"
     ;;
   *)
     die "未知命令：${1}（用 help 看用法）"

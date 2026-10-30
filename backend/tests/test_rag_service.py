@@ -122,6 +122,20 @@ def test_token_is_required_when_configured(
     assert ok.status_code == 200
 
 
+def test_metrics_requires_bearer_when_token_is_configured(
+    env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S8：Prometheus 用 Bearer scrape `/metrics`——配了 token 就必须验。"""
+    monkeypatch.setenv("RAG_SERVICE_TOKEN", "secret")
+    get_settings.cache_clear()
+    app = create_app(embedder=FakeEmbedder(DIM), reranker=SlowReranker(0))
+    with TestClient(app) as client:
+        assert client.get("/metrics").status_code == 401
+        ok = client.get("/metrics", headers={"Authorization": "Bearer secret"})
+    assert ok.status_code == 200
+    assert "rag_rerank_inflight" in ok.text
+
+
 def test_metrics_exposes_rag_names(env: None) -> None:
     app = create_app(embedder=FakeEmbedder(DIM), reranker=SlowReranker(0))
     with TestClient(app) as client:
@@ -131,6 +145,8 @@ def test_metrics_exposes_rag_names(env: None) -> None:
     assert "rag_rerank_wait_seconds" in text
     assert "rag_rerank_inflight" in text
     assert "rag_rerank_queue_depth" in text
+    # S8：降级率的分母；入口即计（含成功）
+    assert 'rag_rerank_requests_total{class="interactive"}' in text
 
 
 # ── 排队语义（直接打 Runtime，不隔 HTTP）───────────────

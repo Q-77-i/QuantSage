@@ -31,6 +31,7 @@ SENSITIVE_ENV_KEYS = (
     "JWT_SECRET",
     "DATABASE_URL",
     "METRICS_TOKEN",
+    "RAG_SERVICE_TOKEN",
 )
 
 # 太短的值不做替换，避免把普通单词打成掩码

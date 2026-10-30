@@ -327,6 +327,9 @@ def create_app(
 
     @app.post("/v1/rerank", response_model=RerankResponse, dependencies=[Depends(require_auth)])
     async def rerank(body: RerankRequest, runtime: Runtime = Depends(_runtime)) -> RerankResponse:
+        # S8：降级率分母。放在入口——排队拒绝（queue_full/timeout）也算一次请求。
+        rag_metrics.RERANK_REQUESTS.labels(**{"class": body.request_class}).inc()
+
         def call_rerank() -> list[float]:
             return runtime.model("rerank").rerank(
                 body.query, body.documents, request_class=body.request_class
@@ -346,9 +349,11 @@ def create_app(
             "queue": runtime.queue(),
         }
 
-    @app.get("/metrics", include_in_schema=False)
-    async def metrics(request: Request) -> Response:
-        require_auth(request)
+    @app.get("/metrics", include_in_schema=False, dependencies=[Depends(require_auth)])
+    async def metrics() -> Response:
+        # ⚠ 必须走 `Depends`：直接调 `require_auth(request)` 时，FastAPI 不会解析
+        # `Header(None)` 默认值，`authorization` 是个未求值的 Header 对象——配了 token
+        # 后永远 401（S8 接 Prometheus 时实测）。
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return app

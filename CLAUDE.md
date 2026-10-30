@@ -13,7 +13,7 @@
 
 ## 二、技术栈（定稿，勿擅自更换）
 
-| 层 | 选型 | 落地状态（2026-10-20） |
+| 层 | 选型 | 落地状态（2026-10-30） |
 |---|---|---|
 | 编排 | LangGraph（StateGraph） | ✅ 已用：快路径 `create_agent` ReAct 图；深路径 StateGraph（并行取证 → 归并 → 辩论 → 综合 → 风控闸门 → `interrupt()`）；Postgres checkpointer |
 | 流水线 | LangChain 组件（LCEL 管道未采用） | ✅ 工具 / 提示 / 模型经 LangChain；**LCEL 组合式管道没有落地**——节点内直接调用（E1c 的取用式接缝）。修的是口径，不为了标签硬加 |
@@ -25,7 +25,7 @@
 | 向量库 | Qdrant | ✅ **P2 起已用**：BGE-M3 双索引 + 服务端 RRF / PIT 过滤；对外 MCP Server 直连 |
 | 模型 | `deepseek-v4-pro`（深度）/ `deepseek-flash`（快档） | ✅ 两档均已用：辩论 / 综合用 pro，取证 / 路由 / 反思用 flash；E4 降级链 pro → flash |
 | LLM 网关 | LiteLLM | ✅ 已用（`ChatLiteLLM` 唯一构造点） |
-| 观测 | 自托管 Langfuse + Prometheus `/metrics` + JSON 日志 | ✅ Langfuse（LLM trace / token / 成本）+ **E7e**（HTTP / 任务 / 缓存指标、request id、可选 JSON 日志）；**OTel SDK 未引入**（部署层升级时再评估） |
+| 观测 | 自托管 Langfuse + Prometheus `/metrics` + JSON 日志；可选 Prometheus + Alertmanager（`monitoring` profile） | ✅ Langfuse（LLM trace / token / 成本）+ **E7e**（HTTP / 任务 / 缓存指标、request id、可选 JSON 日志）+ **S8**（队列 p95 / PG 连接 / 宿主 / 备份年龄、6 条规则 + 本地 `alert_hook`，**默认不启动**）；**OTel SDK 未引入**（部署层升级时再评估） |
 
 ## 三、关键设计决策
 
@@ -42,6 +42,7 @@
 11. **Agent 下单只到提案**（5a）：工具只能在当前 `as_of` 日创建一条 `pending`、`origin=agent` 的模拟盘决策，不能批准/成交/改风控；用户逐条裁决，`run(approve="all")` 在有待审批 Agent 提案时 409。`user_id` 只从请求上下文取，绝不作 LLM 参数
 12. **策略版本**（5d）：append-only `strategy_versions` + `strategies.version`；内容变才 +1（只改名不增版）；diff / 回滚（回滚 = 追加新版本，保留当前名字）；模拟盘创建时锁定 `strategy_id + version`，回测记录 `strategy_version`
 13. **能力卡是静态元数据**（5b）：`/.well-known/agent-card.json` 只描述能力与边界，不实现 A2A；MCP 仍是 stdio 单工具 `search_events`
+14. **监控是可选单机 profile**（S8）：`monitoring` 提供 Prometheus/Alertmanager + 6 条规则 + 本地 `alert_hook`，默认不启动；不承诺 HA/SLA，不引入 OTel
 
 ## 四、数据源（小石）
 
@@ -66,7 +67,7 @@
 | P3-En Enterprise | 企业级思维达标 | 故障注入通过；Claude Desktop 可调我们的 MCP | 2 / 4 |
 | P4-Sn Scale | 单机工程化（S1–S6，已交付；能力演练，非 HA） | S1–S6 验收；各项 before/after；压测/故障/备份 | 1.5 / 2 |
 | P4-S7 承压 | RAG SLO + task worker 池（已交付） | 合批门禁未过（A 不做）；queue p95 1,312ms；bars 1,583/236ms | 1 / 1.5 |
-| P4-S8 可观测 | 可观测性与缓存（规格已定，待执行） | 命中率可算；指标/告警；备份年龄 | 0.5 / 1 |
+| P4-S8 可观测 | 可观测性与缓存（已交付） | 命中率可算（99.5%）；4 组指标 + 6 条规则 + 本地 receiver；备份年龄 432s | 0.5 / 1 |
 | P4-S9 数据层 | 数据层热点缓存（已交付） | queue p95 ≤1s → 实测 **503ms**；run p50 86ms；bars 1,660/240ms；metrics/digest 逐键相等 | 2–3.5 天 / 1 |
 | P4-S10+ 后续 | 角色拆分 / 多租户 / 分布式 / 商业化 | 愿景，不排期 | — |
 
@@ -81,7 +82,7 @@
 - **SPEC 版本编号**：主版本 = 阶段序号（P1 → `0`、P2 → `1`、P3 → `2`、P4 → `3`），次版本为整数计数器（`v0.10` 晚于 `v0.9`）。PRD 跨阶段，沿用自身编号
 - 遇到报错先查「踩坑记录」，解决后补记新坑
 - **会话收尾扫一遍对外文档里的「事实性表述」**（README / `docs/tutorials/` / 界面文案）：凡断言**当前状态**的句子（「当前是手动跑…」「已规划为 X」「不日更」）与**写死日期的例子**，都要与本次改动对一遍——过期的**事实**必须改，措辞风格不动；`docs/specs/` 与变更记录里那些**历史记录**（当时的设计依据）不改，只改仍然成立的表述。由头：2026-10-13 M2d 落地后，README 还写着「当前是手动跑、自动化已规划为 M2d」，被用户当场看出。**机检刻意不查这类**（`check_docs.py` 只查链接/环境变量/脚本引用）——它会逐版本漂移，查了只会变噪音源（M9 的结论）
-- 顺序：规划（已定稿）→ 本文 → PRD（P3 已通过；P4-Sn S1–S7、S9 已交付，P4-S8 规格已定）→ SPEC（P1/P2/P3/P4-Sn 已交付，P4-Sn v3.11，逐阶段滚动）→ demo → 落地
+- 顺序：规划（已定稿）→ 本文 → PRD（P3 已通过；P4-Sn S1–S9 已交付）→ SPEC（P1/P2/P3/P4-Sn 已交付，P4-Sn v3.13，逐阶段滚动）→ demo → 落地
 - 每个会话的执行计划写到 `docs/private/Pn-n/` 下的对应阶段目录（如 P1 的 T6 为 `docs/private/Pn-n/P1-Tn/P1-T6.md`），与该功能的过程文档（design brief 等）同目录，文件名带功能 ID
 - 文档风格：文档只记职责内内容；注解/内部信息进 auto-memory 或聊天框说明
 - 优先级内部用语：必做/可延/可砍，禁用 P0/P1/P2（与阶段代号混淆）

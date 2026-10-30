@@ -28,6 +28,14 @@ RERANK_DEGRADED = Counter(
     ["class", "reason"],
 )
 
+#: S8：降级率的**分母**。入口即计——成功与过载都算；`unavailable` 由 API 侧记，
+#: 不进这个比率（SPEC §9.3.1）。
+RERANK_REQUESTS = Counter(
+    "rag_rerank_requests_total",
+    "Rerank requests entering the service (success and overload).",
+    ["class"],
+)
+
 RERANK_WAIT = Histogram(
     "rag_rerank_wait_seconds",
     "Time spent waiting for the rerank slot, by request class.",
@@ -48,5 +56,6 @@ __all__ = [
     "RERANK_DEGRADED",
     "RERANK_INFLIGHT",
     "RERANK_QUEUE_DEPTH",
+    "RERANK_REQUESTS",
     "RERANK_WAIT",
 ]

@@ -117,3 +117,16 @@ class Database(
     BaseRepo,
 ):
     """业务表的全部读写出口；方法按域拆在 `db_*.py`，公开面仍是这一个类。"""
+
+    async def pg_connection_count(self) -> int:
+        """`pg_stat_activity` 里的客户端后端数（S8 的 `/metrics` 用）。
+
+        口径与 `max_connections` 一致：只数 `client backend`（后台 worker 不占连接槽）。
+        Langfuse 若共用这个集群也会计入——120 的预算本来就含它。
+        """
+        row = await self._one(
+            "SELECT count(*)::int AS n FROM pg_stat_activity "
+            "WHERE backend_type = 'client backend'",
+            (),
+        )
+        return int(row["n"]) if row else 0
