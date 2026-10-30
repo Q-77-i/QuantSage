@@ -113,6 +113,8 @@ memory_limit=1GB`，另有进程级查询闸门 4（`DUCKDB_THREADS` / `DUCKDB_M
 
 **P4-S7 / S9（2026-10-30）**：task worker 单进程内按 kind 池化（backtest×3 + grid/batch 各 1，`TASK_WORKER_POOL_ENABLED=false` 回退）；RAG 合批经原型门禁否决，按 A 不做。数据层热点缓存（ST 名单 / 全市场等权日表 / 窗口指纹，`BT_DATA_CACHE_ENABLED=false` 回退）：20 回测 queue p95 **2.4s → 1,312ms → 503ms**、run p50 **86ms**；2w bars c=300 **1,660 req/s / p95 240ms** 不回归；metrics / `data_digest` 逐键相等。
 
+**P4-S8 可观测性与缓存（2026-10-30）**：可选 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，**默认不启动**）+ 6 条规则 + 本地 `alert_hook`；`/metrics` 新增队列 p95 / PG 连接 / 宿主内存/swap / 备份年龄与 `qs:cache_hit_ratio:5m`。验收：L1 **385** / L2 **13** / miss **2**（合计 **99.5%**，Redis 2 键含数据代际）；冷查询 50 个不同标的 **39.97 req/s**（S1 38.1）→ 不新增限流；bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**；RAG 过载 / PG 105 连接 / 旧备份三条真实告警 firing→resolved；备份 launchd 每日 03:30，kickstart 后年龄 **432s**。
+
 **备份与恢复（S6，本地演练口径，不是 SLA）**：
 
 ```bash
@@ -228,7 +230,7 @@ flowchart LR
 - **「读」并行、「写」单点**：快路径是单 Agent ReAct；深路径是另一张 StateGraph（并行取证 fan-out → 归并 → 辩论 → 单点综合 → 代码化风控闸门 → 超限 `interrupt()` 人工审批），两图共用 Postgres checkpointer 但独立 thread 命名空间
 - **引擎只有一套**：回测、模拟盘、批量 / 网格共用同一个撮合与费用实现。可验证的推论：**风控关闭时，全部批准的模拟盘会话，成交逐笔等于一次回测**——不是承诺，是同一批对象的必然结果。风控开启时会按上限缩量或拦截，**不再承诺逐笔相等**（设计取舍，界面与文档都写明）
 
-**技术栈**：Next.js 15 · FastAPI + Pydantic v2 · LangGraph · Parquet + DuckDB · PostgreSQL 18 · Qdrant · BGE-M3 + bge-reranker · LiteLLM · Langfuse · Prometheus（`/metrics`）。权威的选型表与落地状态见 [CLAUDE.md](CLAUDE.md) §二；运行时拓扑与关键决策见 [企业级架构设计](docs/enterprise/architecture.md)。
+**技术栈**：Next.js 15 · FastAPI + Pydantic v2 · LangGraph · Parquet + DuckDB · PostgreSQL 18 · Qdrant · BGE-M3 + bge-reranker · LiteLLM · Langfuse · Prometheus / Alertmanager（可选 `monitoring` profile）。权威的选型表与落地状态见 [CLAUDE.md](CLAUDE.md) §二；运行时拓扑与关键决策见 [企业级架构设计](docs/enterprise/architecture.md)。
 
 ---
 
@@ -324,7 +326,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 
 - **消息队列 / 容器化 / 多 worker 的边界**：不引 MQ（`tasks` 表即队列）、全量容器化暂缓、API 可条件跑 2 个 worker（S5；任务 worker / 调度器仍单实例）；四句话的触发判据见 [企业级文档 · 已知边界与未来触发](docs/enterprise/architecture.md#9-已知边界与未来触发)
 - **Redis 承担数据层的热点查询缓存**（E3c）：分两层——**L1 进程内**（单次运行内的重复读，实测 48–73×）与 **L2 Redis**（跨请求/跨重启，6–12×），键里带**数据代际**（`_meta` 清单一变键就变，不需要「ETL 之后记得清缓存」这种靠人记的约定）；Redis 挂了**熔断直读**，缓存层的任何异常都不让请求失败。限流默认进程内；多 worker 时 `RATE_LIMIT_SHARED=true` 走 redis-coord 共享令牌桶，coord 挂了降级为进程内 `floor(capacity/N)`；熔断仍进程内。调度器与 task worker 已收口到后台主实例（E 批）
-- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。没有 Prometheus server / 告警，**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
+- **服务侧可观测性是最小闭环**（E7e）：`/metrics`（Prometheus 文本）暴露 HTTP 计数 / 耗时、任务表五状态、缓存 L1/L2 命中；`X-Request-Id` 回写，JSON 日志可选。**单 worker 时指标进程内、重启清零；多 worker 时用 Prometheus 多进程聚合（`PROMETHEUS_MULTIPROC_DIR`）**；熔断 / 并发闸门仍按进程计算，限流与指标已跨进程，任务 worker 仍单实例。**P4-S8 起**有可选的 `monitoring` profile（Prometheus :9092 + Alertmanager :9093，默认不启动；6 条规则 + 本地 `alert_hook`），指标另含队列 p95、PG 连接、宿主内存/swap 与备份年龄；**未引入 OTel SDK**；LLM 的 trace / token / 成本仍看 Langfuse
 
 ### 展示与前端
 

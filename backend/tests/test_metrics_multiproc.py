@@ -34,6 +34,7 @@ def test_render_aggregates_under_multiproc_env(tmp_path: Path) -> None:
         "print('dead_exists', dead.exists())\n"
         "metrics.HTTP_REQUESTS.labels('GET', '/x', '200').inc()\n"
         "metrics.set_task_counts({'queued': 3})\n"
+        "metrics.set_snapshot({'pg_connections': 7, 'backup_age_seconds': 1000})\n"
         "print(metrics.render().decode())\n"
     )
     env = {
@@ -56,3 +57,13 @@ def test_render_aggregates_under_multiproc_env(tmp_path: Path) -> None:
     # 单次 scrape 只出一份，不是「每个进程各一份」再求和
     assert result.stdout.count('quantsage_tasks{status="queued"}') == 1
     assert result.stdout.count("quantsage_http_requests_total{") == 1
+    # S8：scrape 快照 Gauge 在多进程下也只出一份（只数样本行，跳过 HELP/TYPE）
+    samples = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith(("quantsage_pg_connections ", "quantsage_backup_age_seconds "))
+    ]
+    assert sorted(samples) == [
+        "quantsage_backup_age_seconds 1000.0",
+        "quantsage_pg_connections 7.0",
+    ]

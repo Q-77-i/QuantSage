@@ -278,7 +278,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 沙箱 | `strategy/sandbox.py` · `strategy/isolation.py` | 子进程 + CPU/墙钟/内存/stdout 四配额 + OS 级隔离；`STRATEGY_ISOLATION=require` 默认 fail closed |
 | AST 静态检查 | `strategy/static_check.py` | R0–R5 规则；`shift(-n)` / `bfill` 等未来函数运行前拦下 |
 | 策略版本 | `core/db_strategies.py` | append-only `strategy_versions`；内容变才 +1；回滚 = 追加新版本 |
-| 观测 | `core/observability.py` · `core/metrics.py` | request id 透传/回写；HTTP 计数/耗时、任务五状态、缓存命中；JSON 日志可选 |
+| 观测 | `core/observability.py` · `core/metrics.py` | request id 透传/回写；HTTP 计数/耗时、任务五状态、缓存命中、队列 p95、PG 连接、宿主内存/swap、备份年龄；JSON 日志可选 |
 | LLM 观测 | `core/langfuse.py` | 每条 trace 记模型+版本+prompt hash+工具序列+token 成本+延迟+用户 |
 | LLM 网关 | `core/llm.py` | `ChatLiteLLM` 唯一构造点；两档模型；失败切换链 |
 
@@ -375,7 +375,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - **深研报的解读受模型知识截止影响**：数字由代码取并过追溯闸门，叙述层没有对策
 - **提示注入只做纵深防御**：边界标记是其中一层，不是「解决了注入」
 - **冻结日历止于 2026-12-31**：到期前等上游更新后重生成，不用工作日近似
-- **无 Prometheus server / 告警、未引入 OTel SDK**：只暴露 `/metrics`，由外部 scrape
+- **监控是可选单机 profile**（S8）：`compose --profile monitoring` 提供 Prometheus :9092 + Alertmanager :9093（默认不启动）、6 条规则与本地 `alert_hook`；**未引入 OTel SDK**
 
 ## 10. 代码锚点索引
 

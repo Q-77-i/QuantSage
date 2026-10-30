@@ -164,6 +164,65 @@ services:
       retries: 12
       start_period: 10s
 
+  # ───────────────── monitoring profile（P4-S8，默认不启动）─────────────────
+  #
+  # 起法：bash scripts/dev.sh monitoring start（先把 METRICS_TOKEN / RAG_SERVICE_TOKEN
+  # 写进 logs/metrics_token 与 logs/rag_token 再挂载；仓库里不落明文）。
+  # 停法：bash scripts/dev.sh monitoring stop —— 只停这两个服务。**不要用 `compose down`**，
+  # 它会把 postgres / redis / qdrant 一起停掉。
+  # 宿主端口 9092/9093：9090/9091 已被 observability profile 的 MinIO 占用。
+
+  prometheus:
+    image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 1.0
+    ports:
+      - "127.0.0.1:9092:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
+      - ./logs/metrics_token:/etc/prometheus/metrics_token:ro
+      - ./logs/rag_token:/etc/prometheus/rag_token:ro
+      - prometheusdata:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    extra_hosts:
+      # Linux 的 compose 需要显式映射；macOS Docker Desktop 自带，写了也无害
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./docker/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanagerdata:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9093/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
   # ───────────────── observability profile（默认不启动）─────────────────
 
   langfuse-redis:
@@ -264,6 +323,8 @@ volumes:
   pgdata:
   redisdata:
   qdrant_storage:
+  prometheusdata:
+  alertmanagerdata:
   langfuse_redis_data:
   langfuse_clickhouse_data:
   langfuse_clickhouse_logs:

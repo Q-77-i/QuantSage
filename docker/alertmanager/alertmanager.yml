@@ -1,0 +1,16 @@
+# QuantSage Alertmanager（P4-S8）：只把告警送到宿主机本地的 alert_hook。
+#
+# 不接外部服务、不写密钥。`host.docker.internal` 已实测可达宿主机回环；alert_hook
+# 只绑 127.0.0.1:9099，由 dev.sh 在 monitoring profile 启动时一并起。
+route:
+  receiver: local-hook
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+receivers:
+  - name: local-hook
+    webhook_configs:
+      - url: http://host.docker.internal:9099/alerts
+        send_resolved: true

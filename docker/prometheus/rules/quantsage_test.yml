@@ -1,0 +1,64 @@
+# promtool 单测（P4-S8）：规则 1/4/5 的真实注入成本高或危险，用合成序列覆盖阈值逻辑。
+# 运行（镜像已 pin digest）：
+#   docker run --rm -v "$PWD/docker/prometheus/rules:/p:ro" \
+#     --entrypoint /bin/promtool prom/prometheus:v3.15.1 test rules /p/quantsage_test.yml
+rule_files:
+  - quantsage.yml
+evaluation_interval: 1m
+
+tests:
+  # 记录规则：hits 与 misses 各 10/min ⇒ 合计命中率 0.5
+  - interval: 1m
+    input_series:
+      - series: 'quantsage_cache_hits_total{tier="l1"}'
+        values: '0+10x10'
+      - series: 'quantsage_cache_misses_total'
+        values: '0+10x10'
+    promql_expr_test:
+      - expr: qs:cache_hit_ratio:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'qs:cache_hit_ratio:5m'
+            value: 0.5
+
+  # 阈值型：备份年龄 100000s、PG 连接 90 ⇒ 两条都触发（for 已满足）
+  - interval: 1m
+    input_series:
+      - series: 'quantsage_backup_age_seconds'
+        values: '100000+0x30'
+      - series: 'quantsage_pg_connections'
+        values: '90+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "备份超过 26 小时未更新"
+              description: "检查 launchd 任务与备份目标；无 manifest 时指标为 1e9。"
+      - eval_time: 20m
+        alertname: PgConnectionsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "PG 客户端连接数超过 80"
+              description: "max_connections=120；检查连接泄漏或 Langfuse 占用。"
+
+  # 比率型：请求与降级各 10/min ⇒ 降级率 1.0 > 0.5
+  - interval: 1m
+    input_series:
+      - series: 'rag_rerank_requests_total{class="interactive"}'
+        values: '0+10x30'
+      - series: 'rag_rerank_degraded_total{class="interactive",reason="queue_full"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RagRerankDegradedHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "RAG 精排降级率超过 50%"
+              description: "服务端 degraded/requests；停 RAG 不产生本告警，只会在 up{job=\"quantsage-rag\"}=0 里看到。"

@@ -2,9 +2,9 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.18）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.11** ｜ 2026-10-30 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）规格已定，待执行**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）。
+> 版本 **v3.13** ｜ 2026-10-30 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（6 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）。
 >
-> 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8，已交付）、P4-S8 可观测性与缓存（§9，规格待执行）与 P4-S9 数据层热点优化（§10，已交付）**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
+> 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8，已交付）、P4-S8 可观测性与缓存（§9，已交付）与 P4-S9 数据层热点优化（§10，已交付）**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
 > 实测基线：S1–S6 见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；S7 基线见 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
 > P3 SPEC（v2.46）是历史规格；其中“重启不重跑”“多 worker 不受支持”在本文 S2/S5 有明确沿革，**不是静默改口径**。
 
@@ -20,7 +20,7 @@
 | [§6](#6-s5-双-api-worker条件项) | S5 双 API Worker（条件项） |
 | [§7](#7-s6-验证备份与文档收口) | S6 验证、备份与文档收口 |
 | [§8](#8-p4-s7-单机承压升级规格) | P4-S7 单机承压升级（已交付） |
-| [§9](#9-p4-s8-可观测性与缓存规格) | P4-S8 可观测性与缓存（规格，待执行） |
+| [§9](#9-p4-s8-可观测性与缓存规格) | P4-S8 可观测性与缓存（已交付） |
 | [§10](#10-p4-s9-数据层热点优化规格) | P4-S9 数据层热点优化（已交付） |
 | [§11](#11-测试策略) | 测试策略 |
 | [§12](#12-已知边界与不做) | 已知边界与不做 |
@@ -758,6 +758,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ## 9. P4-S8 可观测性与缓存（规格）
 
 > 2026-10-29 拍板：缓存命中率/冷查询与监控告警/备份定时从原 S7 拆出，作为独立的 **P4-S8**（纯数字迭代）。S7 只留 RAG 合批 + worker 池（§8）；S8 不改 S7 的验收，也不把监控当作 HA/SLA。
+> 2026-10-30 订正（v3.12）：停 RAG 不产生降级比率告警（改为过载注入验收）；queue 直方图不走 scrape 时 collector；备份年龄取 manifest mtime；API/RAG 用两个 token 文件；宿主端口 9092/9093。规则数仍为 6 条。
 > 基线：S6 `P4-S6-最终报告.md`；S7 完成后复测 S8 的前置读数。
 > 定位：**可观测性与数据层可见性**——让缓存命中率、冷查询、队列/资源/备份年龄可见并能告警。仍是单机、演练、非 HA。
 
@@ -784,29 +785,29 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 - `quantsage_task_queue_seconds{kind}` Histogram：取件后观察 `started_at - created_at`；buckets 0.25/0.5/1/2.5/5/10/30/60。
 - `quantsage_pg_connections` Gauge：`/metrics` handler 查 `pg_stat_activity`（或池统计），一次一值。
 - `quantsage_host_available_bytes` / `quantsage_host_swap_used_bytes` Gauge：`psutil` 现查，一次一值。
-- `quantsage_backup_age_seconds` Gauge：读 `~/QuantSageBackups/manifests/20*.json` 最新日期；无备份返回一个大值（如 1e9）触发告警。
+- `quantsage_backup_age_seconds` Gauge：取 `~/QuantSageBackups/manifests/20*.json` 中最新一份，年龄按 **mtime** 算（文件名日期只用于选最新；按文件名算会在每日 03:30 备份前固定假报一次）；无备份返回一个大值（如 1e9）触发告警。
 - `rag_rerank_requests_total{class}` Counter（RAG 服务）：`/v1/rerank` 入口计数（成功与过载都算），作为告警降级率的分母；分子只用 `rag_rerank_degraded_total` 的 queue_full/timeout，`unavailable` 由 API 侧记，不进这个比率。
-- **多进程口径**：以上四项（queue / PG / host / backup）用 **scrape 时自定义 collector**（与 `TaskCountsCollector` 同模式：handler 现查 → 设模块值 → `render()` 注册），**不注册进 prometheus multiprocess mmap**；否则 2 个 API worker 会各报一条，或留下死进程的陈旧值。
+- **多进程口径**：PG / host / backup **三个 Gauge** 用 **scrape 时自定义 collector**（与 `TaskCountsCollector` 同模式：handler 现查 → 设模块值 → `render()` 注册），**不注册进 prometheus multiprocess mmap**；否则 2 个 API worker 会各报一条，或留下死进程的陈旧值。**queue 直方图例外**：它在**持锁进程**取件时 observe（只有一个写入者），正常注册 mmap，不做 scrape 时现查——每次 scrape 重算分桶既无数据来源也无意义。
 - RAG 侧沿用 `rag_rerank_degraded_total` / `rag_rerank_wait_seconds` / `rag_rerank_queue_depth`，另加 `rag_rerank_requests_total`；Prometheus 单独 scrape RAG `:8200/metrics`。
 
 #### 9.3.2 鉴权（容器 scrape 的前提）
 
 - `.env` 设 `METRICS_TOKEN`（API）与 `RAG_SERVICE_TOKEN`（RAG）；**不入库、不回显**（`.env.example` 已有注释位）。
 - API `_metrics_allowed` 增加 `Authorization: Bearer <METRICS_TOKEN>` 分支（保留 `X-Metrics-Token`）；RAG `require_auth` 已支持 Bearer。
-- Prometheus 用 `authorization: {type: Bearer, credentials_file: /etc/prometheus/metrics_token}`；token 文件由 `dev.sh` 从环境变量写入 `logs/metrics_token`（gitignore），compose 只读挂载，不在仓库里落明文。
+- Prometheus 用 `authorization: {type: Bearer, credentials_file: ...}`。**两个 token 不能共用一个文件**：API 用 `METRICS_TOKEN`、RAG 用 `RAG_SERVICE_TOKEN`，分别由 `dev.sh` 从环境变量写入 `logs/metrics_token` 与 `logs/rag_token`（gitignore），compose 只读挂载，不在仓库里落明文。
 - 若不想设 token：Prometheus 跑宿主机（回环放行），但这就不在 compose `monitoring` profile 里——二选一，不能既不设 token 又用容器 scrape。
 - **网络前提**：`dev.sh` 的 uvicorn 未显式 `--host`，默认绑 `127.0.0.1`；Docker Desktop 的 `host.docker.internal` 通常可达宿主机回环，但以实测为准。若不通，改为 `--host 0.0.0.0` + token（不裸奔），或 Prometheus 跑宿主机。
 
 #### 9.3.3 compose 与告警规则
 
-- `docker-compose.yml` 新增 `monitoring` profile：`prometheus`（约 150–250MB）+ `alertmanager`（约 30MB）；**默认不启动**，需要时 `docker compose --profile monitoring up -d`；镜像按仓库惯例 pin digest（与 PG/Redis/Qdrant 同）。
+- `docker-compose.yml` 新增 `monitoring` profile：`prometheus`（约 150–250MB）+ `alertmanager`（约 30MB）；**默认不启动**，需要时 `docker compose --profile monitoring up -d`；镜像按仓库惯例 pin digest（与 PG/Redis/Qdrant 同）。宿主端口用 **9092（Prometheus）/ 9093（Alertmanager）**——9090/9091 已被 `observability` profile 的 MinIO 占用。
 - `docker/prometheus/prometheus.yml`：scrape API `host.docker.internal:8000/metrics` 与 RAG `:8200/metrics`；`evaluation_interval: 15s`。
 - 6 条规则（起始值，压测后可调；用实际指标名）：
   1. `histogram_quantile(0.95, sum by (le, kind) (rate(quantsage_task_queue_seconds_bucket[5m]))) > 5` for 10m；
   2. `sum(rate(rag_rerank_degraded_total[5m])) / sum(rate(rag_rerank_requests_total[5m])) > 0.5` for 10m；
   3. `quantsage_pg_connections > 80` for 5m；
   4. `sum(rate(quantsage_http_requests_total{status=~"5.."}[5m])) / sum(rate(quantsage_http_requests_total[5m])) > 0.005` for 5m；
-  5. `quantsage_host_available_bytes < 2e9` 或 `quantsage_host_swap_used_bytes > 基线+1e9` for 10m；
+  5. `quantsage_host_available_bytes < 2e9` 或 `quantsage_host_swap_used_bytes > 1.06e10`（2026-10-30 实测基线 9.61GB + 1GB）for 10m；
   6. `quantsage_backup_age_seconds > 93600`（26h）for 10m。
 - 告警的降级率用**服务端** `degraded_total/requests_total`；SLO 验收用 **harness 客户端**的 `degraded_reason` 口径，两者不混写成同一个数。
 - 规则文件要过 `promtool check rules`；能跑 `promtool test rules` 就加一条规则单测；不能跑则在 `scripts/alert_hook.py` 的单测里覆盖阈值计算。
@@ -826,7 +827,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 #### 9.3.6 监控项验收与回滚
 
 - `/metrics` 在 2 API workers 下每个新指标**一条值**（不是两条），RAG 指标可读。
-- 停 RAG → 降级告警；PG 连接压到阈值 → 告警；伪造旧 manifest → 备份告警；5xx 规则用故障注入或单测。
+- RAG **过载**（`RAG_INTERACTIVE_MAX_QUEUE=0` → 全 `queue_full`）→ 降级告警；停 RAG 只会在 Prometheus 里看到 `up{job="rag"}=0`，**不产生 ratio 告警**（分母在服务端，停采集后是 0/0）。PG 连接压到阈值 → 告警；伪造旧 manifest → 备份告警；队列 / 5xx / 宿主规则用 `promtool test rules` 单测（真实注入成本高或危险）。
 - 回滚：`docker compose --profile monitoring down`；`ALERT_HOOK_ENABLED=false`；launchd `--uninstall`；指标 collector 保留不影响主路径。
 
 ### 9.4 验收与回滚
@@ -864,6 +865,16 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 | 备份 launchd 未装 | S8 启动时单独确认；未装则 `backup_age` 一直是高值，告警可见 |
 | 缓存 L2 默认开关 | 验收时临时开；默认是否改 true 单独拍板 |
 | 角色拆分被误读成 P4-S8 | §9.1 写死：S8 是可观测性/缓存；角色拆分是 P4-S10 及以后 |
+
+### 9.7 交付记录（2026-10-30）
+
+- **缓存实测**：dev 栈 2 worker + `CACHE_ENABLED=true` 一轮 L1 **385** / L2 **13** / miss **2**（合计 **99.5%**；L2 占 L1 未命中 **86.7%**），Redis 2 键 / 1.51MB、键 `qs:cache:v1:<gen>:bars:qfq:...`；`qs:cache_hit_ratio:5m` 压测后 **0.969**；harness bars c=300 cache on/off 中位 **1,656 / 1,714 req/s**（0 失败）。
+- **冷查询**：50 个不同标的顺序读 **39.97 req/s**（p50 18.7ms / p95 37.4ms；S1 38.1 / 24.3 / 38.2）→ **不新增限流/不调闸门**。
+- **指标**：2 worker 下 `quantsage_pg_connections` / `host_available_bytes` / `host_swap_used_bytes` / `backup_age_seconds` 各 **1 条样本**；`quantsage_tasks` 5 条（按状态）；队列直方图在取件时观察。
+- **告警**：`promtool check rules` 7 条通过、`test rules` 通过；真实演练 **RAG 过载**（`RAG_INTERACTIVE_MAX_QUEUE=0`）/ **PG 105 连接** / **伪造旧备份** 三条 firing → resolved，全程落 `logs/alerts.log` 并经 osascript 通知。
+- **备份**：launchd `com.quantsage.backup` 已安装（每日 03:30），kickstart 生成 `20261030.json`，`quantsage_backup_age_seconds` **432s**。
+- **修复**：① RAG `/metrics` 直接调 `require_auth(request)`，FastAPI 不解析 `Header` 默认值，配 token 后永远 401 → 改 `Depends`；② Prometheus 缺 `alerting.alertmanagers`，规则不外发；③ v3.15.1 的 SIGHUP 热加载会把 scrape 目标清空 → 改重启容器（README 已记）；④ `alert_hook.py` 兼容系统 python3.9（`timezone.utc`）。
+- **回滚**：`CACHE_ENABLED=false`、`bash scripts/dev.sh monitoring stop`、`bash scripts/install_backup_job.sh --uninstall`；指标 collector 保留不影响业务。
 
 ---
 
@@ -1056,6 +1067,8 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-30 | v3.13 | S8 交付并验收：新增队列 p95 直方图、PG 连接 / 宿主内存 / swap / 备份年龄三个 scrape 快照 Gauge（2 worker 各一条）、`rag_rerank_requests_total` 分母、`/metrics` Bearer、`QS_BACKUP_DIR`；`monitoring` profile（Prometheus :9092 + Alertmanager :9093）+ 6 条规则 + 本地 `alert_hook`；备份 launchd 已装并 kickstart。实测：缓存 L1 385 / L2 13 / miss 2（**99.5%**）、`qs:cache_hit_ratio:5m` 0.969、bars c300 cache on/off 1,656/1,714 req/s、冷查询 39.97 req/s（不新增限流）；RAG 过载 / PG 105 / 旧备份三条真实告警 firing→resolved。修复 RAG `/metrics` 配 token 后 401、Prometheus 缺 `alerting` 目标、SIGHUP 热加载清空 scrape 目标。 |
+| 2026-10-30 | v3.12 | S8 执行前订正 5 处口径：①「停 RAG → 降级告警」不成立（服务端比率停采集后 0/0，`unavailable` 按 §9.3.3 不进比率）→ 改为 RAG 过载注入验收，停 RAG 只记录 `up{job="rag"}=0`；②queue 直方图在持锁进程取件时 observe、正常走 mmap，只有 PG/host/backup 三个 Gauge 用 scrape 时 collector；③备份年龄取最新 manifest 的 mtime（文件名只用于选最新），避免每日备份前假报；④API/RAG 用 `logs/metrics_token` 与 `logs/rag_token` 两个文件（`METRICS_TOKEN` ≠ `RAG_SERVICE_TOKEN`）；⑤Prometheus/Alertmanager 宿主端口 9092/9093（9090/9091 被 MinIO 占用），规则 5 基线字面量 `1.06e10`（实测 9.61GB + 1GB）。保持 6 条规则；备份 launchd 本次安装并 kickstart。 |
 | 2026-10-30 | v3.11 | S9 交付并验收：`cached_st_symbols`（复用 `cached_primary_names` 的文件戳+代际缓存）、`market_benchmark._daily_rows` 与 `window_digest` 走 `cache.through`（digest 键额外带窗口分片文件戳）、`BT_DATA_CACHE_ENABLED`（默认 true）、执行体 `progress+finish` 合并。实测（2 API workers，harness :8100）：20 回测 queue p95 **503ms**（3 轮中位；5 轮 505ms；S7 1,312ms）、run p50 **86ms**、bars **1,660 req/s / p95 240ms**（3 次中位）；真数据黄金对照 metrics/digest/equity/trades 四项全等。**S9 达标，S7 的 ≤1s 复验成立**。测试：新增 5 个缓存用例 + finish 进度合并单测/真库用例；离线/集成定向绿。 |
 | 2026-10-30 | v3.10 | 写入 P4-S9 数据层热点优化规格（§10）：门禁实测 `_limit_bands` 28.7ms（**字典 21.5** + st 1.4 + raw 3.3 + band 循环 2.2）、engine 32.4、`market_benchmark` 35.2、`window_digest` 22.4；GIL 地板 1.22s → 字典缓存后 **0.79s**。范围：`cached_st_symbols`（复用 `cached_primary_names` 的文件戳+代际缓存）、benchmark daily rows、window_digest 三个缓存 + `BT_DATA_CACHE_ENABLED` 开关 + 执行体 `progress+finish` 合并。S7 worker 池实测 queue p95 **1,312ms**（3 道中位；4 道 1,401ms 无改善）、bars **1,583/236ms**；S7 的 ≤1s 由 S9 复验，S7 收口口径待拍板（2026-10-30「之后再商榷」）。角色拆分顺延 **P4-S10 及以后**；测试策略/边界/变更记录顺延 §11/§12/§13。 |
 | 2026-10-29 | v3.9 | S7 执行：RAG 合批原型门禁实测（真 MPS / 50 篇，N=2/4/5/8 speedup **1.13–1.26×**、`5×50` **4.65s**）全部未过；拍板 **A：不合批**，RAG 项只交付 SLO 测量，不宣称降级率 ≤50%；S7 范围收窄为 worker 池 + SLO 记录，估 **4–5 天**。worker 池实现结果待回填。 |

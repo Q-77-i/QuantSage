@@ -47,6 +47,8 @@ dependencies = [
     "torch==2.14.1",
     "redis==7.1.0",
     "prometheus-client~=0.26",
+    # S8：宿主内存/swap 指标。之前只是传递依赖，直接 import 必须显式声明
+    "psutil~=7.2",
 ]
 
 [dependency-groups]

@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
 from prometheus_client import (
@@ -71,6 +74,16 @@ CACHE_MISSES = Counter(
     "Data-layer cache misses (producer had to run).",
 )
 
+#: 排队时长（S8）：取件时观察 `started_at - created_at`。**只有持锁进程写**，
+#: 所以正常注册进 registry / mmap 即可，不做 scrape 时自定义 collector。
+#: 口径注意：重排任务的 `created_at` 是首次创建时间，重试会把排队时长放大。
+TASK_QUEUE_SECONDS = Histogram(
+    "quantsage_task_queue_seconds",
+    "Time from task creation to claim (queue latency).",
+    ["kind"],
+    buckets=(0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
+)
+
 #: 共享限流降级次数。coord 不可用/熔断时，进程内额度按 floor(capacity/N) 收紧。
 RATE_LIMIT_DEGRADED = Counter(
     "quantsage_rate_limit_degraded_total",
@@ -108,9 +121,84 @@ class TaskCountsCollector:
         yield family
 
 
+#: `/metrics` handler 在 render 之前写入的 scrape 快照（S8）。
+#: **只放「一次 scrape 只该有一条值」的 Gauge**：PG 连接、宿主内存/swap、备份年龄。
+#: 计数/直方图不走这里——多进程下它们本就该按 mmap 聚合。
+_snapshot: dict[str, float] = {}
+_SNAPSHOT_LOCK = threading.Lock()
+
+#: key → (指标名, help)。键存在但没算出来时**不产出序列**，避免把「读不到」写成 0 触发假警。
+_SNAPSHOT_GAUGES = {
+    "pg_connections": (
+        "quantsage_pg_connections",
+        "PostgreSQL client backends (cluster-wide).",
+    ),
+    "host_available_bytes": (
+        "quantsage_host_available_bytes",
+        "Host available memory in bytes (psutil).",
+    ),
+    "host_swap_used_bytes": (
+        "quantsage_host_swap_used_bytes",
+        "Host swap in use in bytes (psutil).",
+    ),
+    "backup_age_seconds": (
+        "quantsage_backup_age_seconds",
+        "Seconds since the newest backup manifest was written.",
+    ),
+}
+
+
+def set_snapshot(values: dict[str, float]) -> None:
+    """替换本进程的 scrape 快照（`/metrics` handler 每次 render 前调用）。"""
+    with _SNAPSHOT_LOCK:
+        _snapshot.clear()
+        _snapshot.update(values)
+
+
+def host_metrics() -> dict[str, float]:
+    """宿主内存/swap。`psutil` 是直接依赖（S8 起写进 pyproject）。"""
+    import psutil
+
+    memory = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    return {
+        "host_available_bytes": float(memory.available),
+        "host_swap_used_bytes": float(swap.used),
+    }
+
+
+def backup_age_seconds(backup_dir: Path | str, *, now: float | None = None) -> float:
+    """最新备份 manifest 的年龄（秒）。**按 mtime 算**——文件名日期只用于选最新。
+
+    按文件名算会在每日 03:30 备份前固定越过 26h，天天假报一次（v3.12 订正）。
+    没有 manifest / 目录不可读 → 1e9（触发 `BackupStale`）。
+    """
+    try:
+        manifests = sorted((Path(backup_dir) / "manifests").glob("20*.json"))
+        mtime = manifests[-1].stat().st_mtime
+    except (OSError, IndexError):
+        return 1e9
+    return max(0.0, (time.time() if now is None else now) - mtime)
+
+
+class SnapshotCollector:
+    """把 scrape 快照翻成 Gauge，每个指标一次 scrape 只产出一份。"""
+
+    def collect(self) -> Any:
+        with _SNAPSHOT_LOCK:
+            values = dict(_snapshot)
+        for key, (name, help_text) in _SNAPSHOT_GAUGES.items():
+            if key not in values:
+                continue
+            family = GaugeMetricFamily(name, help_text)
+            family.add_metric([], float(values[key]))
+            yield family
+
+
 if not MULTIPROC:
-    # 单进程：默认 registry 里已经有各指标；任务计数用自定义 collector 替代 Gauge。
+    # 单进程：默认 registry 里已经有各指标；任务计数与 scrape 快照用自定义 collector。
     REGISTRY.register(TaskCountsCollector())
+    REGISTRY.register(SnapshotCollector())
 
 
 def render() -> bytes:
@@ -120,6 +208,7 @@ def render() -> bytes:
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
     registry.register(TaskCountsCollector())
+    registry.register(SnapshotCollector())
     return generate_latest(registry)
 
 

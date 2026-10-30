@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,11 @@ def metric_value(text: str, prefix: str) -> float:
         if line.startswith(prefix):
             return float(line.rsplit(" ", 1)[-1])
     return 0.0
+
+
+def sample_count(text: str, name: str) -> int:
+    """只数样本行——`# HELP` / `# TYPE` 也含指标名，不能直接 `str.count`。"""
+    return sum(1 for line in text.splitlines() if line.startswith(name + " "))
 
 
 def test_metrics_endpoint_exposes_http_request_id_and_counters() -> None:
@@ -122,5 +129,79 @@ def test_metrics_requires_token_when_configured(
             "/metrics", headers={"X-Metrics-Token": "metrics-secret-value"}
         )
         assert allowed.status_code == 200
+        # S8：容器 scrape 走 Bearer；旧头保留
+        bearer = client.get(
+            "/metrics", headers={"Authorization": "Bearer metrics-secret-value"}
+        )
+        assert bearer.status_code == 200
+        assert (
+            client.get(
+                "/metrics", headers={"Authorization": "Bearer wrong-value"}
+            ).status_code
+            == 403
+        )
     finally:
         get_settings.cache_clear()
+
+
+def test_snapshot_gauges_are_rendered_once() -> None:
+    """S8：一次 scrape 每个 Gauge 只出一条（多进程聚合时也不能翻倍）。"""
+    metrics.set_snapshot(
+        {
+            "pg_connections": 12,
+            "host_available_bytes": 5e9,
+            "host_swap_used_bytes": 9.6e9,
+            "backup_age_seconds": 3600,
+        }
+    )
+    try:
+        text = metrics.render().decode()
+    finally:
+        metrics.set_snapshot({})
+    for name in (
+        "quantsage_pg_connections",
+        "quantsage_host_available_bytes",
+        "quantsage_host_swap_used_bytes",
+        "quantsage_backup_age_seconds",
+    ):
+        assert sample_count(text, name) == 1
+
+
+def test_backup_age_uses_the_manifest_mtime(tmp_path: Path) -> None:
+    """S8：年龄取 mtime，不取文件名日期（否则每日 03:30 前必假报）。"""
+    assert metrics.backup_age_seconds(tmp_path) == 1e9
+
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    manifest = manifests / "20260101.json"
+    manifest.write_text("{}", encoding="utf-8")
+    old = 1_700_000_000.0
+    os.utime(manifest, (old, old))
+    assert metrics.backup_age_seconds(tmp_path, now=old + 3600) == pytest.approx(3600)
+
+
+def test_metrics_endpoint_exposes_host_and_backup_gauges() -> None:
+    text = client.get("/metrics").text
+    for name in (
+        "quantsage_host_available_bytes",
+        "quantsage_host_swap_used_bytes",
+        "quantsage_backup_age_seconds",
+    ):
+        assert sample_count(text, name) == 1
+
+
+def test_queue_histogram_is_observed_on_claim() -> None:
+    from app.tasks.worker import _observe_queue_wait
+
+    prefix = 'quantsage_task_queue_seconds_count{kind="probe"}'
+    before = metric_value(metrics.render().decode(), prefix)
+    started = datetime.now(UTC)
+    _observe_queue_wait(
+        {
+            "kind": "probe",
+            "created_at": started - timedelta(seconds=2),
+            "started_at": started,
+        }
+    )
+    after = metric_value(metrics.render().decode(), prefix)
+    assert after == before + 1

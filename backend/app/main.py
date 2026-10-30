@@ -563,24 +563,38 @@ async def ready(response: Response) -> dict:
 
 
 def _metrics_allowed(request: Request) -> bool:
-    """配置了 `METRICS_TOKEN` 就验头；未配置只放行回环客户端（本地 scrape / 测试）。"""
+    """配置了 `METRICS_TOKEN` 就验头（`X-Metrics-Token` 或 Bearer）；未配置只放行回环。"""
     token = get_settings().metrics_token.get_secret_value()
     if token:
         supplied = request.headers.get("x-metrics-token", "")
-        return hmac.compare_digest(supplied, token)
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        return hmac.compare_digest(supplied, token) or hmac.compare_digest(bearer, token)
     host = request.client.host if request.client is not None else ""
     return host in {"127.0.0.1", "::1", "testclient"}
 
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics(request: Request) -> Response:
-    """Prometheus 文本端点（E7e）。任务队列是**scrape 时现查**，不靠进程内缓存猜。
+    """Prometheus 文本端点（E7e / S8）。任务队列与系统快照是**scrape 时现查**。
 
-    访问控制：`METRICS_TOKEN` 存在时要求 `X-Metrics-Token`；否则只允许回环地址。
+    访问控制：`METRICS_TOKEN` 存在时要求 `X-Metrics-Token` 或 Bearer；否则只允许回环。
     只暴露路由模板 / 状态 / 计数，不含用户数据。LLM 的 trace/token/成本仍在 Langfuse。
     """
     if not _metrics_allowed(request):
         raise HTTPException(status_code=403, detail="metrics 未授权")
+    settings = get_settings()
+    snapshot: dict[str, float] = {}
+    try:
+        snapshot["backup_age_seconds"] = metrics_mod.backup_age_seconds(
+            settings.qs_backup_dir
+        )
+    except Exception as exc:  # noqa: BLE001 —— 指标算不出来只跳过一个序列
+        log.warning("备份年龄指标读取失败（%s），本次跳过", type(exc).__name__)
+    try:
+        snapshot.update(metrics_mod.host_metrics())
+    except Exception as exc:  # noqa: BLE001 —— psutil 失败不该让整个 scrape 失败
+        log.warning("宿主内存指标读取失败（%s），本次跳过", type(exc).__name__)
     db = getattr(app.state, "db", None)
     if db is not None:
         try:
@@ -589,4 +603,9 @@ async def metrics(request: Request) -> Response:
             log.warning("任务队列指标读取失败（%s），本次跳过", type(exc).__name__)
         else:
             metrics_mod.set_task_counts(counts)
+        try:
+            snapshot["pg_connections"] = float(await db.pg_connection_count())
+        except Exception as exc:  # noqa: BLE001 —— 同上
+            log.warning("PG 连接数指标读取失败（%s），本次跳过", type(exc).__name__)
+    metrics_mod.set_snapshot(snapshot)
     return Response(content=metrics_mod.render(), media_type=CONTENT_TYPE_LATEST)
