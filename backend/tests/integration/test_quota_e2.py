@@ -174,7 +174,43 @@ def test_gauge_admits_exactly_the_limit_under_concurrency(real_stack: TestClient
             total = conn.execute(
                 "SELECT count(*) FROM tasks WHERE user_id = %s", (uid,)
             ).fetchone()[0]
+            slots = sorted(
+                row[0]
+                for row in conn.execute(
+                    "SELECT quota_slot FROM tasks WHERE user_id = %s", (uid,)
+                )
+            )
         assert total == limit
+        assert slots == list(range(limit))  # 槽位 0..limit-1，一个不多一个不少
+    finally:
+        purge_rows([address], [])
+
+
+def test_slot_is_released_when_task_reaches_terminal(real_stack: TestClient) -> None:
+    """槽位由部分唯一索引维护：任务进终态即释放，不需要减计数。"""
+    address = email("slot-release")
+    sign_up(address)
+    uid = user_id_of(address)
+
+    async def create() -> dict | None:
+        async with open_pool(get_settings().postgres_dsn) as pool:
+            return await Database(pool).create_task(
+                str(uuid.uuid4()),
+                uid,
+                "quota-probe",
+                {"symbol": "600519"},
+                active_limit=1,
+            )
+
+    try:
+        first = asyncio.run(create())
+        assert first is not None
+        assert asyncio.run(create()) is None  # 唯一槽被占用
+
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = %s", (first["id"],))
+
+        assert asyncio.run(create()) is not None  # 终态释放槽位
     finally:
         purge_rows([address], [])
 
