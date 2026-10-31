@@ -139,7 +139,8 @@ PG 用 `pg_dump -Fc`（`quantsage` + `langfuse`，排除测试库），Qdrant �
 cd backend && uv run ruff check .                              # lint
 cd backend && uv run pytest                                    # 离线
 cd backend && uv run pytest --cov=app --cov-fail-under=88      # 离线 + 覆盖率门槛（CI 口径）
-cd backend && uv run pytest -m integration                     # 集成（需容器与真实密钥）
+cd backend && uv run python scripts/run_integration.py         # 集成全量（按文件逐进程，需容器与真实密钥）
+cd backend && uv run pytest -m integration                     # 集成定向（单文件/单用例）
 cd frontend && pnpm test && pnpm typecheck && pnpm lint
 cd backend && uv run python scripts/build_deep_eval.py --limit 3   # 深研报 rubric（手动轨，真模型/真数据）
 ```
@@ -304,7 +305,7 @@ cd backend && uv run python scripts/verify_quantsage_mcp.py --evidence ../logs/e
 - **行情源侧的节奏不稳定，且分两条质量轨道**：`cn-daily` 按年整片发布、没有日增量可拉，刷新做的是「便宜探测 → 按需整片重下」。平台有 **canonical（complete）** 与 **available** 两条轨道——我们固定用 **canonical**（宁慢不脏：available 快但 `quality_status=partial`，有缺口，且平台明言 `fill_or_forward_fill_allowed=false`）。实测 canonical 的滞后**随发布而变**：10-12 缺当天（T+1），10-13 仍停在 10-09（连缺两个交易日）。**对外别承诺「落后一天」**——它是观测值，不是契约。事件归档按自然日发布、近期还停更过，两者本来就可能不同日，首页因此**并列显示两个「截至」**（悬停可看源侧止于哪天）
 - **无价 bar 不进定价路径**：数据源用「整行价量为空」表示某天没观测到成交，`bars()` 只返回四价齐全的行——**无价即无价，不是零价**
 - **定时任务（ETL / 行情刷新 / 数据体检 / 决策结算）默认关**：可显式打开或走 `POST /api/v1/etl/run` 手动触发（**需要 admin 账号**）；**定时任务只在后台主实例运行**——同一库的第二个进程只服务 HTTP。归档保留期是滚动的，**断供超过 3 个月那段就永久拿不到了**
-- **冻结交易日历止于 2026-12-31**：上游 exchange-calendars 目前没有 2027 假期数据（2026-10-17 复查最新为 4.13.2），X1 体检按 90 天告警。到期前等上游更新后重生成；**不用工作日近似硬扩**（春节 / 调休会静默算错交易日）
+- **冻结交易日历止于 2026-12-31**：上游 exchange-calendars 最新仍是 4.13.2（2026-10-31 复查：XSHG 止于 2026-12-31，上游 master 亦无 2027 数据），X1 体检按 90 天告警。到期前等上游收录 2027 假期后升级重生成；**不用工作日近似硬扩**（春节 / 调休会静默算错交易日）
 
 ### 回测与模拟盘
 

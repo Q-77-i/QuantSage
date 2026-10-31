@@ -9,6 +9,7 @@ M1c 起回测与自选股也要登录，`real_stack` / `sign_up` 被三个文件
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -27,8 +28,16 @@ JWT_SECRET = "integration-secret-not-a-real-key-0123456789"
 
 @pytest.fixture
 def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """给集成栈一个确定的密钥：环境变量优先于 `.env`，结果与本机配置无关。"""
+    """给集成栈一个确定的密钥：环境变量优先于 `.env`，结果与本机配置无关。
+
+    默认关掉 Langfuse：本机常配了 key 但没起 observability，每个 app lifespan 的
+    OTel exporter 都会向 `127.0.0.1:3000` 重试导出，累积线程并拖慢 shutdown
+    （单进程全量跑到约 20 次 lifespan 后卡锁的嫌疑之一）。需要 trace 的用例显式
+    打开（`test_chat_t3::test_langfuse_receives_trace`）。
+    """
     monkeypatch.setenv("JWT_SECRET", JWT_SECRET)
+    if "LANGFUSE_TRACING_ENABLED" not in os.environ:
+        monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

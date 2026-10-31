@@ -35,6 +35,15 @@ pytestmark = pytest.mark.integration
 QUESTION = "贵州茅台最近行情怎么样？"
 
 
+@pytest.fixture
+def langfuse_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本用例显式开 tracing；其余集成用例默认关闭（见 integration/conftest.py）。"""
+    monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 async def _assemble(saver):
     """按与生产一致的顺序装配（工具 → 模型 → 图）。"""
     tools = [query_market_bars]
@@ -147,7 +156,7 @@ def test_chat_endpoint_streams_sse(monkeypatch: pytest.MonkeyPatch) -> None:
     purge_rows([email], [thread_id])
 
 
-async def test_langfuse_receives_trace() -> None:
+async def test_langfuse_receives_trace(langfuse_env: None) -> None:
     """SPEC §6 验收：Langfuse 能看到完整 trace（含工具调用与成本）。
 
     这条同时守住「Settings 不进 os.environ」那个静默失败——handler 一旦退化成
