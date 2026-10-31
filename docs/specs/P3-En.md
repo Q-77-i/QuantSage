@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.51 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）；追加 P2a/P2b：任务 SSE 连接闸门/退避、resume 限流、覆盖率 per-module 与 promtool 进 CI（§2.8/§5.4/§7.3/§7.5/§7.8）；追加 P2c：覆盖率脚本落地、T7 NULL 槽位回填与 T8 settle_all_accounts 回归。
+> 版本 v2.52 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）；追加 P2a/P2b：任务 SSE 连接闸门/退避、resume 限流、覆盖率 per-module 与 promtool 进 CI（§2.8/§5.4/§7.3/§7.5/§7.8）；追加 P2c：覆盖率脚本落地、T7 NULL 槽位回填与 T8 settle_all_accounts 回归；追加 P2 收尾：`quota.enforce` 只保留 agent_calls、CI 权限/超时/SHA 固定、全量集成基线（§3.2/§7.1/§7.8）。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -305,6 +305,8 @@ RETURNING used
 ### 3.2 挂载点与顺序
 
 **Agent 配额是端点内的显式调用，不是依赖**（实施期收敛，见 §11 v2.22 落地记）：`core/quota.py::enforce(db, user, metric)` 在三个 LLM 端点各调一次（chat / research create / reports）；**在飞任务配额不在 `enforce` 里**——它在 `idempotency.create_task` 的插入语句里判（槽位 + 在飞数守卫，见 §3.1）。**为什么不做成 `limit(bucket)` 那样的依赖**——依赖跑在 handler 体之前，既会挡住**幂等重放**（`POST /backtest` 的重复提交是在 handler 里短路的：它不建任务，也就不该被配额挡），也会跑在**请求体校验之前**（非法请求该拿 422，而不是配额话术）。
+
+**2026-10-31 P2 收尾**：`enforce` 的 `METRIC_ACTIVE_TASKS` 实现已删除——它没有调用方，留着会与槽位准入形成两套逻辑。`METRIC_ACTIVE_TASKS` 常量仍用于 `quota_rejections` 与 `active_task_limit`；误调 `enforce(..., METRIC_ACTIVE_TASKS)` 直接抛 `ValueError`，提示走槽位准入。`db_tasks.count_active_tasks` 同步删除；admin 视图仍用同口径的 `count(*)` 子查询，不受影响。
 
 位置规则一句话：**「这个请求确定要被服务」的那一刻**——客户端错误（401/404/422）已排除、服务已就绪之后，任何 LLM 调用或入队之前。
 
@@ -966,6 +968,8 @@ CREATE TABLE IF NOT EXISTS decision_audit (
 | `prometheus` | `docker run … promtool check/test rules` | P2 T12；规则不在任何自动闸门内是审计缺口 |
 | `audit` | 后端 `uv export --no-hashes …` → `pip-audit -r`；前端 `pnpm audit --prod` | §7.4 |
 
+**2026-10-31 P2 收尾（O15）**：workflow 级加 `permissions: contents: read`；四个 job 各设 `timeout-minutes`（backend 30 / frontend 20 / prometheus 10 / audit 15）；`actions/checkout`、`astral-sh/setup-uv`、`pnpm/action-setup`、`actions/setup-node` 钉完整 commit SHA（注释保留版本号）；`pip-audit` 钉版本；checkout 加 `persist-credentials: false`。可变大版本标签不再作为唯一 pin。
+
 **索引必须显式覆盖**：`backend/pyproject.toml` 的 `[[tool.uv.index]] default = true` 钉在**清华镜像**——GitHub runner 在境外，拉清华源很慢。**不动本机配置**（本机需要清华源）。
 
 ⚠ **订正（2026-10-17）：`UV_DEFAULT_INDEX` 覆盖不了 `--frozen` 的下载。** 本节初稿写「CI 里用 `--default-index` / `UV_DEFAULT_INDEX` 覆盖」——**这个机制只影响解析，不影响下载**：`uv sync --frozen` 用的是 `uv.lock` 里**逐包记下的 URL**（实测锁文件里 **1206 处** tsinghua 引用，其中 1015 处是 wheel/sdist 的 `/packages/…` 地址）。⇒ CI 一直是**靠清华镜像在装依赖**，镜像一抖 CI 就红——2026-10-17 这么红了一次（`nvidia-cufile` 403，与当次提交无关，重跑即过）。
@@ -1020,34 +1024,34 @@ uv run pytest -q --cov=app --cov-branch --cov-report=json:coverage.json --cov-re
 uv run python scripts/check_coverage.py coverage.json
 ```
 
-**当前基线（2026-10-31 P2 复测，1,932 passed / 155 deselected）**：
+**当前基线（2026-10-31 P2 收尾复测，1,933 passed / 155 deselected）**：
 
 | 口径 | 行覆盖 | 分支覆盖 | 综合 |
 |---|---|---|---|
-| 全局 | **88.98%**（14,171 语句 / 1,561 缺） | 79.71%（3,386 分支 / 687 缺） | 87.20% |
+| 全局 | **89.34%**（14,161 语句 / 1,509 缺） | 80.13%（3,382 分支 / 672 缺） | 87.57% |
 
-- 全局闸门仍是**行覆盖 88%**，不把 88 改成 86：`--cov-branch` 用于报告与模块可见度，`check_coverage.py` 按 `covered_lines/num_statements` 判 88；当前余量约 0.98 点（约 139 条语句）。
+- 全局闸门仍是**行覆盖 88%**，不把 88 改成 86：`--cov-branch` 用于报告与模块可见度，`check_coverage.py` 按 `covered_lines/num_statements` 判 88；当前余量约 1.34 点（约 190 条语句）。
 - 历史定标（2026-10-15，1,487 项 / 10,695 语句 / 89.36%）保留在变更记录，不作当前读数；它仍是「为什么门槛是 88 而不是 89」的依据。
 
 **per-module 底线（P2 新增；先 ratchet，不冒充质量读数）**：
 
 | 模块 | 当前行覆盖 | 底线 |
 |---|---:|---:|
-| `tasks/worker.py` | 77.41% | 75 |
+| `tasks/worker.py` | 84.81% | 75 |
 | `tasks/stream.py` | 80.14% | 78 |
-| `core/quota.py` | 85.00% | 83 |
+| `core/quota.py` | 98.11% | 83 |
 | `core/coord.py` | 85.71% | 83 |
 | `core/metrics.py` | 75.91% | 72 |
 | `api/tasks.py` | 92.31% | 90 |
 | `api/chat.py` | 87.32% | 86 |
 | `api/research.py` | 85.86% | 83 |
-| `core/db_tasks.py` | 42.66% | 40 |
-| `core/db_research.py` | 30.36% | 28 |
+| `core/db_tasks.py` | 48.57% | 40 |
+| `core/db_research.py` | 33.93% | 28 |
 | `core/db_paper.py` | 33.33% | 31 |
 | `core/db_chat.py` | 57.14% | 55 |
-| `memory/scheduler.py` | 80.00% | 70 |
+| `memory/scheduler.py` | 85.00% | 70 |
 
-- **db_* 低是结构性的**：离线套件走 `FakeDatabase`，真 SQL 只在定向集成里覆盖；底线是 ratchet（防再降），不是「这些模块质量达标」。T8 `settle_all_accounts` 已把 scheduler 拉到 80%，底线随之上调到 70；db_* 的覆盖由真库集成负责，不靠离线假测试凑。
+- **db_* 低是结构性的**：离线套件走 `FakeDatabase`，真 SQL 只在定向集成里覆盖；底线是 ratchet（防再降），不是「这些模块质量达标」。T8 `settle_all_accounts` 已把 scheduler 拉到 85%，底线随之上调到 70；db_* 的覆盖由真库集成负责，不靠离线假测试凑。
 - 分支覆盖先只报告不设闸门；等 P2 的新测试稳定后再决定是否把分支纳入。
 - 改任何底线等于改闸门宽度，须在 SPEC 留痕。
 
@@ -1059,7 +1063,7 @@ uv run python scripts/check_coverage.py coverage.json
 
 **只覆盖 `app/`**：`tests/`、`scripts/` 不计入。`scripts/` 下的取证脚本（`drill_reliability.py` / `verify_quantsage_mcp.py` 等）本就属**非 pytest 验收轨**，不计覆盖率。
 
-**默认不加进 `addopts`**：本地日常跑测试不必每次付插桩的代价，要看覆盖率显式传 `--cov=app`。**平台前提**：本机读数与 CI(Linux) 可比——离线套件当前 **1,932 项**、无平台条件跳过，且 `app/` 全仓仅一处 `sys.platform` 分支、在恒 0% 的子进程 worker 里。**CI 首跑后核对实际读数，若与本机差 >1 点再回来调门槛**。
+**默认不加进 `addopts`**：本地日常跑测试不必每次付插桩的代价，要看覆盖率显式传 `--cov=app`。**平台前提**：本机读数与 CI(Linux) 可比——离线套件当前 **1,933 项**、无平台条件跳过，且 `app/` 全仓仅一处 `sys.platform` 分支、在恒 0% 的子进程 worker 里。**CI 首跑后核对实际读数，若与本机差 >1 点再回来调门槛**。
 
 **前端覆盖率不做**：`vitest.config.ts` 的 `include` 锁死在 `lib/**/*.test.ts`，覆盖面本就很窄；且 PRD 只要求「**pytest** 覆盖率门槛」。
 
@@ -1083,7 +1087,7 @@ uv run python scripts/check_coverage.py coverage.json
 
 | # | 断言 | 落点 |
 |---|---|---|
-| ① | 后端离线套件 **1,932 项** | `pytest`（含 E4 的 **12 条故障注入矩阵** §5.7、PIT 单测、注入边界用例 §8.5） |
+| ① | 后端离线套件 **1,933 项** | `pytest`（含 E4 的 **12 条故障注入矩阵** §5.7、PIT 单测、注入边界用例 §8.5） |
 | ② | RAG 指标公式 | `tests/test_rag_evaluate.py`（DCG/NDCG@k/MRR/Recall 的手算样例） |
 | ③ | RAG 离线管线 | `tests/test_rag_retrieve.py`（内存向量库替身，**PIT 硬过滤是主角**） |
 | ④ | 覆盖率闸门：全局**行覆盖 88%** + per-module 底线（§7.3；P2 起 `--cov-branch` 报告、脚本判定） | §7.3 |
@@ -1156,6 +1160,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 ### 7.8 已知边界（如实）
 
 - **CI 绿 ≠ 全绿**：CI 跑离线套件 + **配额/队列定向集成**（Postgres service，`tests/integration/test_quota_e2.py`）+ **Prometheus 规则 promtool 检查/单测**（P2）；其余集成（paper / research / 真实 `data/`）、真语料评测集读数、四幕演练、MCP 握手**仍不在 CI 里**——它们要真容器、真数据、真密钥（`/data/` 2.6GB 不进 Git）。当前集成总数 **155**（`pytest --collect-only -m integration`），CI 注释不再写死 114。这是单机形态的必然，不是遗漏。
+- **2026-10-31 全量集成基线（P2 收尾）**：按文件/模块逐进程（32 个 `tests/integration/` 文件 + 3 个根目录集成标记文件）跑完 155 项：**153 passed / 1 failed / 1 skipped**。失败项 `test_data_health_reports_no_error_on_real_data` 是真实语料缺口（窗口 2026-07-07→10-25；交易日缺口 6 天：10-09、10-12..10-16；自然日缺口 4 天：10-10/11/17/18），不是代码回归；跳过项 `test_langfuse_receives_trace` 因本机未启 observability（Docker VM 7.7GB < 16GB 前提），测试在服务不可达时明确 skip。单进程 `pytest -m integration` 在约 20 次 lifespan 后卡在 `test_account_report_unique_index_is_enforced` 的启动处（真实 MCP/Langfuse 会话累积的测试隔离问题），故本轮按文件隔离取证；修复另开。
 - **「离线」按维度分别成立**：不连外部服务 ≠ 不读本地数据。离线轨已做到**不读 `data/`**（§7.10 的订正），但这条性质**靠纪律维持**——新写用例若在模块级或夹具外读真实数据，会立刻在 CI 上变红。
 - **「离线」仍有残余缺口（E7b 覆盖率对比查出来的，登记为已知债）**：同一份用例在本机（有 Postgres / `data/` / Langfuse）与 CI（裸环境）走的是**不同的代码路径**——本机多覆盖 221 行（角色取数主体、`init_schema`、lifespan 的「库可用」分支），CI 多覆盖 17 行（连库失败与未配置的降级分支）。**两端各自只验了半边**，全绿不等于都把两条路径验了。修复方向是把相关用例显式喂合成数据/假服务（独立一块，未排期）；在此之前，**覆盖率读数要按环境读，别当唯一事实**（§7.3 的逐行明细）。
 - **覆盖率只覆盖离线可达的 `app/`**：懒加载路径（真实编码器/精排器）、需要真库的分支测不到，会拉低数字——如实呈现，不为凑数写假测试。
@@ -1166,7 +1171,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 
 ### 7.9 验收口径
 
-1. **CI 真跑绿**：三个 job 在 GitHub Actions 上全绿——**已达成**（2026-10-15 第三跑 `38741094527`，总 394 秒；本机 `gh` 已登录，可直接读 `gh run view --log-failed`）。
+1. **CI 真跑绿**：四个 job 在 GitHub Actions 上全绿——2026-10-15 三 job 首绿（run `38741094527`，总 394 秒）；P2c 起四 job（增 `prometheus`），四 job 同绿见 §11 v2.51。本机 `gh` 已登录，可直接读 `gh run view --log-failed`。
 2. **ruff**：`uv run ruff check .` 退出码 0；`archive.py` 的 F821 已修；模板排除与 B008 忽略各有注释写明依据。
 3. **覆盖率**：`fail_under` 有实测基线支撑（CI **89.36%** / 本机 90.22%，按前者定标 ⇒ 门槛 **88**），读数与分层写进 §7.3——**已达成**；**CI 首跑后已按实际读数重新定标**（v2.19），两端差异的性质与排查手段见 §7.3。
 4. **审计**：两个 job 在 CI 里真跑；例外清单每条带理由。
@@ -1618,7 +1623,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 | E1 任务与接缝 | `test_tasks_api.py`（提交 202 / 轮询终态 / 404 / 同步 422 / 取消语义）、`test_task_worker.py`（池化启动参数 / 失败不落 run / 取件前取消 / running 扫成 interrupted）、`test_tasks_stream.py`（总线三时序 / 事件流三态 / P2 每用户第 4 条 429 / 断连释放 / 无新格退避 1→5s）、`test_optimize_api.py`（202 + 冻结材料 / 逐格进度 / 协作中止不落库）；离线不起 worker，用 `run_once(db)` 驱动；接缝用例 patch `core.llm.complete` / `ask_once` 证明单点注入。 |
 | E4 可靠性 | `test_reliability.py`（分类 / 退避与 `Retry-After` / 熔断三态 / 令牌桶，假时钟）、`test_llm_policy.py`（重试后成功 / 降级换档 / 4xx 与取消不重试 / 熔断后不碰上游 / 实际模型回执）、`test_rate_limit.py`（五桶：`llm-chat` / `llm-research` / `llm-research-resume` / `task-submit` / `task-events`；SSE 未开流 429 / 分用户）、`test_idempotency.py`（同键同 body 返回同 `task_id` / 异 body 409 / 短路在闸门之前）、`test_source_policy.py`（CLI 不重试 / 熔断开路 / MCP 包装）、`test_chat_guard.py`（token/成本/墙钟到限即停且保留部分正文）；autouse `_clean_limiters`。 |
 | E7 工程化 | CI 即载体：后端离线全量 + 配额/队列定向集成 + Prometheus 规则 promtool + 前端 vitest/typecheck/lint/build + ruff + 覆盖率（`check_coverage.py` 全局行 88 + per-module）+ 审计；其余集成、真语料评测、演练、MCP 握手不进 CI。`test_langfuse_metadata.py` 12 例（四键形状 / `TraceConfig` / 透传 / 具名壳）；`test_snapshot_window.py` 9 例（同数据同指纹 / 窗口外不影响 / 窗口内必变 / 复权轴不同 / 空窗口稳定）；`test_metrics.py` 5 例 + 真库集成 1 例。 |
-| E2 治理 | `test_quota.py` 14 例（`period_key` / 四态 / 隔离 / admin 豁免 / 幂等重放 / 拒绝落行）；集成 `test_quota_e2.py` 11 例（P1 增槽位守卫/启动压缩；P2 增 NULL 槽位回填），**并发原子性只有真库能证**；`test_admin_api.py` 16 例（401/403/200 / 三读数 / 在飞只数 `queued`+`running` / 分页搜索转义）；`test_isolation_matrix.py` 23 例（八类资源 × 两类端点，B 拿 404 且与不存在同体同文案、A 200 对照、越权后资源仍在）；真机三轨 `quota_smoke.py` / `capture-admin.mjs` / `grant_admin.py`。 |
+| E2 治理 | `test_quota.py` 17 例（`period_key` / 四态 / 隔离 / admin 豁免 / 幂等重放 / 拒绝落行；P2 收尾增 `enforce(active_tasks)` 误用守卫）；集成 `test_quota_e2.py` 11 例（P1 增槽位守卫/启动压缩；P2 增 NULL 槽位回填），**并发原子性只有真库能证**；`test_admin_api.py` 16 例（401/403/200 / 三读数 / 在飞只数 `queued`+`running` / 分页搜索转义）；`test_isolation_matrix.py` 23 例（八类资源 × 两类端点，B 拿 404 且与不存在同体同文案、A 200 对照、越权后资源仍在）；真机三轨 `quota_smoke.py` / `capture-admin.mjs` / `grant_admin.py`。 |
 | E8 安全 | `test_security_headers.py` 8 例（五头 / 错误与流式也带头）；`test_session_renewal.py` 5 例（过半程换 / 未过半不换 / 401 不续 / 真 SSE 续）；`test_auth_core.py` + `test_auth_api.py`（`ver`、登出撤销、库挂登出仍 200）；`test_strict_msgpack_is_enforced` 防回退；`test_mcp_server.py` 14 例（双时间戳 / `as_of` 回显 / `top_k` 收敛 / 错误分类 / 超长 payload 标注）；`test_injection_guard.py` 9 例（只转义分隔标签 / 块数恒 1 / 端到端注入无第二次工具调用）；真机 `verify_quantsage_mcp.py` 与 `logs/e8/audit-*` 一次性证据。 |
 | E3 数据工程 | `test_data_health.py`（X7 三态 / 阈值边界 / 缺失降 info）、`test_health_log.py` 12 例（摘要与全文分家 / 分页 / 坏行跳过 / `skipped` 无计数 / `os.replace`）、`test_bars_refresh.py` 3 例（第三路 job / 撞锁 `skipped` / 退市失败不影响落档）、`test_data_api.py` 20 例（401/403/200 / `last` 缺失 200 / `check_status` 服务端算 / 分页）、`test_snapshot_archive.py` 9 例、`test_rollback.py` 11 例（缺片整次拒 / 验证失败零写入 / 目标外分片删除 / 退路存回滚前 / 与同步互斥 / 边拷边核 sha）、`test_cache.py` 11 例（代际 / mtime 门 / 目录区分 / L1 不碰 L2 / 换代不复用 / 类型保真 / 熔断直读）；集成真 Redis 3 例（命中相等 / 代际红线 / 死端口降级）；真机 `health_smoke.py` 5 条、`rollback_smoke.py` 6 条。 |
 | E5 风控 | `test_paper_risk.py`（四闸门 / 缩量取整 / 止损成本 / 回撤峰值 / 确定性）、`test_paper_replay.py`（风控关闭平价 / 开启缩量或拦截 / 止损 T+1 / 回撤禁买与恢复 / 重放逐字段相等）、`test_paper_api.py`（创建校验 / `risk_state` / step 事件 / 旧 config 兼容）；集成 `test_paper_e5.py`（DDL / 审计同事务 / 级联删除 / 真数据重放对账）；真机 `run_paper_risk.py` 7/7 + `capture-e5.mjs` 14/14。 |
@@ -1632,6 +1637,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.52 | 2026-10-31 | **P2 收尾（代码卫生/CI）**：① 删除 `quota.enforce` 的 `active_tasks` 死分支与 `db_tasks.count_active_tasks`；`enforce` 只保留 `agent_calls`，误用 active_tasks 直接报错并指向槽位准入；② CI 加 workflow 级只读权限、四 job `timeout-minutes`、Actions 钉完整 SHA、`pip-audit` 钉版本、checkout `persist-credentials: false`；③ 修 4 处集成期望：网格 progress 含 `cells`（S9）、`/metrics` 带 token、回滚事件天数按 manifest、Langfuse 不可达时 skip；④ 全量集成按文件 **153 passed / 1 failed / 1 skipped**（数据缺口与单进程 lifespan 卡锁见 §7.8）。 |
 | v2.51 | 2026-10-31 | **审计 P2c 测试/CI**：① `backend/scripts/check_coverage.py` 落地——全局行覆盖 88% + 13 个核心模块底线；CI 改一次跑 `--cov-branch --cov-report=json` 后由脚本判定，分支只报告不设闸门；② 模板 omit 改逐文件，保留 `templates/__init__.py` 计入分母；③ T7 真库集成加 NULL 槽位回填（`init_schema` → `0..n-1`，索引存在，终态行不动）；④ T8 `settle_all_accounts` 加 keyset 翻页/失败隔离/未就绪短路用例，scheduler 行覆盖 26.67%→80%；⑤ CI 加 `promtool check/test` 任务。复测：离线 **1,932 passed / 155 deselected**，行 88.98%、分支 79.71%；集成 155。 |
 | v2.50 | 2026-10-31 | **审计 P2 资源/测试**：① `GET /tasks/{id}/events` 加 `task-events` 连接桶（30/分钟/用户）与每用户 3 条并发 SSE 上限（第 4 条开流前 429），协作式任务无新格时轮询 1→2→5s 退避；② `POST /research/runs/{id}/resume` 补 `llm-research-resume`（10/10 分钟），§3.7「四个无限流端点」改三个；③ 覆盖率改为一次跑 `--cov-branch --cov-report=json` + `scripts/check_coverage.py`：全局行覆盖 88 + per-module 底线（P2 基线 1,918 项 / 行 88.72% / 分支 79.37%），分支只报告不设闸门；报告 `templates/__init__.py` 不再被 omit；④ CI 加 promtool 规则检查/单测，集成总量 149；⑤ 修正 §2.8「单 worker 串行」为 S7 池化。 |
 | v2.49 | 2026-10-31 | **审计 P1 安全卫生**：访问日志改记路由模板（不再落分享/导出 token），`dev.sh`/`prod.sh` 关 uvicorn access log；`.env` 启动时 600，备份 dump/manifest 600、目录 700；token 文件 644 的 Prometheus 例外如实记录。 |

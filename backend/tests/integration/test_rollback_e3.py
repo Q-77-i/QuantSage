@@ -4,7 +4,7 @@
 先跑 `scripts/download_bars.py` 与 `scripts/download_events.py`。
 
 **为什么非要用真数据**：离线用例验的是判据与拒绝（自建的 sha 寻址夹具），这里验的是
-「**真清单里的东西真的还能按 sha 找回来**」——21 片行情的 `bars.json` 与 93 天语料的
+「**真清单里的东西真的还能按 sha 找回来**」——21 片行情的 `bars.json` 与全量语料的
 `events.json` 都是真实形状，`materialize_day` 要的那三十来列只有真分片才齐。
 
 ⚠ **绝不拿真 `data/` 做破坏性实验**：副本里分片与对象用**硬链接**铺（零拷贝），
@@ -60,16 +60,18 @@ def copy_of_real_data(tmp_path: Path) -> Iterator[Path]:
 
 
 def test_plan_verifies_every_object_in_the_real_snapshot(copy_of_real_data: Path) -> None:
-    """先验证这一关在真清单上过得去：**21 片行情 + 404 条事件来源分片全都在本地库里**。
+    """先验证这一关在真清单上过得去：**21 片行情 + 全量语料逐日分片都在本地库里**。
 
     这一条是整段回滚能力的**前提**：清单里的 sha 若有一条对不上本地对象，回滚就整次拒绝。
+    语料天数是数据增量，不写死；按清单自己的 `days` 对账。
     """
     row = snapshots.take(copy_of_real_data, scope="daily", reason="集成用例")
+    events_manifest = json.loads((copy_of_real_data / "_meta" / "events.json").read_text())
 
     job = rollback.plan(copy_of_real_data, ts=row["ts"])
 
     assert len(job.bars) == 21
-    assert len(job.events) == 93
+    assert len(job.events) == len(events_manifest["days"])
     assert all(source.is_file() for source, _ in job.bars)
 
 
@@ -88,7 +90,7 @@ def test_rollback_restores_both_channels_from_the_real_manifests(copy_of_real_da
 
     assert result["ok"] is True
     assert result["restored"]["bars"] == 21
-    assert result["restored"]["events"] == 93
+    assert result["restored"]["events"] == len(events_before["days"])
     # ① 逐片 sha 与**磁盘实测**一致（不是拿清单自己比自己对）
     manifest = json.loads((base / "_meta" / "bars.json").read_text())
     assert manifest["fingerprint"]["shards"] == before["fingerprint"]["shards"]

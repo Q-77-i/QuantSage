@@ -200,6 +200,14 @@ def test_unknown_metric_fails_loudly() -> None:
         asyncio.run(quota.enforce(FakeDatabase(), {"id": 1}, "agnet_calls"))
 
 
+def test_active_tasks_metric_directs_to_slot_admission() -> None:
+    """槽位准入是唯一入口；误调 enforce 要立刻报错，不能形成第二套逻辑。"""
+    import asyncio
+
+    with pytest.raises(ValueError, match="槽位准入"):
+        asyncio.run(quota.enforce(FakeDatabase(), {"id": 1}, quota.METRIC_ACTIVE_TASKS))
+
+
 # ── gauge（在飞任务数）：HTTP 面 ────────────────────────────
 
 

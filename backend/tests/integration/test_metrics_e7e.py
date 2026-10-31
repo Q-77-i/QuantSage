@@ -9,11 +9,16 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
+
 pytestmark = pytest.mark.integration
 
 
 def test_metrics_reads_task_counts_from_real_db(real_stack: TestClient) -> None:
-    response = real_stack.get("/metrics")
+    # 本机 .env 常配 METRICS_TOKEN（Prometheus 用），CI 则是空串；两种配置都要能读。
+    token = get_settings().metrics_token.get_secret_value()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    response = real_stack.get("/metrics", headers=headers)
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")

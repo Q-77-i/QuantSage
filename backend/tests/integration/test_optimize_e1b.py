@@ -65,7 +65,10 @@ def test_grid_finishes_after_the_stream_is_dropped(real_stack: TestClient) -> No
         # 此刻既不订阅也不轮询——就是「用户关掉了页面」
         task = wait_for_task(member, task_id, timeout=180)
         assert task["status"] == "done", task
-        assert task["progress"] == {"done": 2, "total": 2}
+        # S9 起执行体把 `cells` 合并进同一次 progress 写入；这里只验完成格数。
+        progress = task["progress"]
+        assert progress["done"] == 2 and progress["total"] == 2
+        assert len(progress["cells"]) == 2
 
         run_id = task["result"]["run_id"]
         detail = member.get(f"/api/v1/optimize/runs/{run_id}").json()

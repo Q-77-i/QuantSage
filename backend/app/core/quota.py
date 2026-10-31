@@ -135,19 +135,11 @@ async def enforce(
     settings = get_settings()
 
     if metric == METRIC_ACTIVE_TASKS:
-        limit = settings.quota_active_tasks
-        if limit <= 0:
-            return
-        used = await db.count_active_tasks(user_id)
-        if used >= limit:
-            await db.record_quota_rejection(user_id, metric, used, limit)
-            raise QuotaExceeded(
-                metric,
-                f"你已有 {used} 个任务在执行或排队（上限 {limit} 个），等一个结束再提交",
-                limit=limit,
-                used=used,
-            )
-        return
+        # 槽位准入是唯一入口（`idempotency.create_task` 的插入语句 + 部分唯一索引）。
+        # 这里再实现一遍会形成两套逻辑，且 count-then-insert 本身有竞态。
+        raise ValueError(
+            "active_tasks 由槽位准入维护（idempotency.create_task），不经 quota.enforce"
+        )
 
     if metric == METRIC_AGENT_CALLS:
         limit = settings.quota_agent_calls_per_day

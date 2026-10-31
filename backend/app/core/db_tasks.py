@@ -625,26 +625,13 @@ class TasksMixin:
     async def task_status_counts(self) -> dict[str, int]:
         """任务表按状态计数（E7e 队列深度指标，scrape 时现查）。
 
-        与 `count_active_tasks` 同一条理由：任务表是唯一真值，不另立计数器——计数器得在
+        与在飞任务数（槽位准入）同一条理由：任务表是唯一真值，不另立计数器——计数器得在
         五条终结路径上各减一次，漏一处就是永久偏差。
         """
         rows = await self._all(
             "SELECT status, count(*) AS n FROM tasks GROUP BY status", ()
         )
         return {str(row["status"]): int(row["n"]) for row in rows}
-
-    async def count_active_tasks(self, user_id: int) -> int:
-        """在飞任务数（gauge）：`queued` + `running` 都算——**排队即占槽位**。
-
-        直查而不另立计数器，是因为计数器得在**终结**时减一，而终结有五条路径（成功 / 失败 /
-        取消 / 启动扫尾 / 进程被杀）——漏减一处就是永久占额；任务表才是那个唯一真值。
-        """
-        row = await self._one(
-            "SELECT count(*) AS n FROM tasks WHERE user_id = %s "
-            "AND status IN ('queued', 'running')",
-            (user_id,),
-        )
-        return int(row["n"]) if row else 0
 
     async def bump_usage_counter(
         self, user_id: int, metric: str, period_key: str, limit: int

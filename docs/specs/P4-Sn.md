@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（`docs/private/`）→ CLAUDE.md（定稿摘要）→ PRD（v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 **v3.18** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（9 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）、P1 租约 claim token（v3.15，见 §3.3）、P1 备份/告警（v3.16，见 §9.3）与 P2 chat 锁连接上限/磁盘指标/日志轮转/observability 资源上限/备份清理（v3.17，见 §5.3/§5.4/§6.2/§7.3/§9.3），以及 P2c 上述运维项的落地与验证（v3.18）。
+> 版本 **v3.19** ｜ 2026-10-31 ｜ 状态：**S1–S6 已交付；P4-S7 worker 池已交付（queue p95 1,312ms；RAG 合批按 A 不做）；P4-S9 数据层热点优化已交付（20 回测 queue p95 503ms、run p50 86ms、bars 1,660/240ms；S7 的 ≤1s 复验成立）；P4-S8（§9）已交付（9 条规则、3 条真实告警 firing→resolved、缓存命中率 99.5%、备份 launchd）**——P4-Sn 单机工程化（S1–S6）规格 + P4-S7 单机承压升级 + P4-S8 可观测性与缓存 + P4-S9 数据层热点优化；S1 按 2026-10-27 实测与拍板修订并实施（v3.1，见 §13），S2 补 `worker_id` 栅栏、启动全量扫尾与异常类型重排口径（v3.2），S3 按同日拍板补 embed 稀疏出参、降级原因、批量索引与嵌入独立等待口径（v3.3），S4 按同日拍板补 DuckDB 闸门、PG/Redis 预算、worker 释放租约与 prod 运行底座并交付（v3.4），S5 按 2026-10-28 预测量（Go 条件 1–3 成立）补共享限流、多进程指标、JSONB 进度、锁重试与内存口径并交付（v3.5），S6 于 2026-10-29 交付（v3.6），P4-S7 写入 §8、P4-S8 写入 §9（v3.8，S7 的 v3.7 初稿见 §13），S7 合批门禁未过并按 A 收窄（v3.9，见 §8.2.2），S7 worker 池实测与 P4-S9 数据层规格写入 §10（v3.10），S9 数据层缓存实施并验收（v3.11，见 §10.5）；P4-S8 按 2026-10-30 拍板订正 5 处口径并进入执行（v3.12，见 §9）；2026-10-31 追加 P0 恢复门槛修复（v3.14，见 §7.3）、P1 租约 claim token（v3.15，见 §3.3）、P1 备份/告警（v3.16，见 §9.3）与 P2 chat 锁连接上限/磁盘指标/日志轮转/observability 资源上限/备份清理（v3.17，见 §5.3/§5.4/§6.2/§7.3/§9.3），以及 P2c 上述运维项的落地与验证（v3.18）；追加 P2 收尾：`dev.sh` 端口占用/PID 身份校验、Langfuse 建库幂等（v3.19，见 §5.4/§9.3.3）。
 >
 > 本文覆盖 **P4-Sn 单机工程化（S1–S6，已交付）、P4-S7 单机承压升级（§8，已交付）、P4-S8 可观测性与缓存（§9，已交付）与 P4-S9 数据层热点优化（§10，已交付）**。角色拆分、平台化/多租户/分布式（P4-S10 及以后）仍为愿景，**不写规格、不排期**。
 > 实测基线：S1–S6 见 `docs/private/Pn-n/P4-Sn/P4-S0-基线报告.md`；S7 基线见 `docs/private/Pn-n/P4-Sn/P4-S6-最终报告.md`；再规划：`docs/private/Pn-n/P4-Sn/P4-Sn-单机工程化-再规划.md`。
@@ -407,6 +407,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 ### 5.4 进程与停机
 
 - 原生进程管理：`scripts/prod.sh`（`QS_MODE=prod` 委派 `dev.sh`），不引 launchd；Docker 只管基础设施。prod/dev 日志与 PID 分目录（`logs/prod` / `logs/dev`），端口相同，不能同时起。
+- **端口/PID 身份（P2 收尾，2026-10-31）**：`start_backend` / `start_frontend` / `start_rag` 在端口被占时返回非 0，`start_all` 不再打印“就绪”；只有 `--force` 才按端口清理外部进程。PID 文件旁记录启动命令行与**启动时间**；`stop_one` 在 kill 前比对启动时间（PID 复用即失配），失配时拒绝按 PID kill（`--force` 按端口清理）；命令行仅作诊断，不参与判定（pnpm 可能 exec，argv 会变）。`status` 不把外部进程当成本服务。此前 dev 在跑时 `prod.sh start` 会全部跳过并打印“就绪（prod）”，实际是 dev。
 - 健康检查：`/health`、`/health/ready`、RAG `/health`；启动顺序 infra → migrate → RAG → API/worker → 前端。
 - 优雅停机：API 用 `uvicorn --timeout-graceful-shutdown 15` 停接新请求、drain 在飞/SSE（上限 15s）；worker 停止取件，**不 await 在飞任务**，退出前对 `_RUNNING` 里的任务调用 `release_task`——回 `queued`、`attempts = greatest(attempts-1, 0)`（优雅停机不算一次失败）、清租约；已请求取消的收成 `cancelled`。旧进程的迟到写入仍由 `worker_id` 栅栏挡住；下次启动的全量扫尾继续兜底（S2）。scheduler `shutdown(wait=False)` 不变。
 - 日志轮转：prod 模式每 30min 做一次 copytruncate（20MB 阈值、保留 3 份，`PROD_LOG_*` 可调）；几行丢失窗口如实记录，不假装是 logrotate。不把密钥写进 plist/命令行。
@@ -809,6 +810,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 - `docker-compose.yml` 新增 `monitoring` profile：`prometheus`（约 150–250MB）+ `alertmanager`（约 30MB）；**默认不启动**，需要时 `docker compose --profile monitoring up -d`；镜像按仓库惯例 pin digest（与 PG/Redis/Qdrant 同）。宿主端口用 **9092（Prometheus）/ 9093（Alertmanager）**——9090/9091 已被 `observability` profile 的 MinIO 占用。
 - **observability 资源上限（P2）**：langfuse-redis / clickhouse / minio / langfuse-web / langfuse-worker 全部加 `mem_limit`/`cpus`；langfuse-redis 加 `--maxmemory`（与 `noeviction` 配套）。默认四件约 5.1GB，Langfuse 整套再开需 ≥16GB 内存；不够就**不要**同时启用 observability + monitoring。
+- **Langfuse 建库幂等（P2 收尾，2026-10-31）**：`docker/postgres/init/01-create-langfuse-db.sql` 改 `SELECT 'CREATE DATABASE langfuse' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')\gexec`。空 PGDATA 首次启动与后开 observability 都可重复执行，不再出现 `database "langfuse" does not exist`；`CREATE DATABASE` 本身不支持 `IF NOT EXISTS`。
 - `docker/prometheus/prometheus.yml`：scrape API `host.docker.internal:8000/metrics` 与 RAG `:8200/metrics`；`evaluation_interval: 15s`；`--storage.tsdb.retention.size` 设上限，避免 TSDB 单调增长。
 - 9 条规则（起始值，压测后可调；用实际指标名）：
   1. `histogram_quantile(0.95, sum by (le, kind) (rate(quantsage_task_queue_seconds_bucket[5m]))) > 5` for 10m；
@@ -1078,6 +1080,7 @@ SET temp_directory = '<temp-root>/duckdb-<pid>-<thread>-<rand>';
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-31 | v3.19 | **P2 收尾（运维）**：① `dev.sh` 的 `start_backend/frontend/rag` 端口被占返回非 0，不再静默跳过并打印“就绪”；PID 文件旁记录启动时间与命令行，`stop_one` kill 前比对启动时间（PID 复用即失配），`--force` 才按端口清理外部进程；`status` 不把外部进程当本服务；② `01-create-langfuse-db.sql` 改幂等 `\gexec`，后开 observability 不再因缺库失败。 |
 | 2026-10-31 | v3.18 | **审计 P2c 运维落地**：① `DiskCollector` 按 data/备份目标各产 `quantsage_disk_free_bytes{path}` / `quantsage_disk_total_bytes{path}`，Prometheus 加 `DiskPressure`（free/total <10%，for 10m，9 条规则），`promtool test rules` SUCCESS；② observability 五服务加 mem/cpus、langfuse-redis `--maxmemory 96mb`，文档写明 ≥16GB 前提；③ compose 全服务 json-file 50m×3，dev 也起 copytruncate 轮转，alert_hook JSONL 超 10MB 滚动；④ Qdrant 恢复后删容器快照，data 同日重跑先清空并记源端文件/字节数；⑤ 验证：compose config 通过、备份 14 例、告警 4 例、新增磁盘指标用例。 |
 | 2026-10-31 | v3.17 | **审计 P2 资源/运维**：① Chat 池外 advisory 锁连接加每进程 `CHAT_LOCK_MAX_CONNECTIONS=12` 信号量（2 worker 合计 24）、connect/许可 5s 超时；满时开流前 **503 + `Retry-After: 1`**，同 thread 继续排队；许可跟 pump 任务走，断连后仍计入；② `/metrics` 新增 `quantsage_disk_free_bytes` / `quantsage_disk_total_bytes{path}`，Prometheus 增 `DiskPressure`（free/total <10%，for 10m，共 **9 条规则**），TSDB 加 retention.size；③ observability 各服务加 mem/cpus、langfuse-redis 加 maxmemory，文档写明 ≥16GB 前提；④ compose/dev/alert_hook 日志加轮转上限；⑤ Qdrant 恢复后清容器内快照，data 同日重跑加 `--delete`/源端 digest，Langfuse 备份范围文档化。 |
 | 2026-10-31 | v3.16 | **审计 P1 备份/告警**：`/metrics` 新增 `quantsage_backup_partial` / `quantsage_backup_failures`（读最新 manifest，年龄仍按 mtime）；`BackupPartial` + `ServiceDown` 告警（8 条规则）；`backup.py` 有失败项时 `partial=true` 并跳过 prune，避免写坏 manifest 后删最老完好日备；`QS_BACKUP_DIR` 展开 `~`，安装器校验它与 `--target` 同源。promtool 规则单测通过。 |

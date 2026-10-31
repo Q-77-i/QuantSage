@@ -116,12 +116,17 @@ def test_gauge_counts_in_flight_only(real_stack: TestClient) -> None:
     sign_up(address)
     uid = user_id_of(address)
 
-    async def count() -> int:
-        async with open_pool(get_settings().postgres_dsn) as pool:
-            return await Database(pool).count_active_tasks(uid)
+    def count() -> int:
+        with psycopg.connect(get_settings().postgres_dsn) as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM tasks WHERE user_id = %s "
+                "AND status IN ('queued', 'running')",
+                (uid,),
+            ).fetchone()
+        return int(row[0])
 
     try:
-        assert asyncio.run(count()) == 0
+        assert count() == 0
         with psycopg.connect(get_settings().postgres_dsn) as conn:
             for status in ("queued", "running", "done", "failed", "cancelled"):
                 conn.execute(
@@ -130,7 +135,7 @@ def test_gauge_counts_in_flight_only(real_stack: TestClient) -> None:
                     (str(uuid.uuid4()), uid, status),
                 )
 
-        assert asyncio.run(count()) == 2
+        assert count() == 2
     finally:
         purge_rows([address], [])
 

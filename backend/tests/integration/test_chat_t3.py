@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import uuid
+from urllib.parse import urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -157,6 +159,18 @@ async def test_langfuse_receives_trace() -> None:
     if handler is None:
         pytest.skip("Langfuse 未启用或未配置 key")
 
+    # 配了 key 但 observability 没起时，直接查 API 会抛连接错误；明确跳过而不是假红。
+    settings = get_settings()
+    parsed = urlparse(settings.langfuse_base_url)
+    if not parsed.hostname:
+        pytest.skip(f"Langfuse base URL 无主机名：{settings.langfuse_base_url}")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=2):
+            pass
+    except OSError as exc:
+        pytest.skip(f"Langfuse 服务不可达（{settings.langfuse_base_url}）：{exc}")
+
     client = get_client()
 
     def observations() -> list:
@@ -166,7 +180,6 @@ async def test_langfuse_receives_trace() -> None:
     client.flush()
     before = {o.id for o in observations()}
 
-    settings = get_settings()
     async with open_checkpointer(settings.postgres_dsn) as saver:
         agent = await _assemble(saver)
         async for _ in astream_chat(
