@@ -125,11 +125,12 @@ T5 的实测是 **非 PIT 相对 PIT 的期末权益差异 −0.68% / −4.08% /
 | 错误分类 | `core/reliability.py::classify` | 只看异常结构（`status_code` / `retry_after`），不 import 上游 SDK |
 | 重试 | `guard()` | 只重试可重试错误；429 按 `Retry-After` 停，且**立即开路、不参与失败计数** |
 | 熔断 | 每依赖一份状态机 | 进程内单例；重启清零；冷却后半开探测 |
-| 限流 | `api/limits.py` | 进程内令牌桶；429 带 `Retry-After`；SSE 在开流前拒 |
+| 限流 | `api/limits.py` | 进程内令牌桶；多 worker 且 `RATE_LIMIT_SHARED=true` 时走 redis-coord 共享；429 带 `Retry-After`；SSE 在开流前拒 |
+| 资源边界 | `api/chat.py` · `api/tasks.py` | chat 每进程锁连接上限 12（池外连接，5s 拿不到 503）；task SSE 每用户 3 条并发（按进程计数）+ 30 次/分钟；research resume 10 次/10 分钟 |
 | 幂等 | `api/idempotency.py` | L7 幂等键；重复提交返回同一结果 |
 | 降级 | 节点内 try/except | 深路径任一数据源失败只翻成 `errors`，不拖垮整跑 |
 
-**红线**：关键路径不绑 Redis；熔断/限流不落盘、不依赖外部组件。缓存层任何异常都不得让请求失败。
+**红线**：关键路径不绑 Redis；熔断不依赖外部组件；限流默认进程内，多 worker 且 `RATE_LIMIT_SHARED=true` 时走 redis-coord，coord 挂了降级为进程内 `floor(capacity/N)`。缓存层任何异常都不得让请求失败。
 
 ### 5.2 安全：纵深防御
 

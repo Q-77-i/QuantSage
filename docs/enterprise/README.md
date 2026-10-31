@@ -36,7 +36,7 @@ QuantSage 是一个**前视偏差为零**的 AI 投研 Agent。三条最值得�
 | 可靠性：降级优先于失败 | [架构 §6](architecture.md#6-横切机制)、[P3 SPEC §5](../specs/P3-En.md) |
 | 安全：注入边界 / 沙箱 / 会话 / CSP / 依赖审计 | [风控 §5](risk.md#5-可靠性与安全)、[P3 SPEC §8](../specs/P3-En.md) |
 | 可观测：Langfuse + Prometheus + JSON 日志 | [架构 §6](architecture.md#6-横切机制)、[P3 SPEC §7.12](../specs/P3-En.md) |
-| 工程化：CI、覆盖率门槛、ruff、供应链审计 | [评审记录](reviews.md)、[P3 SPEC §7](../specs/P3-En.md) |
+| 工程化：CI 四 job、覆盖率门槛、ruff、供应链审计 | [评审记录](reviews.md)、[P3 SPEC §7](../specs/P3-En.md) |
 | 不引 MQ / 暂缓容器化：有触发判据 | [架构 §9](architecture.md#9-已知边界与未来触发) |
 
 ## 事实口径

@@ -42,6 +42,17 @@ AI 互审的真实收益在 Spec 轴与「跨文件一致性」：它能同时�
 | 2026-10-15 | E8c 注入面侦察 | 比原稿多找出 2 处注入面（辩论 / 综合的证据块也在渲语料标题）；另 4 处核查后刻意不包并写依据（行业名是平台受控词表、路由 prompt 只有用户问题、反思 prompt 只有我们自己的决策事实、用户自己的话不算外部数据） | 2 处补包；4 处写排除依据；小石 MCP 结果做形状感知（只包 content，artifact 原样留给下游） |
 | 2026-10-15/16 | CI 三跑 | 首跑 4 个、第二跑 23 个：审计 job 没装 pnpm（exit 127）；`uv run` 默认同步把跳装的 torch 装回来；离线套件隐含依赖真实 `data/`；时区/内存阈值/缺 `.env` 配置 | 全部处置；CI 三 job 跑绿；「本地复现 CI」的手法进踩坑记录 |
 | 2026-10-17 | 收尾项 6（CSP / 容器化 / 取消 / MQ） | CSP 生产验证 33/33，修复 `next-themes` 主题脚本未带 nonce；容器化 spike 证明 bwrap 可解但 torch 在 linux/arm64 拉 CUDA 13；多 worker 维持单实例；MQ 不引入 | CSP 修复并加可复用验证脚本；全量容器化暂缓；running 取消改 DB 标志；MQ 只落文档 |
+| 2026-10-31 | P2 收尾（A12 / O9 / O15 / O8） | 配额 `active_tasks` 死分支；Langfuse 建库非幂等；CI 缺只读权限/超时/SHA 钉版；`dev.sh` 端口占用仍打印就绪、PID 不校验身份 | 全部修复并带用例：`quota.enforce` 误用改明确报错、建库 `\gexec` 幂等、CI 四 job 钉版、PID 记启动时间/命令行；集成 155 项单进程 154 passed / 1 skipped |
+
+### 3.1 当前基线（2026-10-31 快照）
+
+| 项 | 读数 | 口径 |
+|---|---|---|
+| 后端离线 | 1,933 passed / 155 deselected | `pytest -q` |
+| 前端 | 515 tests | `pnpm test` |
+| 集成 | 155 项；单进程 154 passed / 1 skipped（20:46） | 真容器 + 真密钥 + 真 `data/`；默认关 Langfuse tracing |
+| 覆盖率 | 行 89.34% / 分支 80.13%；行门槛 88% | `check_coverage.py` |
+| CI | 四 job：backend / frontend / prometheus / audit | `.github/workflows/ci.yml` |
 
 ## 4. 本轮定向评审（E9）
 
