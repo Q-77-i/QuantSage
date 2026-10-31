@@ -2,7 +2,7 @@
 
 > 文档链：规划报告（调研底稿，docs/private/）→ CLAUDE.md（定稿摘要）→ PRD（需求，v0.21）→ 本文（技术规格）→ 代码
 >
-> 版本 v2.53 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）；追加 P2a/P2b：任务 SSE 连接闸门/退避、resume 限流、覆盖率 per-module 与 promtool 进 CI（§2.8/§5.4/§7.3/§7.5/§7.8）；追加 P2c：覆盖率脚本落地、T7 NULL 槽位回填与 T8 settle_all_accounts 回归；追加 P2 收尾：`quota.enforce` 只保留 agent_calls、CI 权限/超时/SHA 固定、全量集成基线（§3.2/§7.1/§7.8）；追加集成稳定跑法：按文件 runner + 默认关 Langfuse tracing（§7.8）。
+> 版本 v2.54 ｜ 2026-10-31 ｜ 状态：**P3 已收口**——E1–E9 全部交付（E6 已砍），收尾项 5/6 已交付。逐段规格见 §2–§9，测试落点见 §10，决策与实测读数见 §11，收尾项 5 见附录 A。2026-10-30 追加 E2 配额准入实现修订（槽位唯一索引，API 契约不变）；2026-10-31 追加 P1：在飞数守卫、启动槽位压缩、撞槽耗尽 503、CI 配额定向集成；追加访问日志/本地文件权限（§8.11）；追加 P2a/P2b：任务 SSE 连接闸门/退避、resume 限流、覆盖率 per-module 与 promtool 进 CI（§2.8/§5.4/§7.3/§7.5/§7.8）；追加 P2c：覆盖率脚本落地、T7 NULL 槽位回填与 T8 settle_all_accounts 回归；追加 P2 收尾：`quota.enforce` 只保留 agent_calls、CI 权限/超时/SHA 固定、全量集成基线（§3.2/§7.1/§7.8）；追加集成稳定跑法：按文件 runner + 默认关 Langfuse tracing（§7.8）；追加 B 项复验：单进程全量在关 tracing 下 154 passed / 1 skipped（v2.54）。
 >
 > 本 SPEC 覆盖 PRD §2.3 的 E1–E9（**E6 组合已砍**，不设节，留待 P3 之后独立评估）。规划评估底稿见 `docs/private/Pn-n/P3-En/P3-En-规划评估.md`（现状基线核对与逐项评估，本文件只收技术事实）。
 
@@ -1161,7 +1161,7 @@ PRD 原措辞「配置 + 随机种子 + 数据快照版本」，订正后落在�
 
 - **CI 绿 ≠ 全绿**：CI 跑离线套件 + **配额/队列定向集成**（Postgres service，`tests/integration/test_quota_e2.py`）+ **Prometheus 规则 promtool 检查/单测**（P2）；其余集成（paper / research / 真实 `data/`）、真语料评测集读数、四幕演练、MCP 握手**仍不在 CI 里**——它们要真容器、真数据、真密钥（`/data/` 2.6GB 不进 Git）。当前集成总数 **155**（`pytest --collect-only -m integration`），CI 注释不再写死 114。这是单机形态的必然，不是遗漏。
 - **2026-10-31 全量集成基线（P2 收尾）**：按文件/模块逐进程（32 个 `tests/integration/` 文件 + 3 个根目录集成标记文件）跑完 155 项：**153 passed / 1 failed / 1 skipped**。失败项 `test_data_health_reports_no_error_on_real_data` 是真实语料缺口（窗口 2026-07-07→10-25；交易日缺口 6 天：10-09、10-12..10-16；自然日缺口 4 天：10-10/11/17/18），不是代码回归；补采后 `E1`/`E7` 均 info、数据体检定向通过，`X4` 已 110/110。跳过项 `test_langfuse_receives_trace` 因本机未启 observability（Docker VM 7.7GB < 16GB 前提），测试在服务不可达时明确 skip。
-- **集成稳定跑法（2026-10-31 补）**：单进程 `pytest -m integration` 在约 20 次 lifespan 后仍可能卡在 `TestClient(app)` 的启动处（真实 MCP/Langfuse 会话与 worker 线程累积）；受支持跑法是 `uv run python scripts/run_integration.py`（按文件逐进程，含上述 32+3 个文件）。集成 conftest 默认关闭 Langfuse tracing（`real_stack`/`jwt_env`），`test_langfuse_receives_trace` 显式开启；30 项单进程子集 tracing off **29 passed / 1 skipped（199s）**、on **29/1（261s）**，均未复现卡锁。根因（MCP/Langfuse 生命周期累积）仍按 B 项排查，不假称单进程全量已修。
+- **集成稳定跑法（2026-10-31 补，v2.54 复验）**：单进程 `pytest -m integration` 在默认关 Langfuse tracing 下 **154 passed / 1 skipped（20:46）**，未再卡；skipped 是 Langfuse 服务未启。此前约 20 次 lifespan 后卡在 `TestClient(app)` 启动处，指向 Langfuse exporter 累积；conftest 默认关 tracing 是根因修复/缓解。稳定跑法仍是 `uv run python scripts/run_integration.py`（按文件逐进程，含上述 32+3 个文件），作为隔离兜底；30 项单进程子集 tracing off **29 passed / 1 skipped（199s）**、on **29/1（261s）**，均通过。
 - **「离线」按维度分别成立**：不连外部服务 ≠ 不读本地数据。离线轨已做到**不读 `data/`**（§7.10 的订正），但这条性质**靠纪律维持**——新写用例若在模块级或夹具外读真实数据，会立刻在 CI 上变红。
 - **「离线」仍有残余缺口（E7b 覆盖率对比查出来的，登记为已知债）**：同一份用例在本机（有 Postgres / `data/` / Langfuse）与 CI（裸环境）走的是**不同的代码路径**——本机多覆盖 221 行（角色取数主体、`init_schema`、lifespan 的「库可用」分支），CI 多覆盖 17 行（连库失败与未配置的降级分支）。**两端各自只验了半边**，全绿不等于都把两条路径验了。修复方向是把相关用例显式喂合成数据/假服务（独立一块，未排期）；在此之前，**覆盖率读数要按环境读，别当唯一事实**（§7.3 的逐行明细）。
 - **覆盖率只覆盖离线可达的 `app/`**：懒加载路径（真实编码器/精排器）、需要真库的分支测不到，会拉低数字——如实呈现，不为凑数写假测试。
@@ -1638,6 +1638,7 @@ P2 SPEC §5（M4a）曾写「真正的隔离留 **P3-E8**」。E8 规划时按�
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v2.54 | 2026-10-31 | **B 项复验**：默认关 Langfuse tracing 后，单进程 `pytest -m integration` 全量 **154 passed / 1 skipped（20:46）**，未再卡；skipped 为 Langfuse 未启。runner 保留为按文件隔离兜底；根因指向 exporter 累积，不再把「单进程必卡」当已知边界。 |
 | v2.53 | 2026-10-31 | **集成稳定跑法**：新增 `backend/scripts/run_integration.py`（按文件逐进程，含 32 个 `tests/integration/` 文件 + 3 个根目录集成标记文件）；集成 conftest 默认关闭 Langfuse tracing（`real_stack`/`jwt_env`），`test_langfuse_receives_trace` 显式开启。30 项单进程子集 tracing off **29 passed / 1 skipped（199s）**、on **29/1（261s）**，均通过；单进程全量卡锁根因仍待 B 项排查。 |
 | v2.52 | 2026-10-31 | **P2 收尾（代码卫生/CI）**：① 删除 `quota.enforce` 的 `active_tasks` 死分支与 `db_tasks.count_active_tasks`；`enforce` 只保留 `agent_calls`，误用 active_tasks 直接报错并指向槽位准入；② CI 加 workflow 级只读权限、四 job `timeout-minutes`、Actions 钉完整 SHA、`pip-audit` 钉版本、checkout `persist-credentials: false`；③ 修 4 处集成期望：网格 progress 含 `cells`（S9）、`/metrics` 带 token、回滚事件天数按 manifest、Langfuse 不可达时 skip；④ 全量集成按文件 **153 passed / 1 failed / 1 skipped**（数据缺口与单进程 lifespan 卡锁见 §7.8）。 |
 | v2.51 | 2026-10-31 | **审计 P2c 测试/CI**：① `backend/scripts/check_coverage.py` 落地——全局行覆盖 88% + 13 个核心模块底线；CI 改一次跑 `--cov-branch --cov-report=json` 后由脚本判定，分支只报告不设闸门；② 模板 omit 改逐文件，保留 `templates/__init__.py` 计入分母；③ T7 真库集成加 NULL 槽位回填（`init_schema` → `0..n-1`，索引存在，终态行不动）；④ T8 `settle_all_accounts` 加 keyset 翻页/失败隔离/未就绪短路用例，scheduler 行覆盖 26.67%→80%；⑤ CI 加 `promtool check/test` 任务。复测：离线 **1,932 passed / 155 deselected**，行 88.98%、分支 79.71%；集成 155。 |
