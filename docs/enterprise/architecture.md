@@ -145,7 +145,7 @@ Redis coord 192m（S5）、Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `vol
 | `/research` | 深度研究入口 | 发起、历史运行 |
 | `/research/runs/[id]` | 深度研究运行页 | 阶段带、并行瀑布、审批卡 |
 | `/research/[id]` | 深研报 | 证据回链、分享 |
-| `/space` | 个人空间 | 自选、回测、研报、设置 |
+| `/space` | 个人空间 | 自选、回测、会话、策略、优化、模拟盘、深研（7 页签） |
 | `/admin` | 管理视图 | 配额用量、拒绝记录（仅 admin） |
 | `/login` · `/register` | 登录 / 注册 | cookie 会话 |
 | `/r/[token]` | 公开分享页 | 未登录可读 |
@@ -164,7 +164,7 @@ Redis coord 192m（S5）、Qdrant 2.5g）；Redis cache `maxmemory 512MB` + `vol
 
 ### 4.2 深路径多 Agent
 
-`POST /api/v1/research` → `agent/deep/graph.py`：
+`POST /api/v1/research/runs` → `agent/deep/graph.py`：
 
 ```
 START ─┬─ market ─┐
@@ -217,7 +217,7 @@ START ─┬─ market ─┐
 |---|---|---|
 | 21:10 | 事件语料 | 自然日归档；启动补缺口；回落窗口 7 天 |
 | 21:40 | 行情按需刷新 | 先便宜探测源侧发布标识，变了才整片重下（默认关） |
-| 22:10 | 数据体检 | 只读 23 项检查，结果落 `_meta/health_runs.jsonl`（默认关） |
+| 22:10 | 数据体检 | 只读 24 项检查，结果落 `_meta/health_runs.jsonl`（默认关） |
 
 - 三条 job **必须串行**：前两条共用 `data/raw` 的回执与 CLI 文件锁；体检要逐片重算 sha。互斥撞上就跳过并留痕，不排队
 - 行情没有日增量可拉（`cn-daily` 按年整片发布）；刷新做的是「按需整片重下」
@@ -294,8 +294,8 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | Redis | 6379 | L2 缓存 |
 | Qdrant | 6333 | 事件向量索引 |
 | Langfuse | 3000 | LLM trace 看板 |
-| 后端 | 8000（dev）/ 8002（生产验证） | FastAPI |
-| 前端 | 3001（dev）/ 3002（生产验证） | Next.js |
+| 后端 | 8000（dev 与 prod 相同） | FastAPI；`prod.sh` 委派 `dev.sh`，不另开端口 |
+| 前端 | 3001（dev 与 prod 相同） | Next.js；`prod.sh` 用 build+start |
 
 ### 7.2 启动顺序
 
@@ -375,7 +375,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - **深研报的解读受模型知识截止影响**：数字由代码取并过追溯闸门，叙述层没有对策
 - **提示注入只做纵深防御**：边界标记是其中一层，不是「解决了注入」
 - **冻结日历止于 2026-12-31**：到期前等上游更新后重生成，不用工作日近似
-- **监控是可选单机 profile**（S8）：`compose --profile monitoring` 提供 Prometheus :9092 + Alertmanager :9093（默认不启动）、8 条规则与本地 `alert_hook`；**未引入 OTel SDK**
+- **监控是可选单机 profile**（S8）：`compose --profile monitoring` 提供 Prometheus :9092 + Alertmanager :9093（默认不启动）、9 条规则与本地 `alert_hook`；**未引入 OTel SDK**
 
 ## 10. 代码锚点索引
 

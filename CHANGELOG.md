@@ -28,6 +28,14 @@
 - **S6 PG 重启**：业务池与 checkpointer 池取件 `check_connection`，池内空闲旧连接被替换，重启后首个 `/auth/me` 不再 500。
 - **S6 发现边界**：`/health/ready` 是启动态探针；LLM 超时因策略重试约 120s；RAG rerank c10 2.97s（8/10 降级）——均如实记录，不写成达标。
 
+### P4-Sn 增补（S7–S9，2026-10-30）
+
+> 同属 `m-p4` 里程碑的单机工程化增补，不另打 tag；逐次明细见 [P4-Sn SPEC §10](docs/specs/P4-Sn.md#10-变更记录)。
+
+- **S7 worker 池**：单进程内按 kind 池化（backtest×3 + grid×1 + batch×1），20 回测 queue p95 **1,312ms**；RAG 合批门禁未过，按 A 不做。
+- **S8 可观测性与缓存**：缓存命中率可算（实测 99.5%）、队列 p95 / PG 连接 / 宿主内存 / 备份年龄指标、`monitoring` profile + 告警规则 + 本地 `alert_hook`；P1 增 BackupPartial / ServiceDown，P2 增 DiskPressure（现 **9 条规则**）。
+- **S9 数据层热点优化**：热点缓存与执行体进度合并，20 回测 queue p95 **503ms**、run p50 **86ms**、bars 1,660 req/s / p95 240ms；S7 的 ≤1s 复验成立。
+
 ## [m-p3] — 2026-10-20
 
 > P3-En 交付：E1–E9（E6 已砍）+ 收尾项 5/6。逐次明细见 [P3 SPEC §11](docs/specs/P3-En.md#11-变更记录)。

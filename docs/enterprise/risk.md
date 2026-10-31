@@ -15,7 +15,7 @@ QuantSage 的风险不是一个「止损按钮」，而是五类风险、五种�
 | **前视偏差** | 回测/研报偷看了当时还不知道的信息 | 双时间戳 + 回测设卡 + RAG 服务端过滤 + 策略 AST 检查 | `backtest/events.py`、`rag/retrieve.py`、`strategy/static_check.py` | 模型训练数据里的「记忆」；叙述层不可证 |
 | **交易风险** | 单笔/总仓位失控、回撤扩大 | 四闸门：总仓位 / 单标的集中度 / 止损 / 回撤 | `paper/risk.py`（判据）、`paper/replay.py`（处置） | 盘中触发、组合优化、部分成交；止损按收盘判定、次日开盘成交，跳空可能更差 |
 | **内容/合规** | LLM 编数字、越权下单、绕过人工审批 | 代码化风控闸门 + HITL + Agent 只到提案 + 报告 claim 闸门 | `agent/deep/risk_gate.py`、`paper/proposal.py`、`report/builder.py` | 叙述层的「听起来有据」；没有第三方合规认证 |
-| **可靠性** | 单一数据源/模型故障拖垮整体 | policy 分类 / 重试 / 熔断 / 限流 / 降级 / 幂等 | `core/reliability.py`、`api/limits.py`、`api/idempotency.py` | 进程内单实例；Prometheus/Alertmanager 为 **S8 可选 profile**（默认不启动，8 条规则） |
+| **可靠性** | 单一数据源/模型故障拖垮整体 | policy 分类 / 重试 / 熔断 / 限流 / 降级 / 幂等 | `core/reliability.py`、`api/limits.py`、`api/idempotency.py` | 进程内单实例；Prometheus/Alertmanager 为 **S8 可选 profile**（默认不启动，9 条规则） |
 | **安全** | 提示注入、用户代码逃逸、会话被续命 | 注入边界、沙箱、CSP、会话撤销、依赖审计 | `core/untrusted.py`、`strategy/isolation.py`、`core/session.py`、`frontend/lib/csp.ts` | 注入只做纵深防御；无第三方渗透测试 |
 
 一句话：**前视偏差是护城河，交易四闸门是产品能力，内容/合规是红线，可靠性/安全是工程底座**。四类都不能靠「模型自觉」。

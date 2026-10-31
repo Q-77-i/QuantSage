@@ -229,3 +229,26 @@ def test_backup_files_are_private(backup: ModuleType, tmp_path: Path) -> None:
     )
     manifest = tmp_path / "manifests" / "20260101.json"
     assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+
+
+def test_data_backup_same_day_rerun_drops_stale_files(
+    backup: ModuleType, tmp_path: Path
+) -> None:
+    """P2：同日重跑先清空目标，回滚后删掉的分片不会残留在备份里。"""
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "a.parquet").write_bytes(b"a")
+    target = tmp_path / "backups"
+    (target / "manifests").mkdir(parents=True)
+
+    first = backup.backup_data(target, "20260101", data, False)
+    assert first["source_files"] == 1
+    assert (target / "data" / "20260101" / "a.parquet").exists()
+
+    (data / "a.parquet").unlink()
+    (data / "b.parquet").write_bytes(b"b")
+    second = backup.backup_data(target, "20260101", data, False)
+
+    assert second["source_files"] == 1
+    assert not (target / "data" / "20260101" / "a.parquet").exists()
+    assert (target / "data" / "20260101" / "b.parquet").exists()

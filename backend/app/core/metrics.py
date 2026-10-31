@@ -211,6 +211,41 @@ def backup_status(backup_dir: Path | str, *, now: float | None = None) -> dict[s
     return status
 
 
+class DiskCollector:
+    """磁盘余量（P2）：scrape 时现查 data 与备份目标，按 path 各一条。
+
+    不放进 `_SNAPSHOT_GAUGES`：那两个指标带 path 标签，一条 scrape 会产出多条；
+    独立 collector 与任务计数同模式，2 个 API worker 下也不会各报一份。
+    """
+
+    def collect(self) -> Any:
+        import psutil
+
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        paths = sorted({str(settings.data_dir), str(settings.qs_backup_dir)})
+        free = GaugeMetricFamily(
+            "quantsage_disk_free_bytes",
+            "Filesystem free bytes by path (psutil).",
+            labels=["path"],
+        )
+        total = GaugeMetricFamily(
+            "quantsage_disk_total_bytes",
+            "Filesystem total bytes by path (psutil).",
+            labels=["path"],
+        )
+        for path in paths:
+            try:
+                usage = psutil.disk_usage(path)
+            except OSError:
+                continue  # 目录/挂载点不存在：不产出，避免把读不到写成 0
+            free.add_metric([path], float(usage.free))
+            total.add_metric([path], float(usage.total))
+        yield free
+        yield total
+
+
 class SnapshotCollector:
     """把 scrape 快照翻成 Gauge，每个指标一次 scrape 只产出一份。"""
 
@@ -226,8 +261,9 @@ class SnapshotCollector:
 
 
 if not MULTIPROC:
-    # 单进程：默认 registry 里已经有各指标；任务计数与 scrape 快照用自定义 collector。
+    # 单进程：默认 registry 里已经有各指标；任务计数、磁盘与 scrape 快照用自定义 collector。
     REGISTRY.register(TaskCountsCollector())
+    REGISTRY.register(DiskCollector())
     REGISTRY.register(SnapshotCollector())
 
 
@@ -238,6 +274,7 @@ def render() -> bytes:
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
     registry.register(TaskCountsCollector())
+    registry.register(DiskCollector())
     registry.register(SnapshotCollector())
     return generate_latest(registry)
 

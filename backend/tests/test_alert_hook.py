@@ -68,3 +68,23 @@ def test_non_list_alerts_are_ignored(tmp_path: Path) -> None:
     log = tmp_path / "a.log"
     assert alert_hook.handle_payload({"alerts": "nope"}, log, notify=False) == 0
     assert not log.exists()
+
+
+def test_jsonl_rotates_at_the_size_limit(tmp_path: Path) -> None:
+    """P2：告警日志不再无限追加；超过阈值滚动一份 .1。"""
+    log = tmp_path / "alerts.log"
+    payload = {
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": "A"},
+                "annotations": {"summary": "x"},
+            }
+        ]
+    }
+
+    alert_hook.handle_payload(payload, log, notify=False, max_bytes=200)
+    alert_hook.handle_payload(payload, log, notify=False, max_bytes=200)
+
+    assert (tmp_path / "alerts.log.1").exists()
+    assert log.exists()

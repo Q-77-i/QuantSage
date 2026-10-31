@@ -292,6 +292,9 @@ def backup_data(target: Path, date_str: str, data_dir: Path, dry: bool) -> dict[
     if dry:
         log(f"[dry] rsync {data_dir} → {dest}（link-dest={prev}）")
         return {"dir": str(dest.relative_to(target)), "dry": True}
+    # 同日重跑：先清空目标，避免回滚后已删的文件被旧副本“复活”并通过自校验。
+    if dest.exists():
+        shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(dest / "_tmp", ignore_errors=True)
     cmd = ["rsync", "-a", "--exclude=_tmp/"]
@@ -317,13 +320,23 @@ def backup_data(target: Path, date_str: str, data_dir: Path, dry: bool) -> dict[
             handle.write(f"{sha256_file(path)}  {rel}\n")
     meta = {}
     for name in ("bars.json", "events.json"):
-        path = dest / "_meta" / name
+        # 记**源端**清单摘要；只对目标端自校验会把拷贝错误也记成“正确”
+        path = data_dir / "_meta" / name
         if path.is_file():
             meta[name] = sha256_file(path)
+    source_files = 0
+    source_bytes = 0
+    for path in data_dir.rglob("*"):
+        if not path.is_file() or "_tmp" in path.parts:
+            continue
+        source_files += 1
+        source_bytes += path.stat().st_size
     result = {
         "dir": str(dest.relative_to(target)),
         "files": len(files),
         "bytes": sum(path.stat().st_size for path in files),
+        "source_files": source_files,
+        "source_bytes": source_bytes,
         "sha256_manifest": str(manifest.relative_to(target)),
         "meta": meta,
     }
@@ -574,6 +587,9 @@ def restore_qdrant(target: Path, manifest: dict[str, Any], dest_collection: str,
     expected = entry.get("points_count")
     if expected is not None and points != expected:
         raise Failure(f"Qdrant 点数不一致：恢复 {points}，备份 {expected}")
+    # 上传的 snapshot 会留在容器层；恢复完成即删（失败也不影响恢复结果）
+    with suppress(Failure):
+        compose(["exec", "-T", "qdrant", "rm", "-f", f"/qdrant/snapshots/{dest_collection}/{snapshot.name}"])
     return {"collection": dest_collection, "points_count": points}
 
 

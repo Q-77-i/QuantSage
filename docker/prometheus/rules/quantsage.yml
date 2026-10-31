@@ -1,4 +1,4 @@
-# QuantSage 告警与记录规则（P4-S8 6 条 + P1 BackupPartial / ServiceDown，共 8 条告警 + 1 条记录规则）。
+# QuantSage 告警与记录规则（P4-S8 6 条 + P1 BackupPartial / ServiceDown + P2 DiskPressure，共 9 条告警 + 1 条记录规则）。
 #
 # 口径（SPEC §9.3）：
 #  * 降级率用**服务端** rag_rerank_degraded_total / rag_rerank_requests_total；
@@ -107,3 +107,16 @@ groups:
         annotations:
           summary: "QuantSage 服务不可达（{{ $labels.job }}）"
           description: "Prometheus 抓不到该 job 的 /metrics；API 整体不可用时 PG/宿主/备份指标也会消失，不能只看它们。"
+
+      - alert: DiskPressure
+        expr: |
+          quantsage_disk_free_bytes
+          /
+          clamp_min(quantsage_disk_total_bytes, 1)
+          < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘余量低于 10%（{{ $labels.path }}）"
+          description: "检查 data/备份目标/日志增长；磁盘写满时 PG、DuckDB 与日志会零散失败。"

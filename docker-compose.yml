@@ -11,6 +11,12 @@
 
 name: quantsage
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 x-langfuse-env: &langfuse-env
   # ── 服务自身 ──
   NEXTAUTH_URL: http://127.0.0.1:3000
@@ -61,6 +67,7 @@ services:
   # ─────────────────────────── 默认启动 ───────────────────────────
 
   postgres:
+    logging: *default-logging
     image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     restart: unless-stopped
     # P4-S4 资源上限：1.25g = 512MB shared_buffers + 连接私有内存 + 余量。
@@ -95,6 +102,7 @@ services:
     stop_grace_period: 30s
 
   redis:
+    logging: *default-logging
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
     # P4-S4：业务缓存的**上限 + 淘汰策略**是可用性前提（E3c），不是可选优化。
@@ -126,6 +134,7 @@ services:
       start_period: 5s
 
   redis-coord:
+    logging: *default-logging
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
     # S5：共享限流专用。**noeviction**——限流键不能像缓存那样被淘汰，丢了就等于
@@ -146,6 +155,7 @@ services:
       start_period: 5s
 
   qdrant:
+    logging: *default-logging
     image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     restart: unless-stopped
     # P4-S4：RSS 基线 1.8GB；2.5g 给索引/压缩留余量，不把 Docker VM 吃满。
@@ -173,6 +183,7 @@ services:
   # 宿主端口 9092/9093：9090/9091 已被 observability profile 的 MinIO 占用。
 
   prometheus:
+    logging: *default-logging
     image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
     profiles: ["monitoring"]
     restart: unless-stopped
@@ -190,6 +201,7 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=5GB
     extra_hosts:
       # Linux 的 compose 需要显式映射；macOS Docker Desktop 自带，写了也无害
       - "host.docker.internal:host-gateway"
@@ -201,6 +213,7 @@ services:
       start_period: 10s
 
   alertmanager:
+    logging: *default-logging
     image: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
     profiles: ["monitoring"]
     restart: unless-stopped
@@ -224,16 +237,20 @@ services:
       start_period: 10s
 
   # ───────────────── observability profile（默认不启动）─────────────────
+  # P2：各服务有 mem/cpus 上限；与默认四件一起启用需 ≥16GB 内存，不够就只开默认栈。
 
   langfuse-redis:
+    logging: *default-logging
     image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     profiles: ["observability"]
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
     environment:
       REDIS_PASSWORD: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
       REDISCLI_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in .env}
     # 口令由容器内 shell 展开，不进宿主 argv
-    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory-policy noeviction"]
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory 96mb --maxmemory-policy noeviction"]
     volumes:
       - langfuse_redis_data:/data
     healthcheck:
@@ -243,9 +260,12 @@ services:
       retries: 10
 
   clickhouse:
+    logging: *default-logging
     image: clickhouse/clickhouse-server:25.12@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
     profiles: ["observability"]
     restart: unless-stopped
+    mem_limit: 1.5g
+    cpus: 2.0
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -264,9 +284,12 @@ services:
       start_period: 10s
 
   minio:
+    logging: *default-logging
     image: cgr.dev/chainguard/minio@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
     profiles: ["observability"]
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
     entrypoint: sh
     # 启动前先建好 langfuse bucket
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
@@ -286,9 +309,12 @@ services:
       start_period: 10s
 
   langfuse-web:
+    logging: *default-logging
     image: docker.langfuse.com/langfuse/langfuse:4@sha256:67f48d12a190e4ad585249c75ae1ce172b449de3dbbe7486b8179cd28e21408e
     profiles: ["observability"]
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 2.0
     depends_on:
       postgres:
         condition: service_healthy
@@ -305,9 +331,12 @@ services:
     # 就绪判据（宿主执行）：curl -sf http://127.0.0.1:3000/api/public/health
 
   langfuse-worker:
+    logging: *default-logging
     image: docker.langfuse.com/langfuse/langfuse-worker:4@sha256:ca32a8fb2a214c7b5f42dd9c540c8072e41db659cb621f317911ce695ad6bca2
     profiles: ["observability"]
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 2.0
     depends_on:
       postgres:
         condition: service_healthy

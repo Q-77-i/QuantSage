@@ -1321,13 +1321,6 @@ class FakeDatabase:
             counts[status] = counts.get(status, 0) + 1
         return counts
 
-    async def count_active_tasks(self, user_id: int) -> int:
-        return sum(
-            1
-            for row in self.tasks.values()
-            if row["user_id"] == user_id and row["status"] in ("queued", "running")
-        )
-
     async def bump_usage_counter(
         self, user_id: int, metric: str, period_key: str, limit: int
     ) -> int | None:

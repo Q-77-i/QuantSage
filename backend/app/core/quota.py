@@ -5,9 +5,9 @@ L0 管**速率**（每分钟多少，进程内、重启清零），本模块管*
 
 两个维度、两种语义（不硬凑成一套）：
 
-  * **在飞任务数 = gauge**——直查 `tasks` 表，进终态**自动**释放。不另立计数器：终结有五条
-    路径（成功 / 失败 / 取消 / 启动扫尾 / 进程被杀），计数器漏减一处就是永久占额，
-    而直查以任务表为唯一真值、天然不漂；
+  * **在飞任务数 = gauge**——提交准入占 `tasks.quota_slot`（`0..limit-1`），由部分唯一索引
+    保证上限；任务进终态索引项消失即释放。本模块的 `enforce` 只保留 Agent 请求数记账，
+    不再走 active_tasks 分支；终结有五条路径，槽位由索引维护才不用逐条减计数；
   * **Agent 请求数 / 日 = counter**——`usage_counters` 表 + 「检查与递增同一条语句」
     （见 `Database.bump_usage_counter`：并发下才不会超发）。
 
@@ -135,19 +135,11 @@ async def enforce(
     settings = get_settings()
 
     if metric == METRIC_ACTIVE_TASKS:
-        limit = settings.quota_active_tasks
-        if limit <= 0:
-            return
-        used = await db.count_active_tasks(user_id)
-        if used >= limit:
-            await db.record_quota_rejection(user_id, metric, used, limit)
-            raise QuotaExceeded(
-                metric,
-                f"你已有 {used} 个任务在执行或排队（上限 {limit} 个），等一个结束再提交",
-                limit=limit,
-                used=used,
-            )
-        return
+        # 槽位准入是唯一入口（`idempotency.create_task` 的插入语句 + 部分唯一索引）。
+        # 这里再实现一遍会形成两套逻辑，且 count-then-insert 本身有竞态。
+        raise ValueError(
+            "active_tasks 由槽位准入维护（idempotency.create_task），不经 quota.enforce"
+        )
 
     if metric == METRIC_AGENT_CALLS:
         limit = settings.quota_agent_calls_per_day

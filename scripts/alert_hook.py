@@ -26,6 +26,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOG = ROOT / "logs" / "alerts.log"
 DEFAULT_PORT = 9099
+#: 告警 JSONL 的轮转阈值（P2）：单文件 10MB、保留 3 份。
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 3
 
 #: 参数走 argv，避免把告警文本拼进 AppleScript 源码（引号/反斜杠会坏）
 _NOTIFY_SCRIPT = (
@@ -45,12 +48,34 @@ def summarize(alert: dict[str, Any]) -> str:
     return f"[{status}] {name} {summary}".strip()
 
 
+def _append_jsonl(
+    log_path: Path, lines: list[str], *, max_bytes: int = LOG_MAX_BYTES
+) -> None:
+    """追加 JSONL；超过阈值先滚动 ``alerts.log.1..N``（P2，防无限追加）。"""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    incoming = sum(len(line.encode("utf-8")) + 1 for line in lines)
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        size = 0
+    if size + incoming > max_bytes and log_path.exists():
+        for index in range(LOG_BACKUPS - 1, 0, -1):
+            source = log_path.with_name(f"{log_path.name}.{index}")
+            if source.exists():
+                source.replace(log_path.with_name(f"{log_path.name}.{index + 1}"))
+        log_path.replace(log_path.with_name(f"{log_path.name}.1"))
+    with log_path.open("a", encoding="utf-8") as handle:
+        for line in lines:
+            handle.write(line + "\n")
+
+
 def handle_payload(
     payload: dict[str, Any],
     log_path: Path,
     *,
     notify: bool = True,
     notify_fn: Any = None,
+    max_bytes: int = LOG_MAX_BYTES,
 ) -> int:
     """把 Alertmanager payload 追加进 JSONL；返回处理的 alert 条数。
 
@@ -62,7 +87,6 @@ def handle_payload(
         return 0
     # dev.sh 用系统 python3（本机 3.9）起这个脚本，没有 datetime.UTC
     received_at = datetime.now(timezone.utc).isoformat()  # noqa: UP017
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for alert in alerts:
         if not isinstance(alert, dict):
@@ -82,9 +106,7 @@ def handle_payload(
             )
         )
     if lines:
-        with log_path.open("a", encoding="utf-8") as handle:
-            for line in lines:
-                handle.write(line + "\n")
+        _append_jsonl(log_path, lines, max_bytes=max_bytes)
     if notify:
         sender = notify_fn or _notify
         for alert in alerts:

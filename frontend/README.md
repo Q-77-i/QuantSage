@@ -15,7 +15,7 @@ pnpm build        # 构建验证前请先停掉 dev server，两者共用 .next 
 
 ## 抓取 README 截图
 
-`pnpm screenshots` 用 Playwright 驱动真实交互，产出 `docs/images/` 下三张图（对话页 / 回测页 / PIT 对比区）。首次需要下载浏览器：
+`pnpm screenshots` 用 Playwright 驱动真实交互，产出 `docs/images/` 下三张核心图（对话页 / 回测页 / PIT 对比区）。其余 10 张（首页、标的、策略、网格、因子、模拟盘、研报、运行页等）由 `scripts/capture-*.mjs` 按功能各自产出，文件即入口。首次需要下载浏览器：
 
 ```bash
 pnpm exec playwright install chromium

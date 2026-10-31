@@ -2,7 +2,7 @@ name: CI
 
 # 触发：主干推送 + PR + 手动重跑。
 #
-# ⚠ **集成套件默认不在 CI 内**（149 项中大部分需要真容器 / 真实 `data/`——2.6GB，不进 Git /
+# ⚠ **集成套件默认不在 CI 内**（155 项中大部分需要真容器 / 真实 `data/`——2.6GB，不进 Git /
 # 真密钥），四幕可靠性演练与 MCP 握手同样不在。**例外**：配额/队列定向集成
 # `tests/integration/test_quota_e2.py` 用 Postgres service 在 CI 跑（见下方 backend job）。
 # **「CI 绿」不等于「全部测试通过」**，这条口径写在 `docs/specs/P3-En.md` §7.8，别在两处各讲一遍。
@@ -16,6 +16,10 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# 工作流只读仓库内容：job 里不需要写 issue/PR/包，缩小 token 权限面。
+permissions:
+  contents: read
 
 env:
   # ⚠ 这一条**只管解析、管不到 `--frozen` 的下载**（锁文件逐包记着清华镜像的地址）——
@@ -53,6 +57,7 @@ jobs:
   backend:
     name: 后端 · ruff + pytest
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -72,8 +77,10 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           enable-cache: true
       # 用户策略沙箱（安全修复）：生产默认 STRATEGY_ISOLATION=require；CI 装 bwrap，
@@ -100,17 +107,18 @@ jobs:
         run: uv sync --frozen --no-install-package torch --no-install-package FlagEmbedding
       - name: lint
         run: uv run ruff check .
-      # 覆盖率门槛：88 是**按 CI 实测基线 89.36% 取整下浮**（首跑读数；本机同代码
-      # 90.22%，两端差 0.86 点，见 SPEC §7.3）。**按 CI 定标不按本机**——闸门在 CI 上
-      # 执行，受约束的是弱的那一端；贴着基线设（如 89）余量只剩 38 条语句，会变随机红。
-      # 88 的余量约 145 条语句：够一次正常重构，但拦得住「整个模块没测试」。
-      # 口径细节（模板 omit、两个子进程 worker 的结构性 0%）在 SPEC §7.3——
-      # **改这个数字等于改闸门宽度**，要在 SPEC 留痕。
+      # 覆盖率闸门（P2）：一次跑出分支数据，但**按行覆盖**判——
+      # `check_coverage.py` 守全局 88% + 核心模块底线（见 SPEC §7.3）。
+      # 不把 `--cov-branch` 的综合 87.57% 变成闸门：那等于把门槛悄悄降到 87。
+      # 88 是 2026-10-15 按 CI 基线 89.36% 取整下浮的历史定标；P2 收尾复测行覆盖 89.34%，
+      # 余量约 1.34 点；改任何数字都等于改闸门宽度，要在 SPEC 留痕。
       # `term-missing:skip-covered` 而非默认 `term`：只列**未满 100% 的文件与缺行号**
       # （满覆盖的约 44 个不打印），日志即诊断——排查平台差异时靠它定位缺口行，
       # 平时看日志也直接知道哪没测到。
       - name: 测试
-        run: uv run pytest -q --cov=app --cov-fail-under=88 --cov-report=term-missing:skip-covered
+        run: |
+          uv run pytest -q --cov=app --cov-branch --cov-report=json:coverage.json --cov-report=term-missing:skip-covered
+          uv run python scripts/check_coverage.py coverage.json
       # P1：槽位/计数守卫、并发准入、幂等重放这些语义只有真 SQL 能验。
       # 只跑配额/队列定向文件；需要真实 data/ 的 paper/research 集成仍不在 CI。
       - name: 配额/队列定向集成（真 Postgres）
@@ -124,15 +132,18 @@ jobs:
   frontend:
     name: 前端 · lint + typecheck + test + build
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 12.4.2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
@@ -144,18 +155,37 @@ jobs:
       # `build` 会先跑 `sync-monaco.mjs`（把 monaco 产物拷进 `public/`），无外部依赖。
       - run: pnpm build
 
+  prometheus:
+    name: Prometheus 规则 · promtool
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # P2 T12：规则文件不再只靠手动 docker run；check 验语法，test 验阈值逻辑。
+      - name: promtool check/test
+        run: |
+          docker run --rm -v "$PWD/docker/prometheus/rules:/p:ro" \
+            --entrypoint /bin/promtool prom/prometheus:v3.15.1 check rules /p/quantsage.yml
+          docker run --rm -v "$PWD/docker/prometheus/rules:/p:ro" \
+            --entrypoint /bin/promtool prom/prometheus:v3.15.1 test rules /p/quantsage_test.yml
+
   audit:
     name: 供应链审计
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       # 前端那一步要跑 `pnpm audit`——**runner 上没有 pnpm**，不装就是 exit 127
       # （首跑就是这么红的）。这里不跑前端构建，所以不需要 setup-node 的缓存。
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 12.4.2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       # 审**清单**而不是本地已装的包：CI 跳装了 torch，`--path` 会让它成为审计盲区。
@@ -169,7 +199,7 @@ jobs:
           uv export --no-hashes --no-emit-project --format requirements-txt > "$RUNNER_TEMP/req.txt"
           # 2026-10-29 新增 10 条 filelock CVE（LiteLLM 1.106.6 仍 filelock<4.0）；
           # 与上面三条同属一个窄口径例外，LiteLLM 放开后一起删。
-          uvx pip-audit -r "$RUNNER_TEMP/req.txt" --strict \
+          uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/req.txt" --strict \
             --ignore-vuln CVE-2026-112940 \
             --ignore-vuln CVE-2026-112913 \
             --ignore-vuln CVE-2026-112907 \
