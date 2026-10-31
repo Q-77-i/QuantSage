@@ -32,13 +32,13 @@ QuantSage 是一个**前视偏差为零**的 AI 投研 Agent。它把「某个�
 
 ```mermaid
 flowchart LR
-    UI["浏览器<br/>Next.js 15"] -->|"SSE / JSON"| API["FastAPI<br/>单进程"]
+    UI["浏览器<br/>Next.js 15"] -->|"SSE / JSON"| API["FastAPI<br/>2 worker（默认 1）"]
     API --> AG["LangGraph 快路径<br/>ReAct"]
     API --> DEEP["LangGraph 深路径<br/>StateGraph + interrupt()"]
     API --> BT["回测 / 网格 / 批量"]
     API --> PAPER["模拟盘 replay"]
-    API --> RAG["PIT 检索"]
-    API --> BG["后台主实例<br/>task worker + 调度器"]
+    API --> RAG["RAG 推理服务<br/>127.0.0.1:8200"]
+    API --> BG["后台主实例<br/>task worker 池 3+1+1 + 调度器"]
 
     AG --> LOCAL["本地行情工具<br/>DuckDB 直读 Parquet"]
     AG --> XS["小石 MCP<br/>只读白名单"]
@@ -56,7 +56,7 @@ flowchart LR
 
 ### 2.1 进程模型
 
-**API 层默认 1 个、可条件跑 2 个 FastAPI worker；后台任务仍只有一个主实例**：
+**API 层默认 1 个、可条件跑 2 个 FastAPI worker（S5/S6 压测档即 2w）；后台任务仍只有一个主实例**：
 
 - 启动时用 Postgres advisory lock 竞选**后台主实例**（`BACKGROUND_LOCK_KEY`）
 - 只有持锁进程启动 task worker、ETL/行情/体检调度器、决策结算调度器
@@ -267,8 +267,8 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 机制 | 落点 | 关键口径 |
 |---|---|---|
 | 错误分类 / 重试 / 熔断 | `core/reliability.py` | 按异常结构分类，不 import 上游 SDK；`rate_limited` 立即开路且不计失败；熔断状态进程内、重启清零 |
-| L0 限流 | `api/limits.py` | 默认进程内令牌桶；多 worker + `RATE_LIMIT_SHARED=true` 走 redis-coord Lua；coord 挂了降级进程内 `floor(capacity/N)`；429 带 `Retry-After`；SSE 在开流前拒（回 JSON，不改状态码） |
-| 用户配额 | `core/quota.py` | 在飞任务数 = 直查 `tasks` 表（gauge，进终态自动释放）；Agent 请求/日 = `usage_counters`（counter）；计发起不计成功；≤0 不限额 |
+| L0 限流 / 资源边界 | `api/limits.py` · `api/chat.py` · `api/tasks.py` | 默认进程内令牌桶；多 worker + `RATE_LIMIT_SHARED=true` 走 redis-coord Lua；coord 挂了降级进程内 `floor(capacity/N)`；429 带 `Retry-After`；SSE 在开流前拒（回 JSON，不改状态码）。P2 资源边界：chat 同会话串行 + 每进程锁连接上限 12（池外连接，5s 拿不到 503）；task SSE 每用户 3 条并发（按进程计数）+ 30 次/分钟；research resume 10 次/10 分钟 |
+| 用户配额 | `core/quota.py` · `core/db_tasks.py` · `core/schema.py` | 在飞任务数 = 槽位准入：提交占 `tasks.quota_slot`（0..limit−1），`(user_id, quota_slot)` 部分唯一索引保证上限，进终态索引项消失即释放；`quota.enforce` 只保留 Agent 请求/日（`usage_counters` counter），计发起不计成功；≤0 不限额 |
 | 幂等 | `api/idempotency.py` | L7 幂等键；重复提交返回同一结果 |
 | RBAC | `core/auth.py` | `users.role`；`require_admin`；ETL 两端点归 admin；角色不进 JWT，改库立即生效 |
 | 会话 | `core/session.py` | 滑动续期（过半程才换）；只在成功响应上换；只给通过 `require_user` 的请求续；登出撤销 `token_version` |
@@ -278,7 +278,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 沙箱 | `strategy/sandbox.py` · `strategy/isolation.py` | 子进程 + CPU/墙钟/内存/stdout 四配额 + OS 级隔离；`STRATEGY_ISOLATION=require` 默认 fail closed |
 | AST 静态检查 | `strategy/static_check.py` | R0–R5 规则；`shift(-n)` / `bfill` 等未来函数运行前拦下 |
 | 策略版本 | `core/db_strategies.py` | append-only `strategy_versions`；内容变才 +1；回滚 = 追加新版本 |
-| 观测 | `core/observability.py` · `core/metrics.py` | request id 透传/回写；HTTP 计数/耗时、任务五状态、缓存命中、队列 p95、PG 连接、宿主内存/swap、备份年龄；JSON 日志可选 |
+| 观测 | `core/observability.py` · `core/metrics.py` | request id 透传/回写；HTTP 计数/耗时、任务五状态、缓存命中、队列 p95、PG 连接、宿主内存/swap、磁盘 free/total、备份年龄/partial；JSON 日志可选 |
 | LLM 观测 | `core/langfuse.py` | 每条 trace 记模型+版本+prompt hash+工具序列+token 成本+延迟+用户 |
 | LLM 网关 | `core/llm.py` | `ChatLiteLLM` 唯一构造点；两档模型；失败切换链 |
 
@@ -286,16 +286,20 @@ PIT 不是一句口号，它在三个地方是结构性的：
 
 ### 7.1 基础设施
 
-`docker-compose.yml` 起 Postgres 18、Redis 7、Qdrant 1.19.1，以及 Langfuse 的 Redis / ClickHouse / MinIO / web / worker。镜像按 digest 固定。后端与前端跑在宿主（`scripts/dev.sh`）。
+`docker-compose.yml` 起 Postgres 18、Redis 7（cache + coord）、Qdrant 1.19.1，以及 Langfuse 的 Redis / ClickHouse / MinIO / web / worker。镜像按 digest 固定。后端与前端跑在宿主（`scripts/dev.sh`）。
 
 | 服务 | 宿主端口 | 说明 |
 |---|---|---|
 | Postgres | 5433 | 业务库 + checkpointer + Store |
-| Redis | 6379 | L2 缓存 |
+| Redis cache | 6379 | L2 缓存 |
+| Redis coord | 6380（仅 127.0.0.1） | 共享限流（Lua 令牌桶）；只放 `rl:*`，coord 挂了降级进程内 |
 | Qdrant | 6333 | 事件向量索引 |
+| RAG 推理 | 8200（仅 127.0.0.1） | 独立进程：BGE-M3 + bge-reranker；API/MCP 经 `RAG_SERVICE_URL` 调它 |
 | Langfuse | 3000 | LLM trace 看板 |
-| 后端 | 8000（dev 与 prod 相同） | FastAPI；`prod.sh` 委派 `dev.sh`，不另开端口 |
+| 后端 | 8000（dev 与 prod 相同） | FastAPI；按 `API_WORKERS` 起 1–2 个 worker；`prod.sh` 委派 `dev.sh`，不另开端口 |
 | 前端 | 3001（dev 与 prod 相同） | Next.js；`prod.sh` 用 build+start |
+
+可选的 `monitoring` profile 另起 Prometheus（9092）/ Alertmanager（9093），默认不启动；规则与 `alert_hook` 见 §9.4。
 
 ### 7.2 启动顺序
 
@@ -305,6 +309,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 2. 任一环不可用都不阻断服务启动；具体 API 返回 503
 3. 业务库可用才竞选后台主实例；持锁者启动 worker 与调度器
 4. RAG 服务可后台预热（`RAG_PRELOAD=true`，不阻塞启动，失败只让首次请求慢）；API 进程在远程模式下不加载模型
+5. dev/prod 共用 8000/3001 端口，不能同时起；`dev.sh` 的 start 在端口被占时返回非 0，PID 文件旁记启动时间与命令行，stop/status 先校验身份再操作
 
 ### 7.3 重启与失败语义
 
@@ -339,6 +344,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 | 11 | 可靠性策略不硬依赖外部组件 | 关键路径不硬依赖 Redis；限流默认进程内，多 worker 时 coord 失败降级 | 重启清零、单实例 | `core/reliability.py` |
 | 12 | LLM 观测在 Langfuse，服务指标在 Prometheus | 两套口径各司其职，不重复计 token | 两处看板 | `core/langfuse.py`、`core/metrics.py` |
 | 13 | 不引消息队列、暂缓全量容器化 | 当前规模收益低、运维/一致性成本高 | 需要时按触发条件升级 | 见 §9 |
+| 14 | 在飞任务配额用槽位，不靠计数递减 | 任务有五条终态路径，逐条减计数容易漏；槽位 + 部分唯一索引让释放自动发生 | 提交要先算空槽（`0..limit−1`），`tasks` 多一列 | `core/db_tasks.py`、`core/schema.py` |
 
 ## 9. 已知边界与未来触发
 
