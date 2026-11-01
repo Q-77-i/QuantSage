@@ -8,7 +8,7 @@
 
 ## 1. 一页纸
 
-QuantSage 是一个**前视偏差为零**的 AI 投研 Agent。它把「某个历史时点当时能看到什么」做成数据模型的第一性：每条事件同时带 `event_time`（事发）与 `available_at`（平台首次可得），回测、检索、深研报都按后者设卡。
+QuantSage 是一个 **PIT 约束下的** AI 投研 Agent。它把「某个历史时点当时能看到什么」放进数据模型的基础：每条事件同时带 `event_time`（事发）与 `available_at`（平台首次可得），回测、检索、深研报都按后者设卡。
 
 它**是**：
 
@@ -69,10 +69,7 @@ flowchart LR
 走独立 `redis-coord`（Lua 令牌桶）；coord 不可用降级为进程内 `floor(capacity/N)`。指标用
 `PROMETHEUS_MULTIPROC_DIR` + `MultiProcessCollector` 聚合，任务状态由自定义 collector 从
 DB 取一次。网格逐格进度落 `tasks.progress.cells`，非 master 的 SSE 每 1s 从 DB 轮询补齐。
-回退：`API_WORKERS=1` + `RATE_LIMIT_SHARED=false`。实现后复测 bars c=300
-**1,699 req/s / p95 231ms**、`/health` **11,810 req/s**（预测量 1w p95 390ms）。
-**S6 最终复测（2026-10-29）**：2w bars **1,710 / p95 280ms**、health **11,599**；1w 864 / 5,784；
-p95 比 S5 高、仍在 300ms 门槛内，差异按系统负载噪声如实记录。
+回退：`API_WORKERS=1` + `RATE_LIMIT_SHARED=false`。压测读数与 before/after 见 [ROADMAP](../../ROADMAP.md)。
 
 这条契约的动机是「单机形态下把跨进程状态压到最少」：任务队列仍单实例；限流与指标在 S5
 已跨进程（coord / 多进程聚合），熔断与 DuckDB/模拟盘并发闸门仍按进程计算。详见 §9.3。
@@ -233,7 +230,7 @@ START ─┬─ market ─┐
 | `available_at` | 平台首次可得到的时间 | **PIT 口径**：回测设卡、RAG 过滤、深研报锁时点 |
 | `observed_at` | 我们观察到的时间 | 审计与数据体检 |
 
-PIT 不是一句口号，它在三个地方是结构性的：
+PIT 约束落在三个地方：
 
 1. 回测引擎的 `EventView.stamp()` 取 `available_at` 还是 `event_time` 由 `Mode` 决定
 2. RAG 的 `available_at <= as_of` 写进 Qdrant 服务端 filter
@@ -311,6 +308,19 @@ PIT 不是一句口号，它在三个地方是结构性的：
 4. RAG 服务可后台预热（`RAG_PRELOAD=true`，不阻塞启动，失败只让首次请求慢）；API 进程在远程模式下不加载模型
 5. dev/prod 共用 8000/3001 端口，不能同时起；`dev.sh` 的 start 在端口被占时返回非 0，PID 文件旁记启动时间与命令行，stop/status 先校验身份再操作
 
+生产形态（S4–S6 验收专用，不是日常启动；单机、不自启/不守护）：
+
+```bash
+bash scripts/prod.sh build   # 前端 pnpm build；代码改动后显式重建
+bash scripts/prod.sh start   # infra → RAG → API → 前端；日志/PID 在 logs/prod
+bash scripts/prod.sh status
+bash scripts/prod.sh health  # /health、/health/ready、RAG /health、前端 /login
+bash scripts/prod.sh logs [backend|frontend|rag]
+bash scripts/prod.sh stop    # API 最多等 20s（drain 15s + 收尾），先释放任务租约再退出
+```
+
+prod 与 dev 端口相同（8000/3001/8200），不能同时起。prod 日志用 copytruncate 轮转（20MB × 3 份、30min 检查；脚本顶部的 PROD_LOG_MAX_BYTES / PROD_LOG_KEEP / PROD_LOG_CHECK_SECONDS 可调，它们是 shell 变量、不读 `.env`）。
+
 ### 7.3 重启与失败语义
 
 - 重启时 `running` 任务**有限次自动重排**：租约过期/进程崩溃属于基础设施故障，回 `queued` 再跑一次；`attempts >= max_attempts` 才标 `failed/lease_expired`。确定性错误（参数/无数据/沙箱拒绝）第一次就终态，不重试；结果按 `task_id` 幂等，重排不产生重复记录
@@ -322,16 +332,27 @@ PIT 不是一句口号，它在三个地方是结构性的：
 
 ### 7.4 备份与恢复（S6）
 
+```bash
+bash scripts/backup.sh                         # PG 两库 + Qdrant snapshot + data/，默认 ~/QuantSageBackups
+bash scripts/backup.sh --target /Volumes/<盘>/QuantSageBackups   # 外置盘；未挂载会明确失败
+bash scripts/restore.sh --source 20261029 --pg-db quantsage_restore_20261029 \
+  --qdrant-collection cn_events_v1_restore_20261029 --data-target /tmp/qs-restore
+bash scripts/install_backup_job.sh             # 可选：launchd 每日 03:30（不会自动安装）
+```
+
+> `install_backup_job.sh --target` 必须与 `.env` 的 `QS_BACKUP_DIR` 指向同一个目录；不一致时安装器会显式失败——备份年龄指标只读 `.env`，两处不同会永久误报 `BackupStale`。
+
 - `scripts/backup.sh`（入口；实现是同目录的 Python 模块）：PG `quantsage` + `langfuse` 的 `pg_dump -Fc`、Qdrant collection snapshot、`data/` 的 `rsync --link-dest` 硬链接快照；默认落点 `~/QuantSageBackups`，`--target` 可指外置盘（未挂载明确失败）
 - 保留 **7 日 + 4 周**（周备硬链接）；Qdrant 在 `data/_meta/embeddings.json` 未变时复用上一份
-- `scripts/restore.sh` 默认恢复到 scratch 目标（新库/新集合/临时目录），覆盖线上需 `--force`；本次演练 PG+Qdrant+data **36.3s**
+- `scripts/restore.sh` 默认恢复到 scratch 目标（新库/新集合/临时目录）；覆盖已存在的目标需 `--force` 再加二次确认（TTY 输入 `yes`，非 TTY 显式 `--yes`）；覆盖线上库 `quantsage`、线上集合 `cn_events_v1` 或仓库 `data/` 还要 `--allow-live`。`--force` 单独不等于确认，拒绝发生在任何删除之前
 - RPO 24h / RTO ≤1h 是**本地演练口径，不是 SLA**；`.env`/密钥、`logs/`、Redis 不在备份范围
+- **备份含用户表（密码哈希）与业务数据：只放本机/受控外置盘，不进仓库、不上传公共云盘。**
 
 ## 8. 关键决策表
 
 | # | 决策 | 理由 | 代价 | 锚点 |
 |---|---|---|---|---|
-| 1 | PIT 双时间戳是一等公民 | 前视偏差从数据模型上消除，而不是靠代码自觉 | 数据接入与所有查询都要带时点 | `backtest/types.py`、`rag/retrieve.py` |
+| 1 | PIT 双时间戳是一等公民 | 前视偏差由数据模型约束，而不是靠代码自觉 | 数据接入与所有查询都要带时点 | `backtest/types.py`、`rag/retrieve.py` |
 | 2 | LangGraph 只做控制流，合规用纯 Python | LLM 不可决定合规；闸门可测试 | 深路径要多写一层代码闸门 | `agent/deep/graph.py`、`agent/deep/risk_gate.py` |
 | 3 | 读并行、写单点 | 取证可以 fan-out；综合与下单必须单点 | 归并与去重逻辑更复杂 | `agent/deep/graph.py` |
 | 4 | 回测/模拟盘/批量共用撮合与费用实现 | 风控关闭时全部批准的模拟盘 ⇔ 一次回测，逐笔相等 | 同一套实现要同时满足三种调用形态 | `backtest/broker.py`、`backtest/costs.py`、`paper/replay.py` |
@@ -369,8 +390,7 @@ PIT 不是一句口号，它在三个地方是结构性的：
 - **默认 1 个 API worker**；`API_WORKERS=2` 是压力档的可选升级，不是多副本/HA
 - 任务 worker / 调度器仍单实例（advisory lock）；限流走 redis-coord 共享令牌桶（coord 挂了降级进程内 `floor(capacity/N)`）；指标用 Prometheus 多进程聚合；跨进程进度以 `tasks.progress.cells` + DB 轮询为准
 - 熔断与 DuckDB / 模拟盘并发闸门仍按进程计算；主实例退出后不做运行中晋升，uvicorn 补进程后重新竞选
-- **S6 最终复测（2026-10-29）**：2w bars c=300 **1,710 req/s / p95 280ms**、`/health` **11,599 req/s**；1w 864 / 5,784；SSE 5–80 并发 0 错误；20 回测 queue p95 2.4s；8 行故障演练通过。p95 比 S5 的 231ms 高、仍在 300ms 门槛内，差异按系统负载噪声如实记录
-- **S7 / S9（2026-10-30）**：task worker 单进程内按 kind 池化（backtest×3 + grid/batch 各 1）；数据层热点缓存（ST 名单 / 等权基准日表 / 窗口指纹，可由环境开关一键回退）后 20 回测 queue p95 **503ms**、run p50 86ms；2w bars 1,660/240ms 不回归
+- **S6–S9 的压测、故障演练与缓存读数见 [ROADMAP](../../ROADMAP.md)**；本节只保留设计与边界
 - 真要多副本/HA，先做**角色拆分**（API / 后台 / RAG / PDF），不是 N 个同构 worker——每个 worker 都可能载入 2.3GB 嵌入 + 2.3GB 精排模型。**S3 已把 RAG 拆成独立进程**，PDF 渲染仍是子进程；剩下的 API/后台角色拆分仍不排期
 
 ### 9.4 其它边界

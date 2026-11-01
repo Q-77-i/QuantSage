@@ -8,7 +8,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "知策 QuantSage",
-  description: "前视偏差为零的 AI 投研 Agent",
+  description: "PIT 约束下的 AI 投研 Agent",
 };
 
 // CSP nonce 只能在动态渲染时注入。根布局强制动态，避免构建期静态页的内联脚本

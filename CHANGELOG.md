@@ -2,11 +2,11 @@
 
 > 按里程碑记录交付内容，版本号 = git tag（`m-p1`、`m-p2`…）。格式：新增 / 调整 / 修复。
 >
-> **本文只回答「每个里程碑交付了什么」。** 逐次交付的决策、实测读数与验收证据见各 SPEC 的变更记录（P1 §10、P2 §13、P3 §11、P4 §10）；当前状态见 [ROADMAP](ROADMAP.md)。
+> **本文只回答「每个里程碑交付了什么」。** 逐次交付的决策、实测读数与验收证据见各 SPEC 的变更记录（P1 §10、P2 §13、P3 §11、P4 §13）；当前状态见 [ROADMAP](ROADMAP.md)。
 
 ## [m-p4] — 2026-10-29
 
-> P4-Sn 单机工程化交付：S1–S6。逐次明细见 [P4-Sn SPEC §10](docs/specs/P4-Sn.md#10-变更记录)。
+> P4-Sn 单机工程化交付：S1–S6。逐次明细见 [P4-Sn SPEC §13](docs/specs/P4-Sn.md#13-变更记录)。
 
 ### 新增
 
@@ -30,7 +30,7 @@
 
 ### P4-Sn 增补（S7–S9，2026-10-30）
 
-> 同属 `m-p4` 里程碑的单机工程化增补，不另打 tag；逐次明细见 [P4-Sn SPEC §10](docs/specs/P4-Sn.md#10-变更记录)。
+> 同属 `m-p4` 里程碑的单机工程化增补，不另打 tag；逐次明细见 [P4-Sn SPEC §13](docs/specs/P4-Sn.md#13-变更记录)。
 
 - **S7 worker 池**：单进程内按 kind 池化（backtest×3 + grid×1 + batch×1），20 回测 queue p95 **1,312ms**；RAG 合批门禁未过，按 A 不做。
 - **S8 可观测性与缓存**：缓存命中率可算（实测 99.5%）、队列 p95 / PG 连接 / 宿主内存 / 备份年龄指标、`monitoring` profile + 告警规则 + 本地 `alert_hook`；P1 增 BackupPartial / ServiceDown，P2 增 DiskPressure（现 **9 条规则**）。
