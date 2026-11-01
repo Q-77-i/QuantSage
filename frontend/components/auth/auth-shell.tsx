@@ -120,7 +120,7 @@ function BrandColumn() {
 
       <div>
         <h1 className="font-heading text-[1.95rem] leading-[1.16] font-bold tracking-tight text-balance lg:text-[2.5rem] xl:text-[3rem]">
-          前视偏差为零的
+          PIT 约束下的
           <br />
           AI 投研 Agent
         </h1>
